@@ -251,6 +251,65 @@
             isEdited={configToEdit.machineLearning.facialRecognition.minFaces !==
               config.machineLearning.facialRecognition.minFaces}
           />
+
+          <hr />
+
+          <SettingSwitch
+            title={$t('admin.machine_learning_facial_recognition_video_setting')}
+            subtitle={$t('admin.machine_learning_facial_recognition_video_setting_description')}
+            bind:checked={configToEdit.machineLearning.facialRecognition.video.enabled}
+            disabled={disabled ||
+              !configToEdit.machineLearning.enabled ||
+              !configToEdit.machineLearning.facialRecognition.enabled}
+          />
+
+          <SettingInputField
+            inputType={SettingInputFieldType.NUMBER}
+            label={$t('admin.machine_learning_facial_recognition_video_interval')}
+            description={$t('admin.machine_learning_facial_recognition_video_interval_description')}
+            bind:value={configToEdit.machineLearning.facialRecognition.video.intervalSeconds}
+            step="1"
+            min={1}
+            max={3600}
+            disabled={disabled ||
+              !configToEdit.machineLearning.enabled ||
+              !configToEdit.machineLearning.facialRecognition.enabled ||
+              !configToEdit.machineLearning.facialRecognition.video.enabled}
+            isEdited={configToEdit.machineLearning.facialRecognition.video.intervalSeconds !==
+              config.machineLearning.facialRecognition.video.intervalSeconds}
+          />
+
+          <SettingInputField
+            inputType={SettingInputFieldType.NUMBER}
+            label={$t('admin.machine_learning_facial_recognition_video_max_frames')}
+            description={$t('admin.machine_learning_facial_recognition_video_max_frames_description')}
+            bind:value={configToEdit.machineLearning.facialRecognition.video.maxFramesPerVideo}
+            step="1"
+            min={1}
+            max={1000}
+            disabled={disabled ||
+              !configToEdit.machineLearning.enabled ||
+              !configToEdit.machineLearning.facialRecognition.enabled ||
+              !configToEdit.machineLearning.facialRecognition.video.enabled}
+            isEdited={configToEdit.machineLearning.facialRecognition.video.maxFramesPerVideo !==
+              config.machineLearning.facialRecognition.video.maxFramesPerVideo}
+          />
+
+          <SettingInputField
+            inputType={SettingInputFieldType.NUMBER}
+            label={$t('admin.machine_learning_facial_recognition_video_downscale')}
+            description={$t('admin.machine_learning_facial_recognition_video_downscale_description')}
+            bind:value={configToEdit.machineLearning.facialRecognition.video.downscaleLongEdge}
+            step="1"
+            min={320}
+            max={4096}
+            disabled={disabled ||
+              !configToEdit.machineLearning.enabled ||
+              !configToEdit.machineLearning.facialRecognition.enabled ||
+              !configToEdit.machineLearning.facialRecognition.video.enabled}
+            isEdited={configToEdit.machineLearning.facialRecognition.video.downscaleLongEdge !==
+              config.machineLearning.facialRecognition.video.downscaleLongEdge}
+          />
         </div>
       </SettingAccordion>
 

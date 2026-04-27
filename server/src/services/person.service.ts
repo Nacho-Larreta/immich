@@ -1,7 +1,8 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Insertable, Updateable } from 'kysely';
 import { JOBS_ASSET_PAGINATION_SIZE } from 'src/constants';
-import { Person } from 'src/database';
+import { StorageCore } from 'src/cores/storage.core';
+import { AssetFaceFrame, Person } from 'src/database';
 import { Chunked, OnJob } from 'src/decorators';
 import { BulkIdErrorReason, BulkIdResponseDto, BulkIdsDto } from 'src/dtos/asset-ids.response.dto';
 import { AuthDto } from 'src/dtos/auth.dto';
@@ -23,6 +24,7 @@ import {
   PersonUpdateDto,
 } from 'src/dtos/person.dto';
 import {
+  AssetType,
   AssetVisibility,
   CacheControl,
   JobName,
@@ -34,8 +36,10 @@ import {
   SystemMetadataKey,
   VectorIndex,
 } from 'src/enum';
+import { AssetJobRepository } from 'src/repositories/asset-job.repository';
 import { BoundingBox } from 'src/repositories/machine-learning.repository';
 import { UpdateFacesData } from 'src/repositories/person.repository';
+import { AssetFaceFrameTable } from 'src/schema/tables/asset-face-frame.table';
 import { AssetFaceTable } from 'src/schema/tables/asset-face.table';
 import { FaceSearchTable } from 'src/schema/tables/face-search.table';
 import { BaseService } from 'src/services/base.service';
@@ -45,6 +49,18 @@ import { ImmichFileResponse } from 'src/utils/file';
 import { mimeTypes } from 'src/utils/mime-types';
 import { isFacialRecognitionEnabled } from 'src/utils/misc';
 import { Point, transformPoints } from 'src/utils/transform';
+import {
+  getVideoFaceFrameConfigHash,
+  selectVideoFaceFrameTimestamps,
+  VideoFaceDetectionConfig,
+} from 'src/utils/video-face-detection';
+
+type FaceDetectionAsset = NonNullable<Awaited<ReturnType<AssetJobRepository['getForDetectFacesJob']>>>;
+
+type FaceDetectionSource = {
+  path: string;
+  frame: AssetFaceFrame | null;
+};
 
 @Injectable()
 export class PersonService extends BaseService {
@@ -132,6 +148,22 @@ export class PersonService extends BaseService {
     const assetDimensions = getDimensions(asset);
 
     return faces.map((face) => mapFaces(face, auth, asset.edits, assetDimensions));
+  }
+
+  async getFaceSourceImage(auth: AuthDto, id: string): Promise<ImmichFileResponse> {
+    await this.requireAccess({ auth, permission: Permission.FaceRead, ids: [id] });
+
+    const face = await this.personRepository.getFaceSourceImage(id);
+    const path = face?.faceFramePath || (face?.type === AssetType.Video ? face.previewPath : face?.originalPath);
+    if (!path) {
+      throw new NotFoundException();
+    }
+
+    return new ImmichFileResponse({
+      path,
+      contentType: mimeTypes.lookup(path),
+      cacheControl: CacheControl.PrivateWithCache,
+    });
   }
 
   async createNewFeaturePhoto(changeFeaturePhoto: string[]) {
@@ -274,13 +306,15 @@ export class PersonService extends BaseService {
     }
 
     if (force) {
-      await this.personRepository.deleteFaces({ sourceType: SourceType.MachineLearning });
+      const framePaths = (await this.personRepository.deleteMachineLearningFacesAndFrames()) ?? [];
+      await this.deleteFaceFrameFiles(framePaths);
       await this.handlePersonCleanup();
       await this.personRepository.vacuum({ reindexVectors: true });
     }
 
     let jobs: JobItem[] = [];
-    const assets = this.assetJobRepository.streamForDetectFacesJob(force);
+    const includeVideosWithoutPreviews = machineLearning.facialRecognition.video.enabled;
+    const assets = this.assetJobRepository.streamForDetectFacesJob(force, includeVideosWithoutPreviews);
     for await (const asset of assets) {
       jobs.push({ name: JobName.AssetDetectFaces, data: { id: asset.id } });
 
@@ -307,20 +341,30 @@ export class PersonService extends BaseService {
     }
 
     const asset = await this.assetJobRepository.getForDetectFacesJob(id);
-    const previewFile = asset?.files[0];
-    if (!asset || asset.files.length !== 1 || !previewFile) {
+    if (!asset) {
       return JobStatus.Failed;
     }
 
-    if (asset.visibility === AssetVisibility.Hidden) {
+    if (asset.visibility === AssetVisibility.Hidden || asset.isOffline) {
       return JobStatus.Skipped;
     }
 
-    const { imageHeight, imageWidth, faces } = await this.machineLearningRepository.detectFaces(
-      previewFile.path,
-      machineLearning.facialRecognition,
-    );
-    this.logger.debug(`${faces.length} faces detected in ${previewFile.path}`);
+    const isVideoIndexingEnabled = asset.type === AssetType.Video && machineLearning.facialRecognition.video.enabled;
+    let sources: FaceDetectionSource[];
+    if (isVideoIndexingEnabled) {
+      sources = await this.getVideoFaceDetectionSources(asset, machineLearning.facialRecognition.video);
+    } else {
+      const previewFile = asset.files[0];
+      if (asset.files.length !== 1 || !previewFile) {
+        return JobStatus.Failed;
+      }
+
+      sources = [{ path: previewFile.path, frame: null }];
+    }
+
+    if (sources.length === 0) {
+      return JobStatus.Skipped;
+    }
 
     const facesToAdd: (Insertable<AssetFaceTable> & { id: string })[] = [];
     const embeddings: FaceSearchTable[] = [];
@@ -332,24 +376,40 @@ export class PersonService extends BaseService {
       }
     }
 
-    const heightScale = imageHeight / (asset.faces[0]?.imageHeight || 1);
-    const widthScale = imageWidth / (asset.faces[0]?.imageWidth || 1);
-    for (const { boundingBox, embedding } of faces) {
-      const scaledBox = {
-        x1: boundingBox.x1 * widthScale,
-        y1: boundingBox.y1 * heightScale,
-        x2: boundingBox.x2 * widthScale,
-        y2: boundingBox.y2 * heightScale,
-      };
-      const match = asset.faces.find((face) => this.iou(face, scaledBox) > 0.5);
+    for (const source of sources) {
+      const { imageHeight, imageWidth, faces } = await this.machineLearningRepository.detectFaces(
+        source.path,
+        machineLearning.facialRecognition,
+      );
+      this.logger.debug(`${faces.length} faces detected in ${source.path}`);
 
-      if (match && !mlFaceIds.delete(match.id)) {
-        embeddings.push({ faceId: match.id, embedding });
-      } else if (!match) {
+      const existingFaces = asset.faces.filter((face) =>
+        source.frame ? face.frameId === source.frame.id : face.frameId === null,
+      );
+      const heightScale = imageHeight / (existingFaces[0]?.imageHeight || 1);
+      const widthScale = imageWidth / (existingFaces[0]?.imageWidth || 1);
+
+      for (const { boundingBox, embedding } of faces) {
+        const scaledBox = {
+          x1: boundingBox.x1 * widthScale,
+          y1: boundingBox.y1 * heightScale,
+          x2: boundingBox.x2 * widthScale,
+          y2: boundingBox.y2 * heightScale,
+        };
+        const match = existingFaces.find((face) => this.iou(face, scaledBox) > 0.5);
+
+        if (match) {
+          if (!mlFaceIds.delete(match.id)) {
+            embeddings.push({ faceId: match.id, embedding });
+          }
+          continue;
+        }
+
         const faceId = this.cryptoRepository.randomUUID();
         facesToAdd.push({
           id: faceId,
           assetId: asset.id,
+          frameId: source.frame?.id ?? null,
           imageHeight,
           imageWidth,
           boundingBoxX1: boundingBox.x1,
@@ -360,6 +420,7 @@ export class PersonService extends BaseService {
         embeddings.push({ faceId, embedding });
       }
     }
+
     const faceIdsToRemove = [...mlFaceIds];
 
     if (facesToAdd.length > 0 || faceIdsToRemove.length > 0 || embeddings.length > 0) {
@@ -381,6 +442,73 @@ export class PersonService extends BaseService {
     await this.assetRepository.upsertJobStatus({ assetId: asset.id, facesRecognizedAt: new Date() });
 
     return JobStatus.Success;
+  }
+
+  private async getVideoFaceDetectionSources(
+    asset: FaceDetectionAsset,
+    video: VideoFaceDetectionConfig,
+  ): Promise<FaceDetectionSource[]> {
+    const { format, videoStreams } = await this.mediaRepository.probe(asset.originalPath);
+    if (videoStreams.length === 0 || !format.duration) {
+      this.logger.warn(`Skipping video face detection for asset ${asset.id}: missing video stream or duration`);
+      return [];
+    }
+
+    const timestamps = selectVideoFaceFrameTimestamps(format.duration, video);
+    if (timestamps.length === 0) {
+      return [];
+    }
+
+    const configHash = getVideoFaceFrameConfigHash(video);
+    const framesToUpsert: Insertable<AssetFaceFrameTable>[] = [];
+    const createdPaths: string[] = [];
+
+    try {
+      for (const [frameIndex, timestampSeconds] of timestamps.entries()) {
+        const path = StorageCore.getFaceDetectionFramePath(asset, configHash, frameIndex);
+        this.storageCore.ensureFolders(path);
+
+        let dimensions: { width: number; height: number };
+        if (await this.storageRepository.checkFileExists(path)) {
+          dimensions = await this.mediaRepository.getImageMetadata(path);
+        } else {
+          dimensions = await this.mediaRepository.extractVideoFrame(asset.originalPath, path, {
+            timestampSeconds,
+            maxSize: video.downscaleLongEdge,
+          });
+          createdPaths.push(path);
+        }
+
+        framesToUpsert.push({
+          assetId: asset.id,
+          frameIndex,
+          timestampMs: Math.round(timestampSeconds * 1000),
+          path,
+          width: dimensions.width,
+          height: dimensions.height,
+          configHash,
+        });
+      }
+    } catch (error) {
+      await this.deleteFaceFrameFiles(createdPaths);
+      throw error;
+    }
+
+    const frames = await this.personRepository.upsertFaceFrames(framesToUpsert);
+    this.logger.debug(`Prepared ${frames.length} video face detection frames for asset ${asset.id}`);
+
+    return frames
+      .toSorted((a, b) => a.frameIndex - b.frameIndex)
+      .map((frame) => ({
+        path: frame.path,
+        frame,
+      }));
+  }
+
+  private async deleteFaceFrameFiles(paths: string[]) {
+    for (const path of paths) {
+      await this.storageRepository.unlink(path);
+    }
   }
 
   private iou(

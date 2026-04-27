@@ -1,6 +1,6 @@
 import { AssetTypeEnum, type AssetFaceResponseDto } from '@immich/sdk';
 import type { Faces } from '$lib/stores/people.store';
-import { getAssetMediaUrl } from '$lib/utils';
+import { getFaceSourceImageUrl } from '$lib/utils';
 import { mapNormalizedRectToContent, type Rect, type Size } from '$lib/utils/container-utils';
 
 export type BoundingBox = Rect & { id: string };
@@ -23,7 +23,7 @@ export const getBoundingBox = (faces: Faces[], imageSize: Size): BoundingBox[] =
 
 export const zoomImageToBase64 = async (
   face: AssetFaceResponseDto,
-  assetId: string,
+  _assetId: string,
   assetType: AssetTypeEnum,
   photoViewer: HTMLImageElement | undefined,
 ): Promise<string | null> => {
@@ -31,9 +31,8 @@ export const zoomImageToBase64 = async (
   if (assetType === AssetTypeEnum.Image) {
     image = photoViewer;
   } else if (assetType === AssetTypeEnum.Video) {
-    const data = getAssetMediaUrl({ id: assetId });
     const img: HTMLImageElement = new Image();
-    img.src = data;
+    img.src = getFaceSourceImageUrl(face.id);
 
     await new Promise<void>((resolve) => {
       img.addEventListener('load', () => resolve());

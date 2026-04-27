@@ -168,6 +168,7 @@ select
   "asset"."type",
   "asset"."originalPath",
   "asset_exif"."orientation" as "exifOrientation",
+  "asset_face_frame"."path" as "faceFramePath",
   (
     select
       "asset_file"."path"
@@ -183,6 +184,7 @@ from
   inner join "asset_face" on "asset_face"."id" = "person"."faceAssetId"
   inner join "asset" on "asset_face"."assetId" = "asset"."id"
   left join "asset_exif" on "asset_exif"."assetId" = "asset"."id"
+  left join "asset_face_frame" on "asset_face"."frameId" = "asset_face_frame"."id"
 where
   "person"."id" = $1
   and "asset_face"."deletedAt" is null

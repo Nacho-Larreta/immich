@@ -104,6 +104,12 @@ const updatedConfig = Object.freeze<SystemConfig>({
       minScore: 0.7,
       maxDistance: 0.5,
       minFaces: 3,
+      video: {
+        enabled: false,
+        intervalSeconds: 5,
+        maxFramesPerVideo: 30,
+        downscaleLongEdge: 1440,
+      },
     },
     ocr: {
       enabled: true,

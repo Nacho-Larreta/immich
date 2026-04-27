@@ -43,6 +43,11 @@ export type ExtractResult = {
   format: RawExtractedFormat;
 };
 
+export type ExtractVideoFrameOptions = {
+  timestampSeconds: number;
+  maxSize: number;
+};
+
 @Injectable()
 export class MediaRepository {
   constructor(private logger: LoggingRepository) {
@@ -310,6 +315,27 @@ export class MediaRepository {
         })
         .run();
     });
+  }
+
+  async extractVideoFrame(input: string, output: string, { timestampSeconds, maxSize }: ExtractVideoFrameOptions) {
+    const scaleFilter = `scale='if(gt(iw,ih),min(${maxSize},iw),-2)':'if(gt(iw,ih),-2,min(${maxSize},ih))':flags=lanczos`;
+
+    await new Promise<void>((resolve, reject) => {
+      ffmpeg(input, { niceness: 10 })
+        .seekInput(timestampSeconds)
+        .outputOptions(['-frames:v', '1', '-map', '0:v:0', '-q:v', '2', '-vf', scaleFilter])
+        .output(output)
+        .on('start', (command: string) => this.logger.debug(command))
+        .on('error', (error, _, stderr) => {
+          this.logger.error(stderr || error);
+          reject(error);
+        })
+        .on('end', () => resolve())
+        .run();
+    });
+
+    const { width, height } = await this.getImageMetadata(output);
+    return { width, height };
   }
 
   async getImageMetadata(input: string | Buffer): Promise<ImageDimensions & { isTransparent: boolean }> {

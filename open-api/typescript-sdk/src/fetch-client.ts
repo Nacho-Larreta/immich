@@ -2428,6 +2428,16 @@ export type DuplicateDetectionConfig = {
     /** Maximum distance threshold for duplicate detection */
     maxDistance: number;
 };
+export type FacialRecognitionVideoConfig = {
+    /** Maximum long edge of sampled video frames used for face detection */
+    downscaleLongEdge: number;
+    /** Whether the task is enabled */
+    enabled: boolean;
+    /** Seconds between sampled video frames for face detection */
+    intervalSeconds: number;
+    /** Maximum number of video frames to sample for face detection */
+    maxFramesPerVideo: number;
+};
 export type FacialRecognitionConfig = {
     /** Whether the task is enabled */
     enabled: boolean;
@@ -2439,6 +2449,7 @@ export type FacialRecognitionConfig = {
     minScore: number;
     /** Name of the model to use */
     modelName: string;
+    video: FacialRecognitionVideoConfig;
 };
 export type OcrConfig = {
     /** Whether the task is enabled */
@@ -4507,6 +4518,19 @@ export function reassignFacesById({ id, faceDto }: {
         method: "PUT",
         body: faceDto
     })));
+}
+/**
+ * Get face source image
+ */
+export function getFaceSourceImage({ id }: {
+    id: string;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchBlob<{
+        status: 200;
+        data: Blob;
+    }>(`/faces/${encodeURIComponent(id)}/source-image`, {
+        ...opts
+    }));
 }
 /**
  * Retrieve queue counts and status

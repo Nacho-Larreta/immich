@@ -348,6 +348,7 @@ export class AssetService extends BaseService {
     }
 
     const assetFiles = getAssetFiles(asset.files ?? []);
+    const faceFramePaths = await this.personRepository.getFaceFramePaths(asset.id);
     const files = [
       assetFiles.thumbnailFile?.path,
       assetFiles.previewFile?.path,
@@ -356,6 +357,7 @@ export class AssetService extends BaseService {
       assetFiles.editedPreviewFile?.path,
       assetFiles.editedThumbnailFile?.path,
       assetFiles.encodedVideoFile?.path,
+      ...faceFramePaths,
     ];
 
     if (deleteOnDisk && !asset.isOffline) {

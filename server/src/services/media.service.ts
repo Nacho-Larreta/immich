@@ -418,14 +418,16 @@ export class MediaService extends BaseService {
       return JobStatus.Failed;
     }
 
-    const { ownerId, x1, y1, x2, y2, oldWidth, oldHeight, exifOrientation, previewPath, originalPath } = data;
+    const { ownerId, x1, y1, x2, y2, oldWidth, oldHeight, exifOrientation, previewPath, originalPath, faceFramePath } =
+      data;
     let inputImage: string | Buffer;
     if (data.type === AssetType.Video) {
-      if (!previewPath) {
-        this.logger.error(`Could not generate person thumbnail for video ${id}: missing preview path`);
+      const videoInputImage = faceFramePath || previewPath;
+      if (!videoInputImage) {
+        this.logger.error(`Could not generate person thumbnail for video ${id}: missing preview/frame path`);
         return JobStatus.Failed;
       }
-      inputImage = previewPath;
+      inputImage = videoInputImage;
     } else if (image.extractEmbedded && mimeTypes.isRaw(originalPath)) {
       const extracted = await this.extractImage(originalPath, image.preview.size);
       inputImage = extracted ? extracted.buffer : originalPath;

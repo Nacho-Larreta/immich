@@ -120,6 +120,14 @@ export class StorageCore {
     );
   }
 
+  static getFaceDetectionFramePath(asset: ThumbnailPathEntity, configHash: string, frameIndex: number) {
+    return StorageCore.getNestedPath(
+      StorageFolder.Thumbnails,
+      asset.ownerId,
+      `${asset.id}_face_frame_${configHash}_${frameIndex}.jpeg`,
+    );
+  }
+
   static getEncodedVideoPath(asset: ThumbnailPathEntity) {
     return StorageCore.getNestedPath(StorageFolder.EncodedVideo, asset.ownerId, `${asset.id}.mp4`);
   }

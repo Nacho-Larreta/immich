@@ -249,6 +249,8 @@ export const getProfileImageUrl = (user: UserResponseDto) =>
 export const getPeopleThumbnailUrl = (person: PersonResponseDto, updatedAt?: string) =>
   createUrl(getPeopleThumbnailPath(person.id), { updatedAt: updatedAt ?? person.updatedAt });
 
+export const getFaceSourceImageUrl = (faceId: string) => createUrl(`/faces/${faceId}/source-image`, authManager.params);
+
 export const copyToClipboard = async (secret: string) => {
   const $t = get(t);
 

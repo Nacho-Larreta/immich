@@ -1,5 +1,19 @@
-import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, Post, Put, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Next,
+  Param,
+  Post,
+  Put,
+  Query,
+  Res,
+} from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
+import { NextFunction, Response } from 'express';
 import { Endpoint, HistoryBuilder } from 'src/decorators';
 import { AuthDto } from 'src/dtos/auth.dto';
 import {
@@ -10,14 +24,21 @@ import {
   PersonResponseDto,
 } from 'src/dtos/person.dto';
 import { ApiTag, Permission } from 'src/enum';
-import { Auth, Authenticated } from 'src/middleware/auth.guard';
+import { Auth, Authenticated, FileResponse } from 'src/middleware/auth.guard';
+import { LoggingRepository } from 'src/repositories/logging.repository';
 import { PersonService } from 'src/services/person.service';
+import { sendFile } from 'src/utils/file';
 import { UUIDParamDto } from 'src/validation';
 
 @ApiTags(ApiTag.Faces)
 @Controller('faces')
 export class FaceController {
-  constructor(private service: PersonService) {}
+  constructor(
+    private service: PersonService,
+    private logger: LoggingRepository,
+  ) {
+    this.logger.setContext(FaceController.name);
+  }
 
   @Post()
   @Authenticated({ permission: Permission.FaceCreate })
@@ -40,6 +61,24 @@ export class FaceController {
   })
   getFaces(@Auth() auth: AuthDto, @Query() dto: FaceDto): Promise<AssetFaceResponseDto[]> {
     return this.service.getFacesById(auth, dto);
+  }
+
+  @Get(':id/source-image')
+  @FileResponse()
+  @Authenticated({ permission: Permission.FaceRead })
+  @Endpoint({
+    summary: 'Get face source image',
+    description:
+      'Retrieve the image used as the source for a face crop. For video faces this is the sampled frame, not the video thumbnail.',
+    history: new HistoryBuilder().added('v2.8.0').beta('v2.8.0'),
+  })
+  async getFaceSourceImage(
+    @Res() res: Response,
+    @Next() next: NextFunction,
+    @Auth() auth: AuthDto,
+    @Param() { id }: UUIDParamDto,
+  ) {
+    await sendFile(res, next, () => this.service.getFaceSourceImage(auth, id), this.logger);
   }
 
   @Put(':id')

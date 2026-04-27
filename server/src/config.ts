@@ -73,6 +73,12 @@ export type SystemConfig = {
       minScore: number;
       minFaces: number;
       maxDistance: number;
+      video: {
+        enabled: boolean;
+        intervalSeconds: number;
+        maxFramesPerVideo: number;
+        downscaleLongEdge: number;
+      };
     };
     ocr: {
       enabled: boolean;
@@ -267,6 +273,12 @@ export const defaults = Object.freeze<SystemConfig>({
       minScore: 0.7,
       maxDistance: 0.5,
       minFaces: 3,
+      video: {
+        enabled: false,
+        intervalSeconds: 5,
+        maxFramesPerVideo: 30,
+        downscaleLongEdge: 1440,
+      },
     },
     ocr: {
       enabled: true,

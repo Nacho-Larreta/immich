@@ -1607,6 +1607,27 @@ describe(MediaService.name, () => {
       expect(mocks.person.update).toHaveBeenCalledWith({ id: person.id, thumbnailPath: expect.any(String) });
     });
 
+    it('should use face frame path if video face has one', async () => {
+      const person = PersonFactory.create();
+
+      mocks.person.getDataForThumbnailGenerationJob.mockResolvedValue({
+        ...personThumbnailStub.videoThumbnail,
+        faceFramePath: '/data/thumbs/user/asset_face_frame.jpeg',
+      });
+      mocks.media.generateThumbnail.mockResolvedValue();
+      const data = Buffer.from('');
+      const info = { width: 1000, height: 1000 } as OutputInfo;
+      mocks.media.decodeImage.mockResolvedValue({ data, info });
+
+      await expect(sut.handleGeneratePersonThumbnail({ id: person.id })).resolves.toBe(JobStatus.Success);
+
+      expect(mocks.media.decodeImage).toHaveBeenCalledWith('/data/thumbs/user/asset_face_frame.jpeg', {
+        colorspace: Colorspace.P3,
+        orientation: undefined,
+        processInvalidImages: false,
+      });
+    });
+
     it('should generate a thumbnail without going negative', async () => {
       const person = PersonFactory.create();
 

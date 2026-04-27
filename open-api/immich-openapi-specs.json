@@ -5473,6 +5473,64 @@
         "x-immich-state": "Stable"
       }
     },
+    "/faces/{id}/source-image": {
+      "get": {
+        "description": "Retrieve the image used as the source for a face crop. For video faces this is the sampled frame, not the video thumbnail.",
+        "operationId": "getFaceSourceImage",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Get face source image",
+        "tags": [
+          "Faces"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2.8.0",
+            "state": "Added"
+          },
+          {
+            "version": "v2.8.0",
+            "state": "Beta"
+          }
+        ],
+        "x-immich-permission": "face.read",
+        "x-immich-state": "Beta"
+      }
+    },
     "/jobs": {
       "get": {
         "deprecated": true,
@@ -17783,6 +17841,9 @@
           "modelName": {
             "description": "Name of the model to use",
             "type": "string"
+          },
+          "video": {
+            "$ref": "#/components/schemas/FacialRecognitionVideoConfig"
           }
         },
         "required": [
@@ -17790,7 +17851,41 @@
           "maxDistance",
           "minFaces",
           "minScore",
-          "modelName"
+          "modelName",
+          "video"
+        ],
+        "type": "object"
+      },
+      "FacialRecognitionVideoConfig": {
+        "properties": {
+          "downscaleLongEdge": {
+            "description": "Maximum long edge of sampled video frames used for face detection",
+            "maximum": 4096,
+            "minimum": 320,
+            "type": "integer"
+          },
+          "enabled": {
+            "description": "Whether the task is enabled",
+            "type": "boolean"
+          },
+          "intervalSeconds": {
+            "description": "Seconds between sampled video frames for face detection",
+            "maximum": 3600,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "maxFramesPerVideo": {
+            "description": "Maximum number of video frames to sample for face detection",
+            "maximum": 1000,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "downscaleLongEdge",
+          "enabled",
+          "intervalSeconds",
+          "maxFramesPerVideo"
         ],
         "type": "object"
       },

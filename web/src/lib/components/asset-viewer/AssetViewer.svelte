@@ -425,10 +425,10 @@
 
   const { Tag, TagPeople } = $derived(getAssetActions($t, asset));
   const showDetailPanel = $derived(
-    asset.hasMetadata &&
-      $slideshowState === SlideshowState.None &&
+    $slideshowState === SlideshowState.None &&
       assetViewerManager.isShowDetailPanel &&
-      !assetViewerManager.isShowEditor,
+      !assetViewerManager.isShowEditor &&
+      (asset.hasMetadata || assetViewerManager.isEditFacesPanelOpen),
   );
 
   const onSwipe = (event: SwipeCustomEvent) => {

@@ -6,6 +6,7 @@ import { AssetFace } from 'src/database';
 import { Chunked, ChunkedArray, DummyValue, GenerateSql } from 'src/decorators';
 import { AssetFileType, AssetVisibility, SourceType } from 'src/enum';
 import { DB } from 'src/schema';
+import { AssetFaceFrameTable } from 'src/schema/tables/asset-face-frame.table';
 import { AssetFaceTable } from 'src/schema/tables/asset-face.table';
 import { FaceSearchTable } from 'src/schema/tables/face-search.table';
 import { PersonTable } from 'src/schema/tables/person.table';
@@ -111,6 +112,44 @@ export class PersonRepository {
 
   async deleteFaces({ sourceType }: DeleteFacesOptions): Promise<void> {
     await this.db.deleteFrom('asset_face').where('asset_face.sourceType', '=', sourceType).execute();
+  }
+
+  async deleteMachineLearningFacesAndFrames(): Promise<string[]> {
+    return this.db.transaction().execute(async (trx) => {
+      await trx.deleteFrom('asset_face').where('asset_face.sourceType', '=', SourceType.MachineLearning).execute();
+      const frames = await trx.deleteFrom('asset_face_frame').returning('path').execute();
+      return frames.map(({ path }) => path);
+    });
+  }
+
+  async getFaceFramePaths(assetId: string): Promise<string[]> {
+    const frames = await this.db
+      .selectFrom('asset_face_frame')
+      .select('path')
+      .where('asset_face_frame.assetId', '=', assetId)
+      .execute();
+
+    return frames.map(({ path }) => path);
+  }
+
+  async upsertFaceFrames(frames: Insertable<AssetFaceFrameTable>[]) {
+    if (frames.length === 0) {
+      return [];
+    }
+
+    return this.db
+      .insertInto('asset_face_frame')
+      .values(frames)
+      .onConflict((oc) =>
+        oc.columns(['assetId', 'configHash', 'frameIndex']).doUpdateSet((eb) => ({
+          timestampMs: eb.ref('excluded.timestampMs'),
+          path: eb.ref('excluded.path'),
+          width: eb.ref('excluded.width'),
+          height: eb.ref('excluded.height'),
+        })),
+      )
+      .returningAll()
+      .execute();
   }
 
   getAllFaces(options: GetAllFacesOptions = {}) {
@@ -245,6 +284,20 @@ export class PersonRepository {
   }
 
   @GenerateSql({ params: [DummyValue.UUID] })
+  getFaceSourceImage(id: string) {
+    return this.db
+      .selectFrom('asset_face')
+      .innerJoin('asset', 'asset_face.assetId', 'asset.id')
+      .leftJoin('asset_face_frame', 'asset_face.frameId', 'asset_face_frame.id')
+      .select(['asset_face.id', 'asset.type', 'asset.originalPath', 'asset_face_frame.path as faceFramePath'])
+      .select((eb) => withFilePath(eb, AssetFileType.Preview).as('previewPath'))
+      .where('asset_face.id', '=', id)
+      .where('asset_face.deletedAt', 'is', null)
+      .where('asset.deletedAt', 'is', null)
+      .executeTakeFirst();
+  }
+
+  @GenerateSql({ params: [DummyValue.UUID] })
   getFaceForFacialRecognitionJob(id: string) {
     return this.db
       .selectFrom('asset_face')
@@ -270,6 +323,7 @@ export class PersonRepository {
       .innerJoin('asset_face', 'asset_face.id', 'person.faceAssetId')
       .innerJoin('asset', 'asset_face.assetId', 'asset.id')
       .leftJoin('asset_exif', 'asset_exif.assetId', 'asset.id')
+      .leftJoin('asset_face_frame', 'asset_face.frameId', 'asset_face_frame.id')
       .select([
         'person.ownerId',
         'asset_face.boundingBoxX1 as x1',
@@ -281,6 +335,7 @@ export class PersonRepository {
         'asset.type',
         'asset.originalPath',
         'asset_exif.orientation as exifOrientation',
+        'asset_face_frame.path as faceFramePath',
       ])
       .select((eb) => withFilePath(eb, AssetFileType.Preview).as('previewPath'))
       .where('person.id', '=', id)

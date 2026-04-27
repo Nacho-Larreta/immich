@@ -58,6 +58,7 @@ const createFace = (params: Partial<AssetFace> = {}): AssetFace => ({
   id: 'face-id',
   deletedAt: null,
   assetId: 'asset-id',
+  frameId: null,
   boundingBoxX1: 100,
   boundingBoxX2: 200,
   boundingBoxY1: 100,

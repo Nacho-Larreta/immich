@@ -43,6 +43,7 @@
     mdiArrowRight,
     mdiCompare,
     mdiDotsVertical,
+    mdiFaceRecognition,
     mdiImageSearch,
     mdiPresentationPlay,
     mdiVideoOutline,
@@ -85,6 +86,9 @@
   const isAlbumOwner = $derived(authManager.authenticated && album?.albumUsers[0].user.id === authManager.user.id);
   const isLocked = $derived(asset.visibility === AssetVisibility.Locked);
   const smartSearchEnabled = $derived(featureFlagsManager.value.smartSearch);
+  const hasDetectedFaces = $derived(
+    (asset.people ?? []).some((person) => person.faces.length > 0) || (asset.unassignedFaces ?? []).length > 0,
+  );
 
   const { Cast } = $derived(getGlobalActions($t));
 
@@ -98,9 +102,19 @@
 
   const Actions = $derived(getAssetActions($t, asset));
   const sharedLink = getSharedLink();
+
+  const People: ActionItem = $derived({
+    title: $t('edit_people'),
+    icon: mdiFaceRecognition,
+    $if: () => !sharedLink && isOwner && !asset.isTrashed && hasDetectedFaces,
+    onAction: () => assetViewerManager.openEditFacesPanel(),
+  });
 </script>
 
-<CommandPaletteDefaultProvider name={$t('assets')} actions={withoutIcons([Close, Cast, ...Object.values(Actions)])} />
+<CommandPaletteDefaultProvider
+  name={$t('assets')}
+  actions={withoutIcons([Close, Cast, People, ...Object.values(Actions)])}
+/>
 
 <div
   class="flex h-16 place-items-center justify-between bg-linear-to-b from-black/40 px-3 transition-transform duration-200 drop-shadow-[0_0_1px_rgba(0,0,0,0.4)]"
@@ -132,6 +146,7 @@
     <ActionButton action={Actions.Copy} />
     <ActionButton action={Actions.SharedLinkDownload} />
     <ActionButton action={Actions.Info} />
+    <ActionButton action={People} />
     <ActionButton action={Actions.Favorite} />
     <ActionButton action={Actions.Unfavorite} />
 

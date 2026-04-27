@@ -34,6 +34,13 @@
     onRefresh: () => void;
   }
 
+  type FaceGroup = {
+    id: string;
+    face: AssetFaceResponseDto;
+    faces: AssetFaceResponseDto[];
+    person: PersonResponseDto | null;
+  };
+
   let { assetId, assetType, onClose, onRefresh }: Props = $props();
 
   // keep track of the changes
@@ -45,6 +52,7 @@
   let selectedPersonToReassign: Record<string, PersonResponseDto> = $state({});
   let selectedPersonToCreate: Record<string, string> = $state({});
   let editedFace: AssetFaceResponseDto | undefined = $state();
+  let editedFaceGroupId: string | undefined = $state();
 
   // loading spinners
   let isShowLoadingDone = $state(false);
@@ -58,6 +66,23 @@
   let automaticRefreshTimeout: ReturnType<typeof setTimeout>;
 
   const thumbnailWidth = '90px';
+
+  const faceGroups = $derived.by((): FaceGroup[] => {
+    const groups = new Map<string, FaceGroup>();
+
+    for (const face of peopleWithFaces) {
+      const id = face.person ? `person:${face.person.id}` : `face:${face.id}`;
+      const group = groups.get(id);
+
+      if (group) {
+        group.faces.push(face);
+      } else {
+        groups.set(id, { id, face, faces: [face], person: face.person });
+      }
+    }
+
+    return [...groups.values()];
+  });
 
   async function loadPeople() {
     const timeout = setTimeout(() => (isShowLoadingPeople = true), timeBeforeShowLoadingSpinner);
@@ -108,21 +133,25 @@
 
     if (numberOfChanges > 0) {
       try {
-        for (const personWithFace of peopleWithFaces) {
-          const personId = selectedPersonToReassign[personWithFace.id]?.id;
+        for (const faceGroup of faceGroups) {
+          const personId = selectedPersonToReassign[faceGroup.id]?.id;
 
           if (personId) {
-            await reassignFacesById({
-              id: personId,
-              faceDto: { id: personWithFace.id },
-            });
-          } else if (selectedPersonToCreate[personWithFace.id]) {
+            for (const face of faceGroup.faces) {
+              await reassignFacesById({
+                id: personId,
+                faceDto: { id: face.id },
+              });
+            }
+          } else if (selectedPersonToCreate[faceGroup.id]) {
             const data = await createPerson({ personCreateDto: {} });
             peopleToCreate.push(data.id);
-            await reassignFacesById({
-              id: data.id,
-              faceDto: { id: personWithFace.id },
-            });
+            for (const face of faceGroup.faces) {
+              await reassignFacesById({
+                id: data.id,
+                faceDto: { id: face.id },
+              });
+            }
           }
         }
 
@@ -142,42 +171,44 @@
   };
 
   const handleCreatePerson = (newFeaturePhoto: string | null) => {
-    if (newFeaturePhoto && editedFace) {
-      selectedPersonToCreate[editedFace.id] = newFeaturePhoto;
+    if (newFeaturePhoto && editedFaceGroupId) {
+      selectedPersonToCreate[editedFaceGroupId] = newFeaturePhoto;
     }
     showSelectedFaces = false;
   };
 
   const handleReassignFace = (person: PersonResponseDto | null) => {
-    if (person && editedFace) {
-      selectedPersonToReassign[editedFace.id] = person;
+    if (person && editedFaceGroupId) {
+      selectedPersonToReassign[editedFaceGroupId] = person;
     }
     showSelectedFaces = false;
   };
 
-  const handleFacePicker = (face: AssetFaceResponseDto) => {
-    editedFace = face;
+  const handleFacePicker = (faceGroup: FaceGroup) => {
+    editedFace = faceGroup.face;
+    editedFaceGroupId = faceGroup.id;
     showSelectedFaces = true;
   };
 
-  const deleteAssetFace = async (face: AssetFaceResponseDto) => {
+  const deleteAssetFaceGroup = async (faceGroup: FaceGroup) => {
     try {
-      if (!face.person) {
-        return;
-      }
-
       const isConfirmed = await modalManager.showDialog({
-        prompt: $t('confirm_delete_face', { values: { name: face.person.name } }),
+        prompt: $t('confirm_delete_face', { values: { name: faceGroup.person?.name ?? $t('face_unassigned') } }),
       });
       if (!isConfirmed) {
         return;
       }
 
-      await deleteFace({ id: face.id, assetFaceDeleteDto: { force: false } });
+      for (const face of faceGroup.faces) {
+        await deleteFace({ id: face.id, assetFaceDeleteDto: { force: false } });
+      }
 
-      eventManager.emit('PersonAssetDelete', { id: face.person.id, assetId });
+      if (faceGroup.person) {
+        eventManager.emit('PersonAssetDelete', { id: faceGroup.person.id, assetId });
+      }
 
-      peopleWithFaces = peopleWithFaces.filter((f) => f.id !== face.id);
+      const deletedFaceIds = new Set(faceGroup.faces.map((face) => face.id));
+      peopleWithFaces = peopleWithFaces.filter((face) => !deletedFaceIds.has(face.id));
 
       await assetViewerManager.setAssetId(assetId);
     } catch (error) {
@@ -237,56 +268,57 @@
           <LoadingSpinner />
         </div>
       {:else}
-        {#each peopleWithFaces as face, index (face.id)}
-          {@const personName = face.person ? face.person?.name : $t('face_unassigned')}
-          {@const isHighlighted = $boundingBoxesArray.some((b) => b.id === face.id)}
-          <div class="relative h-29 w-24">
+        {#each faceGroups as faceGroup, index (faceGroup.id)}
+          {@const face = faceGroup.face}
+          {@const personName = faceGroup.person ? faceGroup.person.name : $t('face_unassigned')}
+          {@const isHighlighted = faceGroup.faces.some((face) => $boundingBoxesArray.some((b) => b.id === face.id))}
+          <div class="relative h-29 w-24" data-testid="edit-face-card" data-face-count={faceGroup.faces.length}>
             <div
               role="button"
               tabindex={index}
               class="absolute start-0 top-0 h-22.5 w-22.5 cursor-default"
-              onfocus={() => ($boundingBoxesArray = [peopleWithFaces[index]])}
-              onmouseover={() => ($boundingBoxesArray = [peopleWithFaces[index]])}
+              onfocus={() => ($boundingBoxesArray = faceGroup.faces)}
+              onmouseover={() => ($boundingBoxesArray = faceGroup.faces)}
               onmouseleave={() => ($boundingBoxesArray = [])}
             >
               <div class="relative">
-                {#if selectedPersonToCreate[face.id]}
+                {#if selectedPersonToCreate[faceGroup.id]}
                   <ImageThumbnail
                     curve
                     shadow
                     highlighted={isHighlighted}
-                    url={selectedPersonToCreate[face.id]}
+                    url={selectedPersonToCreate[faceGroup.id]}
                     altText={$t('new_person')}
                     title={$t('new_person')}
                     widthStyle={thumbnailWidth}
                     heightStyle={thumbnailWidth}
                   />
-                {:else if selectedPersonToReassign[face.id]}
+                {:else if selectedPersonToReassign[faceGroup.id]}
                   <ImageThumbnail
                     curve
                     shadow
                     highlighted={isHighlighted}
-                    url={getPeopleThumbnailUrl(selectedPersonToReassign[face.id])}
-                    altText={selectedPersonToReassign[face.id].name}
+                    url={getPeopleThumbnailUrl(selectedPersonToReassign[faceGroup.id])}
+                    altText={selectedPersonToReassign[faceGroup.id].name}
                     title={$getPersonNameWithHiddenValue(
-                      selectedPersonToReassign[face.id].name,
-                      selectedPersonToReassign[face.id]?.isHidden,
+                      selectedPersonToReassign[faceGroup.id].name,
+                      selectedPersonToReassign[faceGroup.id]?.isHidden,
                     )}
                     widthStyle={thumbnailWidth}
                     heightStyle={thumbnailWidth}
-                    hidden={selectedPersonToReassign[face.id].isHidden}
+                    hidden={selectedPersonToReassign[faceGroup.id].isHidden}
                   />
-                {:else if face.person}
+                {:else if faceGroup.person}
                   <ImageThumbnail
                     curve
                     shadow
                     highlighted={isHighlighted}
-                    url={getPeopleThumbnailUrl(face.person)}
-                    altText={face.person.name}
-                    title={$getPersonNameWithHiddenValue(face.person.name, face.person.isHidden)}
+                    url={getPeopleThumbnailUrl(faceGroup.person)}
+                    altText={faceGroup.person.name}
+                    title={$getPersonNameWithHiddenValue(faceGroup.person.name, faceGroup.person.isHidden)}
                     widthStyle={thumbnailWidth}
                     heightStyle={thumbnailWidth}
-                    hidden={face.person.isHidden}
+                    hidden={faceGroup.person.isHidden}
                   />
                 {:else}
                   {#await zoomImageToBase64(face, assetId, assetType, assetViewerManager.imgRef)}
@@ -313,12 +345,19 @@
                     />
                   {/await}
                 {/if}
+                {#if faceGroup.faces.length > 1}
+                  <span
+                    class="absolute bottom-1 end-1 rounded-full bg-black/70 px-1.5 py-0.5 text-xs font-semibold text-white"
+                  >
+                    {faceGroup.faces.length}
+                  </span>
+                {/if}
               </div>
 
-              {#if !selectedPersonToCreate[face.id]}
+              {#if !selectedPersonToCreate[faceGroup.id]}
                 <p class="relative mt-1 truncate font-medium" title={personName}>
-                  {#if selectedPersonToReassign[face.id]?.id}
-                    {selectedPersonToReassign[face.id]?.name}
+                  {#if selectedPersonToReassign[faceGroup.id]?.id}
+                    {selectedPersonToReassign[faceGroup.id]?.name}
                   {:else}
                     <span class={personName === $t('face_unassigned') ? 'dark:text-gray-500' : ''}>{personName}</span>
                   {/if}
@@ -326,7 +365,7 @@
               {/if}
 
               <div class="absolute -end-[3px] -top-[3px] h-5 w-5 rounded-full">
-                {#if selectedPersonToCreate[face.id] || selectedPersonToReassign[face.id]}
+                {#if selectedPersonToCreate[faceGroup.id] || selectedPersonToReassign[faceGroup.id]}
                   <IconButton
                     shape="round"
                     variant="ghost"
@@ -335,7 +374,7 @@
                     aria-label={$t('reset')}
                     size="small"
                     class="absolute start-1/2 top-1/2 translate-x-[-50%] translate-y-[-50%] transform"
-                    onclick={() => handleReset(face.id)}
+                    onclick={() => handleReset(faceGroup.id)}
                   />
                 {:else}
                   <IconButton
@@ -345,12 +384,12 @@
                     aria-label={$t('select_new_face')}
                     size="small"
                     class="absolute start-1/2 top-1/2 translate-x-[-50%] translate-y-[-50%] transform"
-                    onclick={() => handleFacePicker(face)}
+                    onclick={() => handleFacePicker(faceGroup)}
                   />
                 {/if}
               </div>
               <div class="absolute end-8 -top-[3px] h-5 w-5 rounded-full">
-                {#if !selectedPersonToCreate[face.id] && !selectedPersonToReassign[face.id] && !face.person}
+                {#if !selectedPersonToCreate[faceGroup.id] && !selectedPersonToReassign[faceGroup.id] && !faceGroup.person}
                   <div
                     class="flex place-content-center place-items-center rounded-full bg-[#d3d3d3] p-1 transition-all absolute start-1/2 top-1/2 translate-x-[-50%] translate-y-[-50%] transform"
                   >
@@ -358,19 +397,17 @@
                   </div>
                 {/if}
               </div>
-              {#if face.person != null}
-                <div class="absolute -end-[3px] top-8 h-5 w-5 rounded-full">
-                  <IconButton
-                    shape="round"
-                    color="danger"
-                    icon={mdiTrashCan}
-                    aria-label={$t('delete_face')}
-                    size="small"
-                    class="absolute start-1/2 top-1/2 translate-x-[-50%] translate-y-[-50%] transform"
-                    onclick={() => deleteAssetFace(face)}
-                  />
-                </div>
-              {/if}
+              <div class="absolute -start-[3px] top-[68px] h-5 w-5 rounded-full">
+                <IconButton
+                  shape="round"
+                  color="danger"
+                  icon={mdiTrashCan}
+                  aria-label={$t('delete_face')}
+                  size="small"
+                  class="absolute start-1/2 top-1/2 translate-x-[-50%] translate-y-[-50%] transform"
+                  onclick={() => deleteAssetFaceGroup(faceGroup)}
+                />
+              </div>
             </div>
           </div>
         {/each}

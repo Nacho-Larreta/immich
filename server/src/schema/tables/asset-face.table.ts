@@ -14,6 +14,7 @@ import { UpdatedAtTrigger, UpdateIdColumn } from 'src/decorators';
 import { SourceType } from 'src/enum';
 import { asset_face_source_type } from 'src/schema/enums';
 import { asset_face_audit } from 'src/schema/functions';
+import { AssetFaceFrameTable } from 'src/schema/tables/asset-face-frame.table';
 import { AssetTable } from 'src/schema/tables/asset.table';
 import { PersonTable } from 'src/schema/tables/person.table';
 
@@ -53,6 +54,13 @@ export class AssetFaceTable {
     index: false,
   })
   personId!: string | null;
+
+  @ForeignKeyColumn(() => AssetFaceFrameTable, {
+    onDelete: 'SET NULL',
+    onUpdate: 'CASCADE',
+    nullable: true,
+  })
+  frameId!: string | null;
 
   @Column({ default: 0, type: 'integer' })
   imageWidth!: Generated<number>;

@@ -169,20 +169,23 @@ export class AssetJobRepository {
       .execute();
   }
 
-  private assetsWithPreviews() {
+  private assetsWithPreviews(includeVideosWithoutPreviews = false) {
     return this.db
       .selectFrom('asset')
       .where('asset.visibility', '!=', AssetVisibility.Hidden)
+      .where('asset.isOffline', '=', false)
       .where('asset.deletedAt', 'is', null)
       .innerJoin('asset_job_status as job_status', 'assetId', 'asset.id')
-      .where((eb) =>
-        eb.exists((qb) =>
+      .where((eb) => {
+        const hasPreview = eb.exists((qb) =>
           qb
             .selectFrom('asset_file')
             .whereRef('assetId', '=', 'asset.id')
             .where('asset_file.type', '=', AssetFileType.Preview),
-        ),
-      );
+        );
+
+        return includeVideosWithoutPreviews ? eb.or([hasPreview, eb('asset.type', '=', AssetType.Video)]) : hasPreview;
+      });
   }
 
   @GenerateSql({ params: [], stream: true })
@@ -225,7 +228,7 @@ export class AssetJobRepository {
   getForDetectFacesJob(id: string) {
     return this.db
       .selectFrom('asset')
-      .select(['asset.id', 'asset.visibility'])
+      .select(['asset.id', 'asset.ownerId', 'asset.originalPath', 'asset.type', 'asset.visibility', 'asset.isOffline'])
       .$call(withExifInner)
       .select((eb) => withFaces(eb, true, true))
       .select((eb) => withFiles(eb, AssetFileType.Preview))
@@ -424,9 +427,9 @@ export class AssetJobRepository {
       .stream();
   }
 
-  @GenerateSql({ params: [], stream: true })
-  streamForDetectFacesJob(force?: boolean) {
-    return this.assetsWithPreviews()
+  @GenerateSql({ params: [false, false], stream: true })
+  streamForDetectFacesJob(force?: boolean, includeVideosWithoutPreviews = false) {
+    return this.assetsWithPreviews(includeVideosWithoutPreviews)
       .$if(force === false, (qb) => qb.where('job_status.facesRecognizedAt', 'is', null))
       .select(['asset.id'])
       .orderBy('asset.fileCreatedAt', 'desc')

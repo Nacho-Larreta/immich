@@ -17,6 +17,7 @@ import {
 } from 'src/enum';
 import { AlbumTable } from 'src/schema/tables/album.table';
 import { AssetExifTable } from 'src/schema/tables/asset-exif.table';
+import { AssetFaceFrameTable } from 'src/schema/tables/asset-face-frame.table';
 import { AssetTable } from 'src/schema/tables/asset.table';
 import { PluginActionTable, PluginFilterTable } from 'src/schema/tables/plugin.table';
 import { WorkflowActionTable, WorkflowFilterTable, WorkflowTable } from 'src/schema/tables/workflow.table';
@@ -262,6 +263,7 @@ export type AssetFace = {
   id: string;
   deletedAt: Date | null;
   assetId: string;
+  frameId: string | null;
   boundingBoxX1: number;
   boundingBoxX2: number;
   boundingBoxY1: number;
@@ -275,6 +277,8 @@ export type AssetFace = {
   updateId: string;
   isVisible: boolean;
 };
+
+export type AssetFaceFrame = Selectable<AssetFaceFrameTable>;
 
 export type PluginFilter = Selectable<PluginFilterTable> & {
   methodName: string;

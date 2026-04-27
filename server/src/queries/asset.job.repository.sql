@@ -342,6 +342,7 @@ from
   inner join "asset_job_status" as "job_status" on "assetId" = "asset"."id"
 where
   "asset"."visibility" != $1
+  and "asset"."isOffline" = $2
   and "asset"."deletedAt" is null
   and exists (
     select
@@ -349,7 +350,7 @@ where
       "asset_file"
     where
       "assetId" = "asset"."id"
-      and "asset_file"."type" = $2
+      and "asset_file"."type" = $3
   )
   and not exists (
     select
@@ -388,7 +389,11 @@ where
 -- AssetJobRepository.getForDetectFacesJob
 select
   "asset"."id",
+  "asset"."ownerId",
+  "asset"."originalPath",
+  "asset"."type",
   "asset"."visibility",
+  "asset"."isOffline",
   to_json("asset_exif") as "exifInfo",
   (
     select
@@ -690,6 +695,7 @@ from
   inner join "asset_job_status" as "job_status" on "assetId" = "asset"."id"
 where
   "asset"."visibility" != $1
+  and "asset"."isOffline" = $2
   and "asset"."deletedAt" is null
   and exists (
     select
@@ -697,7 +703,7 @@ where
       "asset_file"
     where
       "assetId" = "asset"."id"
-      and "asset_file"."type" = $2
+      and "asset_file"."type" = $3
   )
 order by
   "asset"."fileCreatedAt" desc
