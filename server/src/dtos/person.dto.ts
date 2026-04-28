@@ -200,6 +200,31 @@ const PersonFaceSuggestionSearchSchema = z
 
 export class PersonFaceSuggestionSearchDto extends createZodDto(PersonFaceSuggestionSearchSchema) {}
 
+const PersonFaceSuggestionSummarySearchSchema = z
+  .object({
+    size: z.coerce
+      .number()
+      .min(1)
+      .max(20)
+      .default(10)
+      .describe('Number of people with suggestions to return'),
+    peopleLimit: z.coerce
+      .number()
+      .min(1)
+      .max(1000)
+      .default(100)
+      .describe('Maximum number of people to scan for suggestions'),
+    maxDistance: z.coerce
+      .number()
+      .min(0)
+      .max(2)
+      .optional()
+      .describe('Override face embedding max distance for suggestions'),
+  })
+  .meta({ id: 'PersonFaceSuggestionSummarySearchDto' });
+
+export class PersonFaceSuggestionSummarySearchDto extends createZodDto(PersonFaceSuggestionSummarySearchSchema) {}
+
 const PersonFaceSuggestionResponseSchema = AssetFaceWithoutPersonResponseSchema.extend({
   distance: z.number().describe('Embedding distance from the closest reference face'),
 }).meta({ id: 'PersonFaceSuggestionResponseDto' });
@@ -214,6 +239,24 @@ const PersonFaceSuggestionPageResponseSchema = z
   .meta({ id: 'PersonFaceSuggestionPageResponseDto' });
 
 export class PersonFaceSuggestionPageResponseDto extends createZodDto(PersonFaceSuggestionPageResponseSchema) {}
+
+const PersonFaceSuggestionSummaryItemResponseSchema = z
+  .object({
+    person: PersonResponseSchema,
+    suggestion: PersonFaceSuggestionResponseSchema,
+  })
+  .meta({ id: 'PersonFaceSuggestionSummaryItemResponseDto' });
+
+const PersonFaceSuggestionSummaryResponseSchema = z
+  .object({
+    people: z.array(PersonFaceSuggestionSummaryItemResponseSchema).describe('People with at least one pending suggestion'),
+    pendingPeople: z.int().min(0).describe('Number of scanned people with pending suggestions'),
+    scannedPeople: z.int().min(0).describe('Number of people scanned'),
+    hasMorePeople: z.boolean().describe('Whether there are more people beyond the scan limit'),
+  })
+  .meta({ id: 'PersonFaceSuggestionSummaryResponseDto' });
+
+export class PersonFaceSuggestionSummaryResponseDto extends createZodDto(PersonFaceSuggestionSummaryResponseSchema) {}
 
 const PersonFaceSuggestionFeedbackParamSchema = z
   .object({

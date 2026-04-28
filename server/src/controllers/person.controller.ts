@@ -34,6 +34,8 @@ import {
   PersonFaceSuggestionFeedbackResponseDto,
   PersonFaceSuggestionPageResponseDto,
   PersonFaceSuggestionSearchDto,
+  PersonFaceSuggestionSummaryResponseDto,
+  PersonFaceSuggestionSummarySearchDto,
   PersonResponseDto,
   PersonSearchDto,
   PersonStatisticsResponseDto,
@@ -99,6 +101,20 @@ export class PersonController {
   })
   deletePeople(@Auth() auth: AuthDto, @Body() dto: BulkIdsDto): Promise<void> {
     return this.service.deleteAll(auth, dto);
+  }
+
+  @Get('face-suggestions/summary')
+  @Authenticated({ permission: Permission.PersonRead })
+  @Endpoint({
+    summary: 'Get face suggestion summary',
+    description: 'Retrieve people with pending manual face suggestions.',
+    history: new HistoryBuilder().added('v2.8.0').beta('v2.8.0'),
+  })
+  getFaceSuggestionSummary(
+    @Auth() auth: AuthDto,
+    @Query() dto: PersonFaceSuggestionSummarySearchDto,
+  ): Promise<PersonFaceSuggestionSummaryResponseDto> {
+    return this.service.getFaceSuggestionSummary(auth, dto);
   }
 
   @Get(':id/assignment-history')

@@ -73,6 +73,7 @@ export type SystemConfig = {
       minScore: number;
       minFaces: number;
       maxDistance: number;
+      suggestionMaxDistance: number;
       video: {
         enabled: boolean;
         intervalSeconds: number;
@@ -272,6 +273,7 @@ export const defaults = Object.freeze<SystemConfig>({
       modelName: 'buffalo_l',
       minScore: 0.7,
       maxDistance: 0.5,
+      suggestionMaxDistance: 1,
       minFaces: 3,
       video: {
         enabled: false,

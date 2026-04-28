@@ -22,6 +22,7 @@
   import ThemeButton from '../ThemeButton.svelte';
   import UserAvatar from '../UserAvatar.svelte';
   import AccountInfoPanel from './AccountInfoPanel.svelte';
+  import FaceSuggestionStatusButton from './FaceSuggestionStatusButton.svelte';
 
   type Props = {
     onUploadClick?: () => void;
@@ -126,6 +127,10 @@
         {/if}
 
         <ThemeButton />
+
+        {#if authManager.preferences.people.enabled}
+          <FaceSuggestionStatusButton />
+        {/if}
 
         <div
           use:clickOutside={{

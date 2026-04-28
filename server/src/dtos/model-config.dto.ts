@@ -45,6 +45,12 @@ export const FacialRecognitionConfigSchema = ModelConfigSchema.extend({
     .min(0.1)
     .max(2)
     .describe('Maximum distance threshold for face recognition'),
+  suggestionMaxDistance: z
+    .number()
+    .meta({ format: 'double' })
+    .min(0.1)
+    .max(2)
+    .describe('Maximum distance threshold for manual face suggestions'),
   minFaces: z.int().min(1).describe('Minimum number of faces required for recognition'),
   video: FacialRecognitionVideoConfigSchema,
 }).meta({ id: 'FacialRecognitionConfig' });

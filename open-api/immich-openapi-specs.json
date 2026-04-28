@@ -8464,6 +8464,88 @@
         "x-immich-state": "Stable"
       }
     },
+    "/people/face-suggestions/summary": {
+      "get": {
+        "description": "Retrieve people with pending manual face suggestions.",
+        "operationId": "getFaceSuggestionSummary",
+        "parameters": [
+          {
+            "name": "maxDistance",
+            "required": false,
+            "in": "query",
+            "description": "Override face embedding max distance for suggestions",
+            "schema": {
+              "minimum": 0,
+              "maximum": 2,
+              "type": "number"
+            }
+          },
+          {
+            "name": "peopleLimit",
+            "required": false,
+            "in": "query",
+            "description": "Maximum number of people to scan for suggestions",
+            "schema": {
+              "minimum": 1,
+              "maximum": 1000,
+              "default": 100,
+              "type": "number"
+            }
+          },
+          {
+            "name": "size",
+            "required": false,
+            "in": "query",
+            "description": "Number of people with suggestions to return",
+            "schema": {
+              "minimum": 1,
+              "maximum": 20,
+              "default": 10,
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonFaceSuggestionSummaryResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Get face suggestion summary",
+        "tags": [
+          "People"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2.8.0",
+            "state": "Added"
+          },
+          {
+            "version": "v2.8.0",
+            "state": "Beta"
+          }
+        ],
+        "x-immich-permission": "person.read",
+        "x-immich-state": "Beta"
+      }
+    },
     "/people/{id}": {
       "delete": {
         "description": "Delete an individual person.",
@@ -18638,6 +18720,13 @@
             "description": "Name of the model to use",
             "type": "string"
           },
+          "suggestionMaxDistance": {
+            "description": "Maximum distance threshold for manual face suggestions",
+            "format": "double",
+            "maximum": 2,
+            "minimum": 0.1,
+            "type": "number"
+          },
           "video": {
             "$ref": "#/components/schemas/FacialRecognitionVideoConfig"
           }
@@ -18648,6 +18737,7 @@
           "minFaces",
           "minScore",
           "modelName",
+          "suggestionMaxDistance",
           "video"
         ],
         "type": "object"
@@ -20731,6 +20821,55 @@
           "id",
           "imageHeight",
           "imageWidth"
+        ],
+        "type": "object"
+      },
+      "PersonFaceSuggestionSummaryItemResponseDto": {
+        "properties": {
+          "person": {
+            "$ref": "#/components/schemas/PersonResponseDto"
+          },
+          "suggestion": {
+            "$ref": "#/components/schemas/PersonFaceSuggestionResponseDto"
+          }
+        },
+        "required": [
+          "person",
+          "suggestion"
+        ],
+        "type": "object"
+      },
+      "PersonFaceSuggestionSummaryResponseDto": {
+        "properties": {
+          "hasMorePeople": {
+            "description": "Whether there are more people beyond the scan limit",
+            "type": "boolean"
+          },
+          "pendingPeople": {
+            "description": "Number of scanned people with pending suggestions",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "people": {
+            "description": "People with at least one pending suggestion",
+            "items": {
+              "$ref": "#/components/schemas/PersonFaceSuggestionSummaryItemResponseDto"
+            },
+            "type": "array"
+          },
+          "scannedPeople": {
+            "description": "Number of people scanned",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "hasMorePeople",
+          "pendingPeople",
+          "people",
+          "scannedPeople"
         ],
         "type": "object"
       },

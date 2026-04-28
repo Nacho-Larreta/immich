@@ -1493,6 +1493,41 @@ export type PeopleUpdateDto = {
     /** People to update */
     people: PeopleUpdateItem[];
 };
+export type PersonFaceSuggestionResponseDto = {
+    /** Asset ID */
+    assetId: string;
+    /** Bounding box X1 coordinate */
+    boundingBoxX1: number;
+    /** Bounding box X2 coordinate */
+    boundingBoxX2: number;
+    /** Bounding box Y1 coordinate */
+    boundingBoxY1: number;
+    /** Bounding box Y2 coordinate */
+    boundingBoxY2: number;
+    /** Embedding distance from the closest reference face */
+    distance: number;
+    /** Face ID */
+    id: string;
+    /** Image height in pixels */
+    imageHeight: number;
+    /** Image width in pixels */
+    imageWidth: number;
+    sourceType?: SourceType;
+};
+export type PersonFaceSuggestionSummaryItemResponseDto = {
+    person: PersonResponseDto;
+    suggestion: PersonFaceSuggestionResponseDto;
+};
+export type PersonFaceSuggestionSummaryResponseDto = {
+    /** Whether there are more people beyond the scan limit */
+    hasMorePeople: boolean;
+    /** Number of scanned people with pending suggestions */
+    pendingPeople: number;
+    /** People with at least one pending suggestion */
+    people: PersonFaceSuggestionSummaryItemResponseDto[];
+    /** Number of people scanned */
+    scannedPeople: number;
+};
 export type PersonUpdateDto = {
     /** Person date of birth */
     birthDate?: string | null;
@@ -1531,27 +1566,6 @@ export type PersonFaceAssignmentHistoryPageResponseDto = {
     hasNextPage: boolean;
     /** Face assignment history entries */
     history: PersonFaceAssignmentHistoryResponseDto[];
-};
-export type PersonFaceSuggestionResponseDto = {
-    /** Asset ID */
-    assetId: string;
-    /** Bounding box X1 coordinate */
-    boundingBoxX1: number;
-    /** Bounding box X2 coordinate */
-    boundingBoxX2: number;
-    /** Bounding box Y1 coordinate */
-    boundingBoxY1: number;
-    /** Bounding box Y2 coordinate */
-    boundingBoxY2: number;
-    /** Embedding distance from the closest reference face */
-    distance: number;
-    /** Face ID */
-    id: string;
-    /** Image height in pixels */
-    imageHeight: number;
-    /** Image width in pixels */
-    imageWidth: number;
-    sourceType?: SourceType;
 };
 export type PersonFaceSuggestionPageResponseDto = {
     /** Whether there are more suggestions */
@@ -2533,6 +2547,8 @@ export type FacialRecognitionConfig = {
     minScore: number;
     /** Name of the model to use */
     modelName: string;
+    /** Maximum distance threshold for manual face suggestions */
+    suggestionMaxDistance: number;
     video: FacialRecognitionVideoConfig;
 };
 export type OcrConfig = {
@@ -5345,6 +5361,25 @@ export function updatePeople({ peopleUpdateDto }: {
         method: "PUT",
         body: peopleUpdateDto
     })));
+}
+/**
+ * Get face suggestion summary
+ */
+export function getFaceSuggestionSummary({ maxDistance, peopleLimit, size }: {
+    maxDistance?: number;
+    peopleLimit?: number;
+    size?: number;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchJson<{
+        status: 200;
+        data: PersonFaceSuggestionSummaryResponseDto;
+    }>(`/people/face-suggestions/summary${QS.query(QS.explode({
+        maxDistance,
+        peopleLimit,
+        size
+    }))}`, {
+        ...opts
+    }));
 }
 /**
  * Delete person

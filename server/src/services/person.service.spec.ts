@@ -598,6 +598,34 @@ describe(PersonService.name, () => {
       );
     });
 
+    it('should use suggestion distance instead of automatic recognition distance by default', async () => {
+      const auth = AuthFactory.create();
+      const person = PersonFactory.create({ ownerId: auth.user.id });
+
+      mocks.systemMetadata.get.mockResolvedValue({
+        machineLearning: {
+          facialRecognition: {
+            maxDistance: 0.5,
+            suggestionMaxDistance: 1.05,
+          },
+        },
+      });
+      mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set([person.id]));
+      mocks.person.getFaceSuggestionsForPerson.mockResolvedValue({ items: [], hasNextPage: false });
+
+      await sut.getFaceSuggestions(auth, person.id, { page: 1, size: 5 });
+
+      expect(mocks.person.getFaceSuggestionsForPerson).toHaveBeenCalledWith(
+        { take: 5, skip: 0 },
+        auth.user.id,
+        person.id,
+        {
+          maxDistance: 1.05,
+          referenceFaceLimit: 10,
+        },
+      );
+    });
+
     it('should reject if the user has no access to the person', async () => {
       const auth = AuthFactory.create();
       const person = PersonFactory.create();
@@ -608,6 +636,62 @@ describe(PersonService.name, () => {
         BadRequestException,
       );
       expect(mocks.person.getFaceSuggestionsForPerson).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getFaceSuggestionSummary', () => {
+    it('should scan visible people and return the first pending suggestion per person', async () => {
+      const auth = AuthFactory.create();
+      const [person1, person2, person3] = [
+        PersonFactory.create({ ownerId: auth.user.id }),
+        PersonFactory.create({ ownerId: auth.user.id }),
+        PersonFactory.create({ ownerId: auth.user.id }),
+      ];
+      const [suggestion1, suggestion3] = [
+        { ...AssetFaceFactory.create(), distance: 0.72 },
+        { ...AssetFaceFactory.create(), distance: 0.88 },
+      ];
+
+      mocks.systemMetadata.get.mockResolvedValue({
+        machineLearning: {
+          facialRecognition: {
+            minFaces: 3,
+            maxDistance: 0.5,
+            suggestionMaxDistance: 1,
+          },
+        },
+      });
+      mocks.person.getAllForUser.mockResolvedValue({ items: [person1, person2, person3], hasNextPage: true });
+      mocks.person.getFaceSuggestionsForPerson
+        .mockResolvedValueOnce({ items: [suggestion1], hasNextPage: false })
+        .mockResolvedValueOnce({ items: [], hasNextPage: false })
+        .mockResolvedValueOnce({ items: [suggestion3], hasNextPage: false });
+
+      await expect(sut.getFaceSuggestionSummary(auth, { size: 1, peopleLimit: 50 })).resolves.toEqual({
+        people: [
+          {
+            person: mapPerson(person1),
+            suggestion: mapFaceSuggestion(suggestion1),
+          },
+        ],
+        pendingPeople: 2,
+        scannedPeople: 3,
+        hasMorePeople: true,
+      });
+
+      expect(mocks.person.getAllForUser).toHaveBeenCalledWith({ take: 50, skip: 0 }, auth.user.id, {
+        minimumFaceCount: 3,
+        withHidden: false,
+      });
+      expect(mocks.person.getFaceSuggestionsForPerson).toHaveBeenCalledWith(
+        { take: 1, skip: 0 },
+        auth.user.id,
+        person1.id,
+        {
+          maxDistance: 1,
+          referenceFaceLimit: 10,
+        },
+      );
     });
   });
 

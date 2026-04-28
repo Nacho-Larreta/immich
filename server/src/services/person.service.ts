@@ -31,6 +31,8 @@ import {
   PersonFaceSuggestionFeedbackResponseDto,
   PersonFaceSuggestionPageResponseDto,
   PersonFaceSuggestionSearchDto,
+  PersonFaceSuggestionSummaryResponseDto,
+  PersonFaceSuggestionSummarySearchDto,
   PersonResponseDto,
   PersonSearchDto,
   PersonStatisticsResponseDto,
@@ -241,7 +243,7 @@ export class PersonService extends BaseService {
     await this.requireAccess({ auth, permission: Permission.PersonRead, ids: [id] });
 
     const { machineLearning } = await this.getConfig({ withCache: true });
-    const { page, size, maxDistance = machineLearning.facialRecognition.maxDistance } = dto;
+    const { page, size, maxDistance = this.getFaceSuggestionMaxDistance(machineLearning.facialRecognition) } = dto;
     const { items, hasNextPage } = await this.personRepository.getFaceSuggestionsForPerson(
       { take: size, skip: (page - 1) * size },
       auth.user.id,
@@ -256,6 +258,62 @@ export class PersonService extends BaseService {
       suggestions: items.map((item) => mapFaceSuggestion(item)),
       hasNextPage,
     };
+  }
+
+  async getFaceSuggestionSummary(
+    auth: AuthDto,
+    dto: PersonFaceSuggestionSummarySearchDto,
+  ): Promise<PersonFaceSuggestionSummaryResponseDto> {
+    const { machineLearning } = await this.getConfig({ withCache: true });
+    const { size, peopleLimit, maxDistance = this.getFaceSuggestionMaxDistance(machineLearning.facialRecognition) } = dto;
+
+    const { items: people, hasNextPage } = await this.personRepository.getAllForUser(
+      { take: peopleLimit, skip: 0 },
+      auth.user.id,
+      {
+        minimumFaceCount: machineLearning.facialRecognition.minFaces,
+        withHidden: false,
+      },
+    );
+
+    const summary: PersonFaceSuggestionSummaryResponseDto['people'] = [];
+    let pendingPeople = 0;
+
+    for (const person of people) {
+      const { items } = await this.personRepository.getFaceSuggestionsForPerson(
+        { take: 1, skip: 0 },
+        auth.user.id,
+        person.id,
+        {
+          maxDistance,
+          referenceFaceLimit: PersonService.FACE_SUGGESTION_REFERENCE_FACE_LIMIT,
+        },
+      );
+      const [suggestion] = items;
+
+      if (!suggestion) {
+        continue;
+      }
+
+      pendingPeople++;
+      if (summary.length < size) {
+        summary.push({
+          person: mapPerson(person),
+          suggestion: mapFaceSuggestion(suggestion),
+        });
+      }
+    }
+
+    return {
+      people: summary,
+      pendingPeople,
+      scannedPeople: people.length,
+      hasMorePeople: hasNextPage,
+    };
+  }
+
+  private getFaceSuggestionMaxDistance(facialRecognition: { maxDistance: number; suggestionMaxDistance?: number }) {
+    return facialRecognition.suggestionMaxDistance ?? facialRecognition.maxDistance;
   }
 
   async respondToFaceSuggestion(

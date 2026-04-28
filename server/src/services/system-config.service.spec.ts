@@ -103,6 +103,7 @@ const updatedConfig = Object.freeze<SystemConfig>({
       modelName: 'buffalo_l',
       minScore: 0.7,
       maxDistance: 0.5,
+      suggestionMaxDistance: 1,
       minFaces: 3,
       video: {
         enabled: false,
