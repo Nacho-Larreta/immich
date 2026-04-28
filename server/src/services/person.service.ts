@@ -19,6 +19,8 @@ import {
   PeopleResponseDto,
   PeopleUpdateDto,
   PersonCreateDto,
+  PersonFacesResponseDto,
+  PersonFacesSearchDto,
   PersonResponseDto,
   PersonSearchDto,
   PersonStatisticsResponseDto,
@@ -159,6 +161,21 @@ export class PersonService extends BaseService {
     const assetDimensions = getDimensions(asset);
 
     return faces.map((face) => mapFaces(face, auth, asset.edits, assetDimensions));
+  }
+
+  async getFacesByPersonId(auth: AuthDto, id: string, dto: PersonFacesSearchDto): Promise<PersonFacesResponseDto> {
+    await this.requireAccess({ auth, permission: Permission.PersonRead, ids: [id] });
+
+    const { page, size } = dto;
+    const { items, hasNextPage } = await this.personRepository.getFacesForPerson(
+      { take: size, skip: (page - 1) * size },
+      id,
+    );
+
+    return {
+      faces: items.map((face) => mapFaces(face, auth)),
+      hasNextPage,
+    };
   }
 
   async getFaceSourceImage(auth: AuthDto, id: string): Promise<ImmichFileResponse> {

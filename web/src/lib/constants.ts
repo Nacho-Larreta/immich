@@ -267,6 +267,7 @@ export type AlbumPageViewMode =
 export enum PersonPageViewMode {
   VIEW_ASSETS = 'view-assets',
   SELECT_PERSON = 'select-person',
+  MANAGE_REFERENCES = 'manage-references',
   MERGE_PEOPLE = 'merge-people',
   UNASSIGN_ASSETS = 'unassign-faces',
 }

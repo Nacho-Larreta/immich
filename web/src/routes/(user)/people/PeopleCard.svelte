@@ -11,6 +11,7 @@
     mdiAccountMultipleCheckOutline,
     mdiDotsVertical,
     mdiEyeOffOutline,
+    mdiFaceRecognition,
     mdiHeart,
     mdiHeartMinusOutline,
     mdiHeartOutline,
@@ -22,11 +23,12 @@
   type Props = {
     person: PersonResponseDto;
     onMergePeople: () => void;
+    onManageReferences: () => void;
     onHidePerson: () => void;
     onToggleFavorite: () => void;
   };
 
-  let { person, onMergePeople, onHidePerson, onToggleFavorite }: Props = $props();
+  let { person, onMergePeople, onManageReferences, onHidePerson, onToggleFavorite }: Props = $props();
 
   let showVerticalDots = $state(false);
 
@@ -76,6 +78,7 @@
       >
         <MenuOption onClick={onHidePerson} icon={mdiEyeOffOutline} text={$t('hide_person')} />
         <ActionMenuItem action={SetDateOfBirth} />
+        <MenuOption onClick={onManageReferences} icon={mdiFaceRecognition} text={$t('manage_face_references')} />
         <MenuOption onClick={onMergePeople} icon={mdiAccountMultipleCheckOutline} text={$t('merge_people')} />
         <MenuOption
           onClick={onToggleFavorite}

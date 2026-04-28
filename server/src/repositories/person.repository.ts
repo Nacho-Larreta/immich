@@ -309,6 +309,31 @@ export class PersonRepository {
       .execute();
   }
 
+  @GenerateSql({ params: [{ take: 1, skip: 0 }, DummyValue.UUID] })
+  async getFacesForPerson(pagination: PaginationOptions, personId: string) {
+    const items = await this.db
+      .selectFrom('asset_face')
+      .selectAll('asset_face')
+      .select(withPerson)
+      .innerJoin('asset', (join) =>
+        join
+          .onRef('asset.id', '=', 'asset_face.assetId')
+          .on('asset.visibility', '=', sql.lit(AssetVisibility.Timeline))
+          .on('asset.deletedAt', 'is', null)
+          .on('asset.isOffline', '=', false),
+      )
+      .where('asset_face.personId', '=', personId)
+      .where('asset_face.deletedAt', 'is', null)
+      .where('asset_face.isVisible', 'is', true)
+      .orderBy('asset.fileCreatedAt', 'desc')
+      .orderBy('asset_face.updatedAt', 'desc')
+      .offset(pagination.skip ?? 0)
+      .limit(pagination.take + 1)
+      .execute();
+
+    return paginationHelper(items, pagination.take);
+  }
+
   @GenerateSql({ params: [DummyValue.UUID] })
   getFaceById(id: string) {
     // TODO return null instead of find or fail

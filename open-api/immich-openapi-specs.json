@@ -8394,6 +8394,86 @@
         "x-immich-state": "Stable"
       }
     },
+    "/people/{id}/faces": {
+      "get": {
+        "description": "Retrieve visible face references assigned to a person.",
+        "operationId": "getPersonFaces",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "description": "Page number for pagination",
+            "schema": {
+              "minimum": 1,
+              "default": 1,
+              "type": "number"
+            }
+          },
+          {
+            "name": "size",
+            "required": false,
+            "in": "query",
+            "description": "Number of face references per page",
+            "schema": {
+              "minimum": 1,
+              "maximum": 500,
+              "default": 100,
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonFacesResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Get person face references",
+        "tags": [
+          "People"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2.8.0",
+            "state": "Added"
+          },
+          {
+            "version": "v2.8.0",
+            "state": "Beta"
+          }
+        ],
+        "x-immich-permission": "person.read",
+        "x-immich-state": "Beta"
+      }
+    },
     "/people/{id}/merge": {
       "post": {
         "description": "Merge a list of people into the person specified in the path parameter.",
@@ -19722,6 +19802,26 @@
             "type": "string"
           }
         },
+        "type": "object"
+      },
+      "PersonFacesResponseDto": {
+        "properties": {
+          "faces": {
+            "description": "Face references assigned to the person",
+            "items": {
+              "$ref": "#/components/schemas/AssetFaceResponseDto"
+            },
+            "type": "array"
+          },
+          "hasNextPage": {
+            "description": "Whether there are more face references",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "faces",
+          "hasNextPage"
+        ],
         "type": "object"
       },
       "PersonResponseDto": {

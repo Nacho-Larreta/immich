@@ -446,6 +446,36 @@ describe(PersonService.name, () => {
     });
   });
 
+  describe('getFacesByPersonId', () => {
+    it('should get visible face references for a person', async () => {
+      const auth = AuthFactory.create();
+      const person = PersonFactory.create({ ownerId: auth.user.id });
+      const face = getForAssetFace(AssetFaceFactory.from().person({ id: person.id, ownerId: auth.user.id }).build());
+
+      mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set([person.id]));
+      mocks.person.getFacesForPerson.mockResolvedValue({ items: [face], hasNextPage: false });
+
+      await expect(sut.getFacesByPersonId(auth, person.id, { page: 2, size: 10 })).resolves.toStrictEqual({
+        faces: [mapFaces(face, auth)],
+        hasNextPage: false,
+      });
+
+      expect(mocks.person.getFacesForPerson).toHaveBeenCalledWith({ take: 10, skip: 10 }, person.id);
+    });
+
+    it('should reject if the user has no access to the person', async () => {
+      const auth = AuthFactory.create();
+      const person = PersonFactory.create();
+
+      mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set());
+
+      await expect(sut.getFacesByPersonId(auth, person.id, { page: 1, size: 10 })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(mocks.person.getFacesForPerson).not.toHaveBeenCalled();
+    });
+  });
+
   describe('createFace', () => {
     it('should create a manual face and initialize the person feature photo creation', async () => {
       const auth = AuthFactory.create();

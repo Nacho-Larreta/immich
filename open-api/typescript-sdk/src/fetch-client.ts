@@ -1509,6 +1509,12 @@ export type PersonUpdateDto = {
     /** Person name */
     name?: string;
 };
+export type PersonFacesResponseDto = {
+    /** Face references assigned to the person */
+    faces: AssetFaceResponseDto[];
+    /** Whether there are more face references */
+    hasNextPage: boolean;
+};
 export type MergePersonDto = {
     /** Person IDs to merge */
     ids: string[];
@@ -5205,6 +5211,24 @@ export function updatePerson({ id, personUpdateDto }: {
         method: "PUT",
         body: personUpdateDto
     })));
+}
+/**
+ * Get person face references
+ */
+export function getPersonFaces({ id, page, size }: {
+    id: string;
+    page?: number;
+    size?: number;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchJson<{
+        status: 200;
+        data: PersonFacesResponseDto;
+    }>(`/people/${encodeURIComponent(id)}/faces${QS.query(QS.explode({
+        page,
+        size
+    }))}`, {
+        ...opts
+    }));
 }
 /**
  * Merge people

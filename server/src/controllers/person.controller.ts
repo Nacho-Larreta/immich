@@ -23,6 +23,8 @@ import {
   PeopleResponseDto,
   PeopleUpdateDto,
   PersonCreateDto,
+  PersonFacesResponseDto,
+  PersonFacesSearchDto,
   PersonResponseDto,
   PersonSearchDto,
   PersonStatisticsResponseDto,
@@ -99,6 +101,21 @@ export class PersonController {
   })
   getPerson(@Auth() auth: AuthDto, @Param() { id }: UUIDParamDto): Promise<PersonResponseDto> {
     return this.service.getById(auth, id);
+  }
+
+  @Get(':id/faces')
+  @Authenticated({ permission: Permission.PersonRead })
+  @Endpoint({
+    summary: 'Get person face references',
+    description: 'Retrieve visible face references assigned to a person.',
+    history: new HistoryBuilder().added('v2.8.0').beta('v2.8.0'),
+  })
+  getPersonFaces(
+    @Auth() auth: AuthDto,
+    @Param() { id }: UUIDParamDto,
+    @Query() dto: PersonFacesSearchDto,
+  ): Promise<PersonFacesResponseDto> {
+    return this.service.getFacesByPersonId(auth, id, dto);
   }
 
   @Put(':id')

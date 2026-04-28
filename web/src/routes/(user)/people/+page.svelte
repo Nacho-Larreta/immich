@@ -272,6 +272,10 @@
     await goto(Route.viewPerson(detail, { previousRoute: Route.people(), action: 'merge' }));
   };
 
+  const handleManageReferences = async (detail: PersonResponseDto) => {
+    await goto(Route.viewPerson(detail, { previousRoute: Route.people(), action: 'references' }));
+  };
+
   const onResetSearchBar = async () => {
     await clearQueryParam(QueryParameter.SEARCHED_PEOPLE, $page.url);
   };
@@ -468,6 +472,7 @@
           <PeopleCard
             {person}
             onMergePeople={() => handleMergePeople(person)}
+            onManageReferences={() => handleManageReferences(person)}
             onHidePerson={() => handleHidePerson(person)}
             onToggleFavorite={() => handleToggleFavorite(person)}
           />

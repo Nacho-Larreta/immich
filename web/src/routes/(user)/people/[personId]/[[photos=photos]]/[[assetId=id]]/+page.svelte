@@ -7,6 +7,7 @@
   import ImageThumbnail from '$lib/components/assets/thumbnail/ImageThumbnail.svelte';
   import EditNameInput from './EditNameInput.svelte';
   import MergeFaceSelector from './MergeFaceSelector.svelte';
+  import PersonFaceReferences from './PersonFaceReferences.svelte';
   import UnmergeFaceSelector from './UnmergeFaceSelector.svelte';
   import OnEvents from '$lib/components/OnEvents.svelte';
   import ButtonContextMenu from '$lib/components/shared-components/context-menu/ButtonContextMenu.svelte';
@@ -42,6 +43,7 @@
   import { AssetVisibility, searchPerson, updatePerson, type PersonResponseDto } from '@immich/sdk';
   import {
     ActionButton,
+    Button,
     CommandPaletteDefaultProvider,
     ContextMenuButton,
     LoadingSpinner,
@@ -49,7 +51,13 @@
     toastManager,
     type ActionItem,
   } from '@immich/ui';
-  import { mdiAccountBoxOutline, mdiAccountMultipleCheckOutline, mdiArrowLeft, mdiDotsVertical } from '@mdi/js';
+  import {
+    mdiAccountBoxOutline,
+    mdiAccountMultipleCheckOutline,
+    mdiArrowLeft,
+    mdiDotsVertical,
+    mdiFaceRecognition,
+  } from '@mdi/js';
   import { DateTime } from 'luxon';
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
@@ -95,6 +103,9 @@
     }
     if (action == 'merge') {
       viewMode = PersonPageViewMode.MERGE_PEOPLE;
+    }
+    if (action == 'references') {
+      viewMode = PersonPageViewMode.MANAGE_REFERENCES;
     }
 
     return websocketEvents.on('on_person_thumbnail', (personId: string) => {
@@ -295,6 +306,12 @@
       return;
     }
 
+    data = { ...data, person: response };
+    person = response;
+  };
+
+  const handleLocalPersonUpdate = (response: PersonResponseDto) => {
+    data = { ...data, person: response };
     person = response;
   };
 
@@ -312,6 +329,14 @@
     icon: mdiAccountBoxOutline,
     onAction: () => {
       viewMode = PersonPageViewMode.SELECT_PERSON;
+    },
+  };
+
+  const ManageReferences: ActionItem = {
+    title: $t('manage_face_references'),
+    icon: mdiFaceRecognition,
+    onAction: () => {
+      viewMode = PersonPageViewMode.MANAGE_REFERENCES;
     },
   };
 
@@ -341,118 +366,137 @@
   }}
 >
   {#key person.id}
-    <Timeline
-      enableRouting={true}
-      {person}
-      bind:timelineManager
-      {options}
-      assetInteraction={assetMultiSelectManager}
-      isSelectionMode={viewMode === PersonPageViewMode.SELECT_PERSON}
-      singleSelect={viewMode === PersonPageViewMode.SELECT_PERSON}
-      onSelect={handleSelectFeaturePhoto}
-      onEscape={handleEscape}
-    >
-      {#if viewMode === PersonPageViewMode.VIEW_ASSETS}
-        <!-- Person information block -->
-        <div
-          class="relative w-fit p-4 sm:px-6 pt-12"
-          use:clickOutside={{
-            onOutclick: handleCancelEditName,
-            onEscape: handleCancelEditName,
-          }}
-          use:listNavigation={suggestionContainer}
-        >
-          <section class="flex w-64 sm:w-96 place-items-center border-black">
-            {#if isEditingName}
-              <EditNameInput
-                {person}
-                bind:suggestedPeople
-                name={person.name}
-                bind:isSearchingPeople
-                onChange={handleNameChange}
-                {thumbnailData}
-              />
-            {:else}
-              <div class="relative">
-                <button
-                  type="button"
-                  class="flex items-center justify-center"
-                  title={$t('edit_name')}
-                  onclick={() => (isEditingName = true)}
-                >
-                  <ImageThumbnail
-                    circle
-                    shadow
-                    url={thumbnailData}
-                    altText={person.name}
-                    widthStyle="3.375rem"
-                    heightStyle="3.375rem"
-                  />
-                  <div class="flex flex-col justify-center text-start px-4 text-primary">
-                    <p class="w-40 sm:w-72 font-medium truncate">{person.name || $t('add_a_name')}</p>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">
-                      {$t('assets_count', { values: { count: numberOfAssets } })}
-                    </p>
-                    {#if person.birthDate}
-                      <p class="text-sm text-gray-500 dark:text-gray-400">
-                        {$t('person_birthdate', {
-                          values: {
-                            date: DateTime.fromISO(person.birthDate).toLocaleString(
-                              {
-                                month: 'numeric',
-                                day: 'numeric',
-                                year: 'numeric',
-                              },
-                              { locale: $locale },
-                            ),
-                          },
-                        })}
-                      </p>
-                    {/if}
-                  </div>
-                </button>
-              </div>
-            {/if}
-          </section>
-          {#if isEditingName}
-            <div class="absolute w-64 sm:w-96 z-1">
-              {#if isSearchingPeople}
-                <div
-                  class="flex border h-14 rounded-b-lg border-gray-400 dark:border-immich-dark-gray place-items-center bg-gray-200 p-2 dark:bg-gray-700"
-                >
-                  <div class="flex w-full place-items-center">
-                    <LoadingSpinner />
-                  </div>
-                </div>
+    {#if viewMode === PersonPageViewMode.MANAGE_REFERENCES}
+      <PersonFaceReferences {person} onPersonUpdate={handleLocalPersonUpdate} />
+    {:else}
+      <Timeline
+        enableRouting={true}
+        {person}
+        bind:timelineManager
+        {options}
+        assetInteraction={assetMultiSelectManager}
+        isSelectionMode={viewMode === PersonPageViewMode.SELECT_PERSON}
+        singleSelect={viewMode === PersonPageViewMode.SELECT_PERSON}
+        onSelect={handleSelectFeaturePhoto}
+        onEscape={handleEscape}
+      >
+        {#if viewMode === PersonPageViewMode.VIEW_ASSETS}
+          <!-- Person information block -->
+          <div
+            class="relative w-fit p-4 sm:px-6 pt-12"
+            use:clickOutside={{
+              onOutclick: handleCancelEditName,
+              onEscape: handleCancelEditName,
+            }}
+            use:listNavigation={suggestionContainer}
+          >
+            <section class="flex w-64 sm:w-96 place-items-center border-black">
+              {#if isEditingName}
+                <EditNameInput
+                  {person}
+                  bind:suggestedPeople
+                  name={person.name}
+                  bind:isSearchingPeople
+                  onChange={handleNameChange}
+                  {thumbnailData}
+                />
               {:else}
-                <div bind:this={suggestionContainer}>
-                  {#each suggestedPeople as person, index (person.id)}
-                    <button
-                      type="button"
-                      class="flex w-full border border-gray-200 dark:border-immich-dark-gray h-14 place-items-center bg-gray-100 p-2 dark:bg-gray-700 hover:bg-gray-300 hover:dark:bg-[#232932] focus:bg-gray-300 focus:dark:bg-[#232932] {index ===
-                      suggestedPeople.length - 1
-                        ? 'rounded-b-lg border-b'
-                        : ''}"
-                      onclick={() => handleSuggestPeople(person)}
-                    >
-                      <ImageThumbnail
-                        circle
-                        shadow
-                        url={getPeopleThumbnailUrl(person)}
-                        altText={person.name}
-                        widthStyle="2rem"
-                        heightStyle="2rem"
-                      />
-                      <p class="ms-4 text-gray-700 dark:text-gray-100">{person.name}</p>
-                    </button>
-                  {/each}
+                <div class="relative">
+                  <button
+                    type="button"
+                    class="flex items-center justify-center"
+                    title={$t('edit_name')}
+                    onclick={() => (isEditingName = true)}
+                  >
+                    <ImageThumbnail
+                      circle
+                      shadow
+                      url={thumbnailData}
+                      altText={person.name}
+                      widthStyle="3.375rem"
+                      heightStyle="3.375rem"
+                    />
+                    <div class="flex flex-col justify-center text-start px-4 text-primary">
+                      <p class="w-40 sm:w-72 font-medium truncate">{person.name || $t('add_a_name')}</p>
+                      <p class="text-sm text-gray-500 dark:text-gray-400">
+                        {$t('assets_count', { values: { count: numberOfAssets } })}
+                      </p>
+                      {#if person.birthDate}
+                        <p class="text-sm text-gray-500 dark:text-gray-400">
+                          {$t('person_birthdate', {
+                            values: {
+                              date: DateTime.fromISO(person.birthDate).toLocaleString(
+                                {
+                                  month: 'numeric',
+                                  day: 'numeric',
+                                  year: 'numeric',
+                                },
+                                { locale: $locale },
+                              ),
+                            },
+                          })}
+                        </p>
+                      {/if}
+                    </div>
+                  </button>
                 </div>
               {/if}
-            </div>
-          {/if}
-        </div>
-      {/if}
-    </Timeline>
+            </section>
+
+            {#if !isEditingName}
+              <div class="mt-4">
+                <Button
+                  size="small"
+                  color="secondary"
+                  variant="outline"
+                  leadingIcon={mdiFaceRecognition}
+                  onclick={() => (viewMode = PersonPageViewMode.MANAGE_REFERENCES)}
+                >
+                  {$t('manage_face_references')}
+                </Button>
+              </div>
+            {/if}
+
+            {#if isEditingName}
+              <div class="absolute w-64 sm:w-96 z-1">
+                {#if isSearchingPeople}
+                  <div
+                    class="flex border h-14 rounded-b-lg border-gray-400 dark:border-immich-dark-gray place-items-center bg-gray-200 p-2 dark:bg-gray-700"
+                  >
+                    <div class="flex w-full place-items-center">
+                      <LoadingSpinner />
+                    </div>
+                  </div>
+                {:else}
+                  <div bind:this={suggestionContainer}>
+                    {#each suggestedPeople as person, index (person.id)}
+                      <button
+                        type="button"
+                        class="flex w-full border border-gray-200 dark:border-immich-dark-gray h-14 place-items-center bg-gray-100 p-2 dark:bg-gray-700 hover:bg-gray-300 hover:dark:bg-[#232932] focus:bg-gray-300 focus:dark:bg-[#232932] {index ===
+                        suggestedPeople.length - 1
+                          ? 'rounded-b-lg border-b'
+                          : ''}"
+                        onclick={() => handleSuggestPeople(person)}
+                      >
+                        <ImageThumbnail
+                          circle
+                          shadow
+                          url={getPeopleThumbnailUrl(person)}
+                          altText={person.name}
+                          widthStyle="2rem"
+                          heightStyle="2rem"
+                        />
+                        <p class="ms-4 text-gray-700 dark:text-gray-100">{person.name}</p>
+                      </button>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+            {/if}
+          </div>
+        {/if}
+      </Timeline>
+    {/if}
   {/key}
 </main>
 
@@ -499,9 +543,26 @@
       <ControlAppBar showBackButton backIcon={mdiArrowLeft} onClose={() => goto(previousRoute)}>
         {#snippet trailing()}
           <ContextMenuButton
-            items={[SelectFeaturePhoto, HidePerson, ShowPerson, SetDateOfBirth, Merge, Favorite, Unfavorite]}
+            items={[
+              ManageReferences,
+              SelectFeaturePhoto,
+              HidePerson,
+              ShowPerson,
+              SetDateOfBirth,
+              Merge,
+              Favorite,
+              Unfavorite,
+            ]}
             aria-label={$t('open')}
           />
+        {/snippet}
+      </ControlAppBar>
+    {/if}
+
+    {#if viewMode === PersonPageViewMode.MANAGE_REFERENCES}
+      <ControlAppBar onClose={handleGoBack}>
+        {#snippet leading()}
+          {$t('face_references')}
         {/snippet}
       </ControlAppBar>
     {/if}

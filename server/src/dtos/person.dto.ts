@@ -92,6 +92,15 @@ export class MergePersonDto extends createZodDto(MergePersonSchema) {}
 export class PersonSearchDto extends createZodDto(PersonSearchSchema) {}
 export class PersonResponseDto extends createZodDto(PersonResponseSchema) {}
 
+const PersonFacesSearchSchema = z
+  .object({
+    page: z.coerce.number().min(1).default(1).describe('Page number for pagination'),
+    size: z.coerce.number().min(1).max(500).default(100).describe('Number of face references per page'),
+  })
+  .meta({ id: 'PersonFacesSearchDto' });
+
+export class PersonFacesSearchDto extends createZodDto(PersonFacesSearchSchema) {}
+
 export const AssetFaceWithoutPersonResponseSchema = z
   .object({
     id: z.uuidv4().describe('Face ID'),
@@ -120,6 +129,15 @@ const AssetFaceResponseSchema = AssetFaceWithoutPersonResponseSchema.extend({
 }).meta({ id: 'AssetFaceResponseDto' });
 
 export class AssetFaceResponseDto extends createZodDto(AssetFaceResponseSchema) {}
+
+const PersonFacesResponseSchema = z
+  .object({
+    faces: z.array(AssetFaceResponseSchema).describe('Face references assigned to the person'),
+    hasNextPage: z.boolean().describe('Whether there are more face references'),
+  })
+  .meta({ id: 'PersonFacesResponseDto' });
+
+export class PersonFacesResponseDto extends createZodDto(PersonFacesResponseSchema) {}
 
 const AssetFaceUpdateItemSchema = z
   .object({
