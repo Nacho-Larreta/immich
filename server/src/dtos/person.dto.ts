@@ -94,6 +94,7 @@ export class PersonResponseDto extends createZodDto(PersonResponseSchema) {}
 export const AssetFaceWithoutPersonResponseSchema = z
   .object({
     id: z.uuidv4().describe('Face ID'),
+    assetId: z.uuidv4().describe('Asset ID'),
     imageHeight: z.int().min(0).describe('Image height in pixels'),
     imageWidth: z.int().min(0).describe('Image width in pixels'),
     boundingBoxX1: z.int().describe('Bounding box X1 coordinate'),
@@ -170,6 +171,11 @@ const PeopleResponseSchema = z
     total: z.int().min(0).describe('Total number of people'),
     hidden: z.int().min(0).describe('Number of hidden people'),
     people: z.array(PersonResponseSchema),
+    unassignedFaceCount: z.int().min(0).optional().describe('Number of visible faces without an assigned person'),
+    unassignedFaces: z
+      .array(AssetFaceWithoutPersonResponseSchema)
+      .optional()
+      .describe('Sample of visible faces without an assigned person'),
     // TODO: make required after a few versions
     hasNextPage: z
       .boolean()
@@ -200,6 +206,7 @@ export function mapFacesWithoutPerson(
 ): AssetFaceWithoutPersonResponseDto {
   return {
     id: face.id,
+    assetId: face.assetId,
     ...transformFaceBoundingBox(
       {
         boundingBoxX1: face.boundingBoxX1,

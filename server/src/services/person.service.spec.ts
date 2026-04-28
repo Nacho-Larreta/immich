@@ -35,19 +35,29 @@ describe(PersonService.name, () => {
   });
 
   describe('getAll', () => {
+    beforeEach(() => {
+      mocks.person.getUnassignedFacesForUser.mockResolvedValue([]);
+      mocks.person.getUnassignedFaceCountForUser.mockResolvedValue(0);
+    });
+
     it('should get all hidden and visible people with thumbnails', async () => {
       const auth = AuthFactory.create();
       const [person, hiddenPerson] = [PersonFactory.create(), PersonFactory.create({ isHidden: true })];
+      const unassignedFace = AssetFaceFactory.create();
 
       mocks.person.getAllForUser.mockResolvedValue({
         items: [person, hiddenPerson],
         hasNextPage: false,
       });
       mocks.person.getNumberOfPeople.mockResolvedValue({ total: 2, hidden: 1 });
+      mocks.person.getUnassignedFacesForUser.mockResolvedValue([unassignedFace]);
+      mocks.person.getUnassignedFaceCountForUser.mockResolvedValue(1);
       await expect(sut.getAll(auth, { withHidden: true, page: 1, size: 10 })).resolves.toEqual({
         hasNextPage: false,
         total: 2,
         hidden: 1,
+        unassignedFaceCount: 1,
+        unassignedFaces: [expect.objectContaining({ id: unassignedFace.id, assetId: unassignedFace.assetId })],
         people: [
           expect.objectContaining({ id: person.id, isHidden: false }),
           expect.objectContaining({
@@ -60,6 +70,8 @@ describe(PersonService.name, () => {
         minimumFaceCount: 3,
         withHidden: true,
       });
+      expect(mocks.person.getUnassignedFacesForUser).toHaveBeenCalledWith(auth.user.id, { take: 5 });
+      expect(mocks.person.getUnassignedFaceCountForUser).toHaveBeenCalledWith(auth.user.id);
     });
 
     it('should get all visible people and favorites should be first in the array', async () => {
@@ -75,6 +87,8 @@ describe(PersonService.name, () => {
         hasNextPage: false,
         total: 2,
         hidden: 1,
+        unassignedFaceCount: 0,
+        unassignedFaces: [],
         people: [
           expect.objectContaining({
             id: isFavorite.id,
@@ -1421,6 +1435,7 @@ describe(PersonService.name, () => {
         boundingBoxX2: 200,
         boundingBoxY1: 100,
         boundingBoxY2: 200,
+        assetId: face.assetId,
         id: face.id,
         imageHeight: 500,
         imageWidth: 400,

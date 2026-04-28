@@ -16,6 +16,7 @@
   import { delay, getDimensions } from '$lib/utils/asset-utils';
   import { getByteUnitString } from '$lib/utils/byte-units';
   import { handleError } from '$lib/utils/handle-error';
+  import { zoomImageToBase64 } from '$lib/utils/people-utils';
   import { getParentPath } from '$lib/utils/tree-utils';
   import {
     AssetMediaSize,
@@ -262,6 +263,50 @@
                 {/if}
               </a>
             {/if}
+          {/each}
+
+          {#each unassignedFaces as face (face.id)}
+            {@const isHighlighted = $boundingBoxesArray.some((b) => b.id === face.id)}
+            <button
+              type="button"
+              class="group w-22 text-left outline-none"
+              aria-label={$t('face_unassigned')}
+              title={$t('face_unassigned')}
+              onfocus={() => ($boundingBoxesArray = [face])}
+              onblur={() => ($boundingBoxesArray = [])}
+              onmouseover={() => ($boundingBoxesArray = [face])}
+              onmouseleave={() => ($boundingBoxesArray = [])}
+              onclick={() => assetViewerManager.openEditFacesPanel()}
+            >
+              <div class="relative">
+                {#await zoomImageToBase64(face, asset.id, asset.type, assetViewerManager.imgRef)}
+                  <ImageThumbnail
+                    curve
+                    shadow
+                    url="/src/lib/assets/no-thumbnail.png"
+                    altText={$t('face_unassigned')}
+                    title={$t('face_unassigned')}
+                    widthStyle="90px"
+                    heightStyle="90px"
+                    highlighted={isHighlighted}
+                    class="group-focus-visible:outline-2 group-focus-visible:outline-offset-2 group-focus-visible:outline-immich-primary dark:group-focus-visible:outline-immich-dark-primary"
+                  />
+                {:then data}
+                  <ImageThumbnail
+                    curve
+                    shadow
+                    url={data === null ? '/src/lib/assets/no-thumbnail.png' : data}
+                    altText={$t('face_unassigned')}
+                    title={$t('face_unassigned')}
+                    widthStyle="90px"
+                    heightStyle="90px"
+                    highlighted={isHighlighted}
+                    class="group-focus-visible:outline-2 group-focus-visible:outline-offset-2 group-focus-visible:outline-immich-primary dark:group-focus-visible:outline-immich-dark-primary"
+                  />
+                {/await}
+              </div>
+              <p class="mt-1 truncate font-medium text-gray-500 dark:text-gray-400">{$t('face_unassigned')}</p>
+            </button>
           {/each}
         </div>
       </section>

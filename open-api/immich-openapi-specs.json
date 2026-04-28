@@ -16069,6 +16069,12 @@
       },
       "AssetFaceResponseDto": {
         "properties": {
+          "assetId": {
+            "description": "Asset ID",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
           "boundingBoxX1": {
             "description": "Bounding box X1 coordinate",
             "maximum": 9007199254740991,
@@ -16124,6 +16130,7 @@
           }
         },
         "required": [
+          "assetId",
           "boundingBoxX1",
           "boundingBoxX2",
           "boundingBoxY1",
@@ -16174,6 +16181,12 @@
       "AssetFaceWithoutPersonResponseDto": {
         "description": "Asset face without person",
         "properties": {
+          "assetId": {
+            "description": "Asset ID",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
           "boundingBoxX1": {
             "description": "Bounding box X1 coordinate",
             "maximum": 9007199254740991,
@@ -16221,6 +16234,7 @@
           }
         },
         "required": [
+          "assetId",
           "boundingBoxX1",
           "boundingBoxX2",
           "boundingBoxY1",
@@ -19422,6 +19436,19 @@
             "maximum": 9007199254740991,
             "minimum": 0,
             "type": "integer"
+          },
+          "unassignedFaceCount": {
+            "description": "Number of visible faces without an assigned person",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unassignedFaces": {
+            "description": "Sample of visible faces without an assigned person",
+            "items": {
+              "$ref": "#/components/schemas/AssetFaceWithoutPersonResponseDto"
+            },
+            "type": "array"
           }
         },
         "required": [

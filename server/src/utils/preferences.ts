@@ -20,7 +20,7 @@ const getDefaultPreferences = (): UserPreferences => {
     },
     people: {
       enabled: true,
-      sidebarWeb: false,
+      sidebarWeb: true,
     },
     sharedLinks: {
       enabled: true,

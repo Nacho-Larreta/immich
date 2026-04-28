@@ -788,6 +788,8 @@ export type ExifResponseDto = {
     timeZone?: string | null;
 };
 export type AssetFaceWithoutPersonResponseDto = {
+    /** Asset ID */
+    assetId: string;
     /** Bounding box X1 coordinate */
     boundingBoxX1: number;
     /** Bounding box X2 coordinate */
@@ -1155,6 +1157,8 @@ export type PersonResponseDto = {
     updatedAt?: string;
 };
 export type AssetFaceResponseDto = {
+    /** Asset ID */
+    assetId: string;
     /** Bounding box X1 coordinate */
     boundingBoxX1: number;
     /** Bounding box X2 coordinate */
@@ -1450,6 +1454,10 @@ export type PeopleResponseDto = {
     people: PersonResponseDto[];
     /** Total number of people */
     total: number;
+    /** Number of visible faces without an assigned person */
+    unassignedFaceCount?: number;
+    /** Sample of visible faces without an assigned person */
+    unassignedFaces?: AssetFaceWithoutPersonResponseDto[];
 };
 export type PersonCreateDto = {
     /** Person date of birth */

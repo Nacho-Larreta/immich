@@ -5,10 +5,11 @@
     people: PersonResponseDto[];
     hasNextPage?: boolean | undefined;
     loadNextPage: () => void;
+    before?: import('svelte').Snippet;
     children?: import('svelte').Snippet<[{ person: PersonResponseDto; index: number }]>;
   }
 
-  let { people, hasNextPage = undefined, loadNextPage, children }: Props = $props();
+  let { people, hasNextPage = undefined, loadNextPage, before, children }: Props = $props();
 
   let lastPersonContainer: HTMLElement | undefined = $state();
 
@@ -28,6 +29,8 @@
 </script>
 
 <div class="w-full grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-7 2xl:grid-cols-10 gap-1">
+  {@render before?.()}
+
   {#each people as person, index (person.id)}
     {#if hasNextPage && index === people.length - 1}
       <div bind:this={lastPersonContainer}>

@@ -19,8 +19,8 @@
   let memoriesDuration = $state(authManager.preferences.memories?.duration ?? 5);
 
   // People
-  let peopleEnabled = $state(authManager.preferences.people?.enabled ?? false);
-  let peopleSidebar = $state(authManager.preferences.people?.sidebarWeb ?? false);
+  let peopleEnabled = $state(authManager.preferences.people?.enabled ?? true);
+  let peopleSidebar = $state(authManager.preferences.people?.sidebarWeb ?? true);
 
   // Ratings
   let ratingsEnabled = $state(authManager.preferences.ratings?.enabled ?? false);

@@ -13,6 +13,7 @@ import {
   AssetFaceUpdateDto,
   FaceDto,
   mapFaces,
+  mapFacesWithoutPerson,
   mapPerson,
   MergePersonDto,
   PeopleResponseDto,
@@ -64,6 +65,8 @@ type FaceDetectionSource = {
 
 @Injectable()
 export class PersonService extends BaseService {
+  private static readonly UNASSIGNED_FACE_SAMPLE_SIZE = 5;
+
   async getAll(auth: AuthDto, dto: PersonSearchDto): Promise<PeopleResponseDto> {
     const { withHidden = false, closestAssetId, closestPersonId, page, size } = dto;
     let closestFaceAssetId = closestAssetId;
@@ -80,18 +83,26 @@ export class PersonService extends BaseService {
       closestFaceAssetId = person.faceAssetId;
     }
     const { machineLearning } = await this.getConfig({ withCache: false });
-    const { items, hasNextPage } = await this.personRepository.getAllForUser(pagination, auth.user.id, {
-      minimumFaceCount: machineLearning.facialRecognition.minFaces,
-      withHidden,
-      closestFaceAssetId,
-    });
-    const { total, hidden } = await this.personRepository.getNumberOfPeople(auth.user.id);
+    const [{ items, hasNextPage }, { total, hidden }, unassignedFaces, unassignedFaceCount] = await Promise.all([
+      this.personRepository.getAllForUser(pagination, auth.user.id, {
+        minimumFaceCount: machineLearning.facialRecognition.minFaces,
+        withHidden,
+        closestFaceAssetId,
+      }),
+      this.personRepository.getNumberOfPeople(auth.user.id),
+      this.personRepository.getUnassignedFacesForUser(auth.user.id, {
+        take: PersonService.UNASSIGNED_FACE_SAMPLE_SIZE,
+      }),
+      this.personRepository.getUnassignedFaceCountForUser(auth.user.id),
+    ]);
 
     return {
       people: items.map((person) => mapPerson(person)),
       hasNextPage,
       total,
       hidden,
+      unassignedFaceCount,
+      unassignedFaces: unassignedFaces.map((face) => mapFacesWithoutPerson(face)),
     };
   }
 

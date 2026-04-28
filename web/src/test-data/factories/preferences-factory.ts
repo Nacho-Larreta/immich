@@ -26,8 +26,8 @@ export const preferencesFactory = Sync.makeFactory<UserPreferencesResponseDto>({
     duration: 5,
   },
   people: {
-    enabled: false,
-    sidebarWeb: false,
+    enabled: true,
+    sidebarWeb: true,
   },
   purchase: {
     hideBuyButtonUntil: '',

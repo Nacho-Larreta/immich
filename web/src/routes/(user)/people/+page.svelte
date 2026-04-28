@@ -14,10 +14,17 @@
   import { Route } from '$lib/route';
   import { locale } from '$lib/stores/preferences.store';
   import { websocketEvents } from '$lib/stores/websocket';
-  import { handlePromiseError } from '$lib/utils';
+  import { getFaceSourceImageUrl, handlePromiseError } from '$lib/utils';
   import { handleError } from '$lib/utils/handle-error';
   import { clearQueryParam } from '$lib/utils/navigation';
-  import { getAllPeople, getPerson, searchPerson, updatePerson, type PersonResponseDto } from '@immich/sdk';
+  import {
+    getAllPeople,
+    getPerson,
+    searchPerson,
+    updatePerson,
+    type AssetFaceWithoutPersonResponseDto,
+    type PersonResponseDto,
+  } from '@immich/sdk';
   import { Button, Icon, modalManager, toastManager } from '@immich/ui';
   import { mdiAccountOff, mdiEyeOutline } from '@mdi/js';
   import { onMount } from 'svelte';
@@ -44,6 +51,63 @@
   let searchedPeopleLocal: PersonResponseDto[] = $state([]);
   let innerHeight = $state(0);
   let searchPeopleElement = $state<ReturnType<typeof SearchPeople>>();
+
+  type UnassignedPeopleFace = AssetFaceWithoutPersonResponseDto;
+
+  const unassignedFacePreviewCache = new Map<string, Promise<string | null>>();
+
+  const loadUnassignedFacePreview = async (face: UnassignedPeopleFace) => {
+    const image = new Image();
+    image.src = getFaceSourceImageUrl(face.id);
+
+    await new Promise<void>((resolve) => {
+      image.addEventListener('load', () => resolve(), { once: true });
+      image.addEventListener('error', () => resolve(), { once: true });
+    });
+
+    if (!image.naturalWidth || !image.naturalHeight || !face.imageWidth || !face.imageHeight) {
+      return null;
+    }
+
+    const x1 = Math.max(0, Math.min(image.naturalWidth, (image.naturalWidth / face.imageWidth) * face.boundingBoxX1));
+    const x2 = Math.max(0, Math.min(image.naturalWidth, (image.naturalWidth / face.imageWidth) * face.boundingBoxX2));
+    const y1 = Math.max(
+      0,
+      Math.min(image.naturalHeight, (image.naturalHeight / face.imageHeight) * face.boundingBoxY1),
+    );
+    const y2 = Math.max(
+      0,
+      Math.min(image.naturalHeight, (image.naturalHeight / face.imageHeight) * face.boundingBoxY2),
+    );
+    const width = x2 - x1;
+    const height = y2 - y1;
+
+    if (width <= 0 || height <= 0) {
+      return null;
+    }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (!context) {
+      return null;
+    }
+
+    context.drawImage(image, x1, y1, width, height, 0, 0, width, height);
+    return canvas.toDataURL('image/jpeg', 0.85);
+  };
+
+  const getUnassignedFacePreview = (face: UnassignedPeopleFace) => {
+    const cached = unassignedFacePreviewCache.get(face.id);
+    if (cached) {
+      return cached;
+    }
+
+    const preview = loadUnassignedFacePreview(face);
+    unassignedFacePreviewCache.set(face.id, preview);
+    return preview;
+  };
 
   onMount(() => {
     const getSearchedPeople = $page.url.searchParams.get(QueryParameter.SEARCHED_PEOPLE);
@@ -212,10 +276,16 @@
     await clearQueryParam(QueryParameter.SEARCHED_PEOPLE, $page.url);
   };
 
-  let people = $derived(data.people.people);
+  let peopleResponse = $derived(data.people);
+  let people = $derived(peopleResponse.people);
+  let unassignedFaces = $derived(peopleResponse.unassignedFaces ?? []);
+  let unassignedFaceCount = $derived(peopleResponse.unassignedFaceCount ?? 0);
+  let primaryUnassignedFace = $derived(unassignedFaces.at(0));
+  let hasUnassignedFaceBucket = $derived(!searchName && unassignedFaceCount > 0 && !!primaryUnassignedFace);
 
   let visiblePeople = $derived(people.filter((people) => !people.isHidden));
   let countVisiblePeople = $derived(searchName ? searchedPeopleLocal.length : data.people.total - data.people.hidden);
+  let visibleItemCount = $derived(countVisiblePeople + (hasUnassignedFaceBucket ? 1 : 0));
   let showPeople = $derived(searchName ? searchedPeopleLocal : visiblePeople);
 
   const onNameChangeInputFocus = (person: PersonResponseDto) => {
@@ -294,7 +364,7 @@
 
 <UserPageLayout
   title={$t('people')}
-  description={countVisiblePeople === 0 && !searchName ? undefined : `(${countVisiblePeople.toLocaleString($locale)})`}
+  description={visibleItemCount === 0 && !searchName ? undefined : `(${visibleItemCount.toLocaleString($locale)})`}
   use={[
     [
       scrollMemory,
@@ -340,8 +410,57 @@
     {/if}
   {/snippet}
 
-  {#if countVisiblePeople > 0 && (!searchName || searchedPeopleLocal.length > 0)}
+  {#if visibleItemCount > 0 && (!searchName || searchedPeopleLocal.length > 0)}
     <PeopleInfiniteScroll people={showPeople} hasNextPage={!!nextPage && !searchName} {loadNextPage}>
+      {#snippet before()}
+        {#if hasUnassignedFaceBucket && primaryUnassignedFace}
+          <div
+            class="p-2 rounded-xl hover:bg-gray-200 border-2 hover:border-immich-primary/50 hover:shadow-sm dark:hover:bg-immich-dark-primary/20 hover:dark:border-immich-dark-primary/25 border-transparent transition-all"
+          >
+            <a
+              href={Route.viewAsset({ id: primaryUnassignedFace.assetId })}
+              draggable="false"
+              aria-label={`${$t('face_unassigned')} (${unassignedFaceCount.toLocaleString($locale)})`}
+              title={`${$t('face_unassigned')} (${unassignedFaceCount.toLocaleString($locale)})`}
+            >
+              <div
+                class="relative aspect-square overflow-hidden rounded-xl bg-gray-100 shadow-sm dark:bg-immich-dark-gray"
+              >
+                <div class="grid h-full w-full grid-cols-2 gap-0.5">
+                  {#each unassignedFaces.slice(0, 4) as face (face.id)}
+                    <div
+                      class={unassignedFaces.length === 1 ? 'col-span-2 row-span-2 overflow-hidden' : 'overflow-hidden'}
+                    >
+                      {#await getUnassignedFacePreview(face)}
+                        <div class="h-full w-full animate-pulse bg-gray-200 dark:bg-immich-dark-primary/20"></div>
+                      {:then preview}
+                        <img
+                          src={preview ?? '/src/lib/assets/no-thumbnail.png'}
+                          alt=""
+                          class="h-full w-full object-cover"
+                          draggable="false"
+                        />
+                      {/await}
+                    </div>
+                  {/each}
+                </div>
+                <span
+                  class="absolute bottom-2 end-2 rounded-full bg-black/75 px-2 py-1 text-xs font-semibold text-white"
+                >
+                  {unassignedFaceCount.toLocaleString($locale)}
+                </span>
+              </div>
+            </a>
+
+            <div
+              class="mt-2 flex h-10 w-full items-center justify-center rounded-2xl bg-white py-2 text-center text-sm font-semibold text-gray-500 dark:bg-immich-dark-gray dark:text-gray-400"
+            >
+              {$t('face_unassigned')}
+            </div>
+          </div>
+        {/if}
+      {/snippet}
+
       {#snippet children({ person })}
         <div
           class="p-2 rounded-xl hover:bg-gray-200 border-2 hover:border-immich-primary/50 hover:shadow-sm dark:hover:bg-immich-dark-primary/20 hover:dark:border-immich-dark-primary/25 border-transparent transition-all"

@@ -348,7 +348,7 @@ export class AssetService extends BaseService {
     }
 
     const assetFiles = getAssetFiles(asset.files ?? []);
-    const faceFramePaths = await this.personRepository.getFaceFramePaths(asset.id);
+    const faceFramePaths = (await this.personRepository.getFaceFramePaths(asset.id)) ?? [];
     const files = [
       assetFiles.thumbnailFile?.path,
       assetFiles.previewFile?.path,

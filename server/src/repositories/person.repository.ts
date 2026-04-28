@@ -60,6 +60,10 @@ export interface GetAllFacesOptions {
   sourceType?: SourceType;
 }
 
+export interface GetUnassignedFacesOptions {
+  take: number;
+}
+
 export type UnassignFacesOptions = DeleteFacesOptions;
 
 export type SelectFaceOptions = (keyof Selectable<AssetFaceTable>)[];
@@ -163,6 +167,40 @@ export class PersonRepository {
       .where('asset_face.deletedAt', 'is', null)
       .where('asset_face.isVisible', 'is', true)
       .stream();
+  }
+
+  async getUnassignedFacesForUser(userId: string, options: GetUnassignedFacesOptions) {
+    return this.db
+      .selectFrom('asset_face')
+      .selectAll('asset_face')
+      .innerJoin('asset', 'asset.id', 'asset_face.assetId')
+      .where('asset.ownerId', '=', userId)
+      .where('asset.visibility', '=', sql.lit(AssetVisibility.Timeline))
+      .where('asset.deletedAt', 'is', null)
+      .where('asset_face.personId', 'is', null)
+      .where('asset_face.deletedAt', 'is', null)
+      .where('asset_face.isVisible', 'is', true)
+      .orderBy('asset.fileCreatedAt', 'desc')
+      .orderBy('asset_face.updatedAt', 'desc')
+      .limit(options.take)
+      .execute();
+  }
+
+  async getUnassignedFaceCountForUser(userId: string) {
+    const zero = sql<number>`0`;
+    const result = await this.db
+      .selectFrom('asset_face')
+      .innerJoin('asset', 'asset.id', 'asset_face.assetId')
+      .where('asset.ownerId', '=', userId)
+      .where('asset.visibility', '=', sql.lit(AssetVisibility.Timeline))
+      .where('asset.deletedAt', 'is', null)
+      .where('asset_face.personId', 'is', null)
+      .where('asset_face.deletedAt', 'is', null)
+      .where('asset_face.isVisible', 'is', true)
+      .select((eb) => eb.fn.coalesce(eb.fn.countAll<number>(), zero).as('count'))
+      .executeTakeFirstOrThrow();
+
+    return result.count;
   }
 
   getAll(options: GetAllPeopleOptions = {}) {

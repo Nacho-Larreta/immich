@@ -19,7 +19,16 @@
     type PersonResponseDto,
   } from '@immich/sdk';
   import { Icon, IconButton, LoadingSpinner, modalManager, toastManager } from '@immich/ui';
-  import { mdiAccountOff, mdiArrowLeftThin, mdiPencil, mdiRestart, mdiTrashCan } from '@mdi/js';
+  import {
+    mdiAccountMultipleCheckOutline,
+    mdiArrowLeftThin,
+    mdiChevronDown,
+    mdiCheckCircle,
+    mdiCircleOutline,
+    mdiPencil,
+    mdiRestart,
+    mdiTrashCan,
+  } from '@mdi/js';
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
   import { linear } from 'svelte/easing';
@@ -39,6 +48,12 @@
     face: AssetFaceResponseDto;
     faces: AssetFaceResponseDto[];
     person: PersonResponseDto | null;
+    parentId?: string;
+  };
+
+  type PendingPersonCreate = {
+    name: string;
+    featurePhoto: string;
   };
 
   let { assetId, assetType, onClose, onRefresh }: Props = $props();
@@ -50,9 +65,12 @@
   // faces
   let peopleWithFaces: AssetFaceResponseDto[] = $state([]);
   let selectedPersonToReassign: Record<string, PersonResponseDto> = $state({});
-  let selectedPersonToCreate: Record<string, string> = $state({});
+  let selectedPersonToCreate: Record<string, PendingPersonCreate> = $state({});
+  let selectedFaceGroupIds: string[] = $state([]);
+  let expandedFaceGroupIds: string[] = $state([]);
   let editedFace: AssetFaceResponseDto | undefined = $state();
   let editedFaceGroupId: string | undefined = $state();
+  let editedFaceGroupIds: string[] = $state([]);
 
   // loading spinners
   let isShowLoadingDone = $state(false);
@@ -67,7 +85,7 @@
 
   const thumbnailWidth = '90px';
 
-  const faceGroups = $derived.by((): FaceGroup[] => {
+  const groupedFaceGroups = $derived.by((): FaceGroup[] => {
     const groups = new Map<string, FaceGroup>();
 
     for (const face of peopleWithFaces) {
@@ -84,6 +102,33 @@
     return [...groups.values()];
   });
 
+  const hasPendingFaceChange = (face: AssetFaceResponseDto) =>
+    Boolean(selectedPersonToCreate[`face:${face.id}`] || selectedPersonToReassign[`face:${face.id}`]);
+
+  const faceGroups = $derived.by((): FaceGroup[] =>
+    groupedFaceGroups.flatMap((faceGroup) => {
+      const isExpanded =
+        expandedFaceGroupIds.includes(faceGroup.id) || faceGroup.faces.some((face) => hasPendingFaceChange(face));
+
+      if (faceGroup.faces.length <= 1 || !isExpanded) {
+        return [faceGroup];
+      }
+
+      return faceGroup.faces.map((face) => ({
+        id: `face:${face.id}`,
+        face,
+        faces: [face],
+        person: face.person ?? null,
+        parentId: faceGroup.id,
+      }));
+    }),
+  );
+
+  const selectedFaceGroups = $derived(faceGroups.filter((faceGroup) => selectedFaceGroupIds.includes(faceGroup.id)));
+  const selectedFaceCount = $derived(
+    selectedFaceGroups.reduce((count, faceGroup) => count + faceGroup.faces.length, 0),
+  );
+
   async function loadPeople() {
     const timeout = setTimeout(() => (isShowLoadingPeople = true), timeBeforeShowLoadingSpinner);
     try {
@@ -98,12 +143,7 @@
 
   const onPersonThumbnailReady = ({ id }: { id: string }) => {
     assetFaceGenerated.push(id);
-    if (
-      isEqual(assetFaceGenerated, peopleToCreate) &&
-      loaderLoadingDoneTimeout &&
-      automaticRefreshTimeout &&
-      Object.keys(selectedPersonToCreate).length === peopleToCreate.length
-    ) {
+    if (isEqual(assetFaceGenerated, peopleToCreate) && loaderLoadingDoneTimeout && automaticRefreshTimeout) {
       clearTimeout(loaderLoadingDoneTimeout);
       clearTimeout(automaticRefreshTimeout);
       onRefresh();
@@ -125,14 +165,37 @@
     if (selectedPersonToCreate[id]) {
       delete selectedPersonToCreate[id];
     }
+    selectedFaceGroupIds = selectedFaceGroupIds.filter((faceGroupId) => faceGroupId !== id);
   };
 
   const handleEditFaces = async () => {
     loaderLoadingDoneTimeout = setTimeout(() => (isShowLoadingDone = true), timeBeforeShowLoadingSpinner);
     const numberOfChanges = Object.keys(selectedPersonToCreate).length + Object.keys(selectedPersonToReassign).length;
+    const numberOfChangedFaces = faceGroups.reduce((count, faceGroup) => {
+      return selectedPersonToCreate[faceGroup.id] || selectedPersonToReassign[faceGroup.id]
+        ? count + faceGroup.faces.length
+        : count;
+    }, 0);
 
     if (numberOfChanges > 0) {
+      if (numberOfChangedFaces > 1) {
+        const isConfirmed = await modalManager.showDialog({
+          prompt: $t('confirm_apply_face_changes', { values: { count: numberOfChangedFaces } }),
+          confirmText: $t('confirm'),
+        });
+
+        if (!isConfirmed) {
+          clearTimeout(loaderLoadingDoneTimeout);
+          isShowLoadingDone = false;
+          return;
+        }
+      }
+
       try {
+        peopleToCreate = [];
+        assetFaceGenerated = [];
+        const createdPersonByFeaturePhoto = new Map<string, string>();
+
         for (const faceGroup of faceGroups) {
           const personId = selectedPersonToReassign[faceGroup.id]?.id;
 
@@ -144,11 +207,21 @@
               });
             }
           } else if (selectedPersonToCreate[faceGroup.id]) {
-            const data = await createPerson({ personCreateDto: {} });
-            peopleToCreate.push(data.id);
+            const personToCreate = selectedPersonToCreate[faceGroup.id];
+            const featurePhoto = personToCreate.featurePhoto;
+            const pendingPersonKey = `${personToCreate.name}:${featurePhoto}`;
+            let personId = createdPersonByFeaturePhoto.get(pendingPersonKey);
+
+            if (!personId) {
+              const data = await createPerson({ personCreateDto: { name: personToCreate.name } });
+              personId = data.id;
+              peopleToCreate.push(data.id);
+              createdPersonByFeaturePhoto.set(pendingPersonKey, data.id);
+            }
+
             for (const face of faceGroup.faces) {
               await reassignFacesById({
-                id: data.id,
+                id: personId,
                 faceDto: { id: face.id },
               });
             }
@@ -170,30 +243,91 @@
     }
   };
 
-  const handleCreatePerson = (newFeaturePhoto: string | null) => {
-    if (newFeaturePhoto && editedFaceGroupId) {
-      selectedPersonToCreate[editedFaceGroupId] = newFeaturePhoto;
+  const getEditedFaceGroupIds = () =>
+    editedFaceGroupIds.length > 0 ? editedFaceGroupIds : editedFaceGroupId ? [editedFaceGroupId] : [];
+
+  const handleCreatePerson = (personToCreate: PendingPersonCreate) => {
+    if (personToCreate.featurePhoto) {
+      for (const faceGroupId of getEditedFaceGroupIds()) {
+        selectedPersonToCreate[faceGroupId] = personToCreate;
+        delete selectedPersonToReassign[faceGroupId];
+      }
     }
+    selectedFaceGroupIds = [];
+    editedFaceGroupIds = [];
+    editedFaceGroupId = undefined;
     showSelectedFaces = false;
   };
 
   const handleReassignFace = (person: PersonResponseDto | null) => {
-    if (person && editedFaceGroupId) {
-      selectedPersonToReassign[editedFaceGroupId] = person;
+    if (person) {
+      for (const faceGroupId of getEditedFaceGroupIds()) {
+        selectedPersonToReassign[faceGroupId] = person;
+        delete selectedPersonToCreate[faceGroupId];
+      }
     }
+    selectedFaceGroupIds = [];
+    editedFaceGroupIds = [];
+    editedFaceGroupId = undefined;
     showSelectedFaces = false;
   };
 
   const handleFacePicker = (faceGroup: FaceGroup) => {
     editedFace = faceGroup.face;
     editedFaceGroupId = faceGroup.id;
+    editedFaceGroupIds = [];
+    showSelectedFaces = true;
+  };
+
+  const handleExpandFaceGroup = (faceGroup: FaceGroup) => {
+    expandedFaceGroupIds = [...new Set([...expandedFaceGroupIds, faceGroup.id])];
+  };
+
+  const handleCollapseFaceGroups = () => {
+    expandedFaceGroupIds = [];
+  };
+
+  const isSelectableFaceGroup = (faceGroup: FaceGroup) =>
+    !faceGroup.person && !selectedPersonToCreate[faceGroup.id] && !selectedPersonToReassign[faceGroup.id];
+
+  const isFaceGroupSelected = (faceGroup: FaceGroup) => selectedFaceGroupIds.includes(faceGroup.id);
+
+  const toggleFaceGroupSelection = (faceGroup: FaceGroup) => {
+    if (!isSelectableFaceGroup(faceGroup)) {
+      return;
+    }
+
+    selectedFaceGroupIds = isFaceGroupSelected(faceGroup)
+      ? selectedFaceGroupIds.filter((faceGroupId) => faceGroupId !== faceGroup.id)
+      : [...selectedFaceGroupIds, faceGroup.id];
+  };
+
+  const clearSelectedFaceGroups = () => {
+    selectedFaceGroupIds = [];
+  };
+
+  const handleBatchFacePicker = () => {
+    const [firstFaceGroup] = selectedFaceGroups;
+    if (!firstFaceGroup) {
+      return;
+    }
+
+    editedFace = firstFaceGroup.face;
+    editedFaceGroupId = undefined;
+    editedFaceGroupIds = [...selectedFaceGroupIds];
     showSelectedFaces = true;
   };
 
   const deleteAssetFaceGroup = async (faceGroup: FaceGroup) => {
     try {
+      const prompt =
+        faceGroup.faces.length > 1
+          ? $t('confirm_delete_faces_count', {
+              values: { count: faceGroup.faces.length, name: faceGroup.person?.name ?? $t('face_unassigned') },
+            })
+          : $t('confirm_delete_face', { values: { name: faceGroup.person?.name ?? $t('face_unassigned') } });
       const isConfirmed = await modalManager.showDialog({
-        prompt: $t('confirm_delete_face', { values: { name: faceGroup.person?.name ?? $t('face_unassigned') } }),
+        prompt,
       });
       if (!isConfirmed) {
         return;
@@ -209,6 +343,7 @@
 
       const deletedFaceIds = new Set(faceGroup.faces.map((face) => face.id));
       peopleWithFaces = peopleWithFaces.filter((face) => !deletedFaceIds.has(face.id));
+      expandedFaceGroupIds = expandedFaceGroupIds.filter((id) => id !== faceGroup.id && id !== faceGroup.parentId);
 
       await assetViewerManager.setAssetId(assetId);
     } catch (error) {
@@ -261,6 +396,45 @@
     {/if}
   </div>
 
+  {#if selectedFaceGroupIds.length > 0}
+    <div class="mx-4 mt-3 rounded-xl border border-immich-primary/30 bg-immich-primary/10 p-2 text-sm">
+      <p class="font-medium text-immich-primary dark:text-immich-dark-primary">
+        {$t('selected_faces_count', { values: { count: selectedFaceCount } })}
+      </p>
+      <div class="mt-2 flex gap-2">
+        <button
+          type="button"
+          class="rounded-lg bg-immich-primary px-2 py-1 text-white hover:bg-immich-primary/80"
+          onclick={handleBatchFacePicker}
+        >
+          {$t('assign_selected_faces')}
+        </button>
+        <button
+          type="button"
+          class="rounded-lg px-2 py-1 text-immich-fg hover:bg-gray-200 dark:text-immich-dark-fg hover:dark:bg-gray-700"
+          onclick={clearSelectedFaceGroups}
+        >
+          {$t('clear')}
+        </button>
+      </div>
+    </div>
+  {/if}
+
+  {#if expandedFaceGroupIds.length > 0}
+    <div
+      class="mx-4 mt-3 rounded-xl border border-gray-300/50 bg-gray-100 p-2 text-sm dark:border-gray-700 dark:bg-gray-800"
+    >
+      <p class="font-medium text-immich-fg dark:text-immich-dark-fg">{$t('editing_individual_faces')}</p>
+      <button
+        type="button"
+        class="mt-2 rounded-lg px-2 py-1 text-immich-fg hover:bg-gray-200 dark:text-immich-dark-fg hover:dark:bg-gray-700"
+        onclick={handleCollapseFaceGroups}
+      >
+        {$t('collapse')}
+      </button>
+    </div>
+  {/if}
+
   <div class="px-4 py-4 text-sm">
     <div class="mt-4 flex flex-wrap gap-2">
       {#if isShowLoadingPeople}
@@ -272,7 +446,13 @@
           {@const face = faceGroup.face}
           {@const personName = faceGroup.person ? faceGroup.person.name : $t('face_unassigned')}
           {@const isHighlighted = faceGroup.faces.some((face) => $boundingBoxesArray.some((b) => b.id === face.id))}
-          <div class="relative h-29 w-24" data-testid="edit-face-card" data-face-count={faceGroup.faces.length}>
+          {@const isSelected = isFaceGroupSelected(faceGroup)}
+          <div
+            class={`relative h-29 w-24 rounded-xl ${isSelected ? 'ring-2 ring-immich-primary ring-offset-2 ring-offset-white dark:ring-offset-black' : ''}`}
+            data-testid="edit-face-card"
+            data-face-count={faceGroup.faces.length}
+            data-selected={isSelected}
+          >
             <div
               role="button"
               tabindex={index}
@@ -287,9 +467,9 @@
                     curve
                     shadow
                     highlighted={isHighlighted}
-                    url={selectedPersonToCreate[faceGroup.id]}
-                    altText={$t('new_person')}
-                    title={$t('new_person')}
+                    url={selectedPersonToCreate[faceGroup.id].featurePhoto}
+                    altText={selectedPersonToCreate[faceGroup.id].name}
+                    title={selectedPersonToCreate[faceGroup.id].name}
                     widthStyle={thumbnailWidth}
                     heightStyle={thumbnailWidth}
                   />
@@ -308,7 +488,7 @@
                     heightStyle={thumbnailWidth}
                     hidden={selectedPersonToReassign[faceGroup.id].isHidden}
                   />
-                {:else if faceGroup.person}
+                {:else if faceGroup.person && !faceGroup.parentId}
                   <ImageThumbnail
                     curve
                     shadow
@@ -327,8 +507,8 @@
                       shadow
                       highlighted={isHighlighted}
                       url="/src/lib/assets/no-thumbnail.png"
-                      altText={$t('face_unassigned')}
-                      title={$t('face_unassigned')}
+                      altText={personName}
+                      title={personName}
                       widthStyle="90px"
                       heightStyle="90px"
                     />
@@ -338,8 +518,8 @@
                       shadow
                       highlighted={isHighlighted}
                       url={data === null ? '/src/lib/assets/no-thumbnail.png' : data}
-                      altText={$t('face_unassigned')}
-                      title={$t('face_unassigned')}
+                      altText={personName}
+                      title={personName}
                       widthStyle="90px"
                       heightStyle="90px"
                     />
@@ -354,46 +534,66 @@
                 {/if}
               </div>
 
-              {#if !selectedPersonToCreate[faceGroup.id]}
-                <p class="relative mt-1 truncate font-medium" title={personName}>
-                  {#if selectedPersonToReassign[faceGroup.id]?.id}
-                    {selectedPersonToReassign[faceGroup.id]?.name}
-                  {:else}
-                    <span class={personName === $t('face_unassigned') ? 'dark:text-gray-500' : ''}>{personName}</span>
-                  {/if}
-                </p>
-              {/if}
+              <p
+                class="relative mt-1 truncate font-medium"
+                title={selectedPersonToCreate[faceGroup.id]?.name ?? personName}
+              >
+                {#if selectedPersonToCreate[faceGroup.id]}
+                  {selectedPersonToCreate[faceGroup.id].name}
+                {:else if selectedPersonToReassign[faceGroup.id]?.id}
+                  {selectedPersonToReassign[faceGroup.id]?.name}
+                {:else}
+                  <span class={personName === $t('face_unassigned') ? 'dark:text-gray-500' : ''}>{personName}</span>
+                {/if}
+              </p>
 
               <div class="absolute -end-[3px] -top-[3px] h-5 w-5 rounded-full">
                 {#if selectedPersonToCreate[faceGroup.id] || selectedPersonToReassign[faceGroup.id]}
-                  <IconButton
-                    shape="round"
-                    variant="ghost"
-                    color="primary"
-                    icon={mdiRestart}
+                  <button
+                    type="button"
                     aria-label={$t('reset')}
-                    size="small"
-                    class="absolute start-1/2 top-1/2 translate-x-[-50%] translate-y-[-50%] transform"
+                    class="absolute start-1/2 top-1/2 flex h-8 w-8 translate-x-[-50%] translate-y-[-50%] transform items-center justify-center rounded-full bg-white/95 text-black shadow-sm ring-1 ring-black/20 hover:bg-white focus-visible:outline-2 focus-visible:outline-immich-primary dark:bg-white/95 dark:text-black"
                     onclick={() => handleReset(faceGroup.id)}
-                  />
+                  >
+                    <Icon icon={mdiRestart} aria-hidden size="20" />
+                  </button>
+                {:else if faceGroup.faces.length > 1}
+                  <button
+                    type="button"
+                    aria-label={$t('expand')}
+                    class="absolute start-1/2 top-1/2 flex h-8 w-8 translate-x-[-50%] translate-y-[-50%] transform items-center justify-center rounded-full bg-white/95 text-black shadow-sm ring-1 ring-black/20 hover:bg-white focus-visible:outline-2 focus-visible:outline-immich-primary dark:bg-white/95 dark:text-black"
+                    onclick={() => handleExpandFaceGroup(faceGroup)}
+                  >
+                    <Icon icon={mdiChevronDown} aria-hidden size="20" />
+                  </button>
                 {:else}
-                  <IconButton
-                    shape="round"
-                    color="primary"
-                    icon={mdiPencil}
+                  <button
+                    type="button"
                     aria-label={$t('select_new_face')}
-                    size="small"
-                    class="absolute start-1/2 top-1/2 translate-x-[-50%] translate-y-[-50%] transform"
+                    class="absolute start-1/2 top-1/2 flex h-8 w-8 translate-x-[-50%] translate-y-[-50%] transform items-center justify-center rounded-full bg-white/95 text-black shadow-sm ring-1 ring-black/20 hover:bg-white focus-visible:outline-2 focus-visible:outline-immich-primary dark:bg-white/95 dark:text-black"
                     onclick={() => handleFacePicker(faceGroup)}
-                  />
+                  >
+                    <Icon icon={mdiPencil} aria-hidden size="20" />
+                  </button>
                 {/if}
               </div>
               <div class="absolute end-8 -top-[3px] h-5 w-5 rounded-full">
-                {#if !selectedPersonToCreate[faceGroup.id] && !selectedPersonToReassign[faceGroup.id] && !faceGroup.person}
+                {#if isSelectableFaceGroup(faceGroup)}
+                  <IconButton
+                    shape="round"
+                    color={isSelected ? 'primary' : 'secondary'}
+                    variant={isSelected ? 'filled' : 'outline'}
+                    icon={isSelected ? mdiCheckCircle : mdiCircleOutline}
+                    aria-label={isSelected ? $t('selected') : $t('select')}
+                    size="small"
+                    class="absolute start-1/2 top-1/2 translate-x-[-50%] translate-y-[-50%] transform"
+                    onclick={() => toggleFaceGroupSelection(faceGroup)}
+                  />
+                {:else if selectedPersonToCreate[faceGroup.id] || selectedPersonToReassign[faceGroup.id]}
                   <div
-                    class="flex place-content-center place-items-center rounded-full bg-[#d3d3d3] p-1 transition-all absolute start-1/2 top-1/2 translate-x-[-50%] translate-y-[-50%] transform"
+                    class="absolute start-1/2 top-1/2 flex h-7 w-7 translate-x-[-50%] translate-y-[-50%] transform items-center justify-center rounded-full bg-primary text-light shadow-sm"
                   >
-                    <Icon color="primary" icon={mdiAccountOff} aria-hidden size="24" />
+                    <Icon icon={mdiAccountMultipleCheckOutline} aria-hidden size="20" />
                   </div>
                 {/if}
               </div>
