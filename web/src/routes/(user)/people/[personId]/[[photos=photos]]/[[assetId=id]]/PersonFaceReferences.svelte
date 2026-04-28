@@ -60,11 +60,13 @@
   let revertingHistoryId = $state<string | null>(null);
   let respondingSuggestionFaceId = $state<string | null>(null);
   let featureThumbnailUrlOverride = $state<string | null>(null);
+  let isReviewMode = $state(false);
 
   const isUpdating = $derived(
     !!updatingFaceId || !!reassigningFaceId || !!revertingHistoryId || !!respondingSuggestionFaceId,
   );
   const featureThumbnailUrl = $derived(featureThumbnailUrlOverride ?? getPeopleThumbnailUrl(person));
+  const activeSuggestion = $derived(suggestions[0] ?? null);
 
   const loadFacePreview = async (face: FacePreviewSource) => {
     const image = new Image();
@@ -311,7 +313,8 @@
         personFaceSuggestionFeedbackDto: { decision },
       });
 
-      suggestions = suggestions.filter(({ id }) => id !== suggestion.id);
+      const remainingSuggestions = suggestions.filter(({ id }) => id !== suggestion.id);
+      suggestions = remainingSuggestions;
 
       if (decision === FaceSuggestionFeedbackDecision.Accepted) {
         featureThumbnailUrlOverride = null;
@@ -321,6 +324,7 @@
         onPersonUpdate(refreshedPerson);
         toastManager.primary($t('face_suggestion_accepted'));
       } else {
+        await refillSuggestionsIfNeeded(remainingSuggestions);
         toastManager.primary($t('face_suggestion_rejected'));
       }
     } catch (error) {
@@ -331,13 +335,67 @@
   };
 
   const handleSkipSuggestion = (suggestion: PersonFaceSuggestionResponseDto) => {
-    suggestions = suggestions.filter(({ id }) => id !== suggestion.id);
+    const remainingSuggestions = suggestions.filter(({ id }) => id !== suggestion.id);
+    suggestions = remainingSuggestions;
+    void refillSuggestionsIfNeeded(remainingSuggestions);
+  };
+
+  const refillSuggestionsIfNeeded = async (remainingSuggestions: PersonFaceSuggestionResponseDto[]) => {
+    if (remainingSuggestions.length > 0 || !hasNextSuggestionPage || isLoadingMoreSuggestions) {
+      return;
+    }
+
+    await loadSuggestions();
+  };
+
+  const isEditableKeyboardTarget = (target: EventTarget | null) => {
+    if (!(target instanceof HTMLElement)) {
+      return false;
+    }
+
+    return ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.isContentEditable;
+  };
+
+  const handleReviewKeyDown = (event: KeyboardEvent) => {
+    if (
+      !isReviewMode ||
+      isUpdating ||
+      !activeSuggestion ||
+      event.repeat ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.altKey ||
+      isEditableKeyboardTarget(event.target)
+    ) {
+      return;
+    }
+
+    switch (event.key.toLowerCase()) {
+      case 's':
+      case 'y': {
+        event.preventDefault();
+        void handleSuggestionFeedback(activeSuggestion, FaceSuggestionFeedbackDecision.Accepted);
+        break;
+      }
+      case 'n': {
+        event.preventDefault();
+        void handleSuggestionFeedback(activeSuggestion, FaceSuggestionFeedbackDecision.Rejected);
+        break;
+      }
+      case 'k': {
+        event.preventDefault();
+        handleSkipSuggestion(activeSuggestion);
+        break;
+      }
+    }
   };
 
   onMount(() => {
     void Promise.all([loadFaces({ reset: true }), loadHistory(), loadSuggestions({ reset: true })]);
   });
 </script>
+
+<svelte:document onkeydown={handleReviewKeyDown} />
 
 <section class="h-full overflow-y-auto px-4 py-12 text-primary sm:px-6 lg:px-10">
   <div class="mb-8 max-w-3xl">
@@ -375,6 +433,18 @@
             {$t('face_suggestions_description', { values: { name: person.name || $t('person') } })}
           </p>
         </div>
+
+        {#if !isLoadingSuggestions}
+          {#if isReviewMode}
+            <Button size="small" color="secondary" variant="outline" onclick={() => (isReviewMode = false)}>
+              {$t('exit_face_suggestion_review')}
+            </Button>
+          {:else}
+            <Button size="small" disabled={suggestions.length === 0} onclick={() => (isReviewMode = true)}>
+              {$t('start_face_suggestion_review')}
+            </Button>
+          {/if}
+        {/if}
       </div>
 
       {#if isLoadingSuggestions}
@@ -387,6 +457,82 @@
         >
           {$t('face_suggestions_empty')}
         </p>
+      {:else if isReviewMode}
+        {#if activeSuggestion}
+          <article
+            class="grid gap-4 overflow-hidden rounded-3xl border border-immich-primary/20 bg-white p-4 shadow-sm dark:border-immich-dark-primary/30 dark:bg-black/20 lg:grid-cols-[minmax(14rem,20rem)_1fr]"
+          >
+            <div class="relative aspect-square overflow-hidden rounded-2xl bg-gray-100 dark:bg-immich-dark-gray">
+              {#await getFacePreview(activeSuggestion)}
+                <div class="flex h-full w-full items-center justify-center">
+                  <LoadingSpinner />
+                </div>
+              {:then preview}
+                <img
+                  src={preview ?? '/src/lib/assets/no-thumbnail.png'}
+                  alt={$t('face_suggestion_preview_alt', { values: { name: person.name || $t('person') } })}
+                  class="h-full w-full object-cover"
+                  draggable="false"
+                />
+              {/await}
+            </div>
+
+            <div class="flex min-w-0 flex-col justify-between gap-5">
+              <div>
+                <p class="text-sm font-semibold uppercase tracking-wide text-immich-primary dark:text-immich-dark-primary">
+                  {$t('face_suggestion_review_mode')}
+                </p>
+                <h3 class="mt-2 text-2xl font-semibold">
+                  {$t('face_suggestion_question', { values: { name: person.name || $t('person') } })}
+                </h3>
+                <p class="mt-2 text-sm text-gray-600 dark:text-gray-300">
+                  {$t('face_suggestion_review_mode_description')}
+                </p>
+                <p class="mt-3 text-sm text-gray-500 dark:text-gray-400">
+                  {$t('face_suggestion_distance', { values: { distance: activeSuggestion.distance.toFixed(3) } })} ·
+                  {$t('face_suggestion_review_remaining', { values: { count: suggestions.length } })}
+                </p>
+              </div>
+
+              <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <Button
+                  leadingIcon={mdiImageCheckOutline}
+                  loading={respondingSuggestionFaceId === activeSuggestion.id}
+                  disabled={isUpdating}
+                  onclick={() => handleSuggestionFeedback(activeSuggestion, FaceSuggestionFeedbackDecision.Accepted)}
+                >
+                  {$t('yes')}
+                  <span class="ml-2 rounded bg-black/10 px-1.5 py-0.5 text-xs dark:bg-white/15">S/Y</span>
+                </Button>
+
+                <Button
+                  color="secondary"
+                  variant="outline"
+                  loading={respondingSuggestionFaceId === activeSuggestion.id}
+                  disabled={isUpdating}
+                  onclick={() => handleSuggestionFeedback(activeSuggestion, FaceSuggestionFeedbackDecision.Rejected)}
+                >
+                  {$t('no')}
+                  <span class="ml-2 rounded bg-black/10 px-1.5 py-0.5 text-xs dark:bg-white/15">N</span>
+                </Button>
+
+                <Button
+                  color="secondary"
+                  variant="ghost"
+                  disabled={isUpdating}
+                  onclick={() => handleSkipSuggestion(activeSuggestion)}
+                >
+                  {$t('skip')}
+                  <span class="ml-2 rounded bg-black/10 px-1.5 py-0.5 text-xs dark:bg-white/15">K</span>
+                </Button>
+              </div>
+
+              <p class="text-xs text-gray-500 dark:text-gray-400">
+                {$t('face_suggestion_review_shortcuts')}
+              </p>
+            </div>
+          </article>
+        {/if}
       {:else}
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
           {#each suggestions as suggestion (suggestion.id)}
