@@ -34,6 +34,7 @@
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
   import { linear } from 'svelte/easing';
+  import { SvelteMap } from 'svelte/reactivity';
   import { fly } from 'svelte/transition';
   import ImageThumbnail from '../assets/thumbnail/ImageThumbnail.svelte';
   import AssignFaceSidePanel from './AssignFaceSidePanel.svelte';
@@ -89,7 +90,7 @@
   const thumbnailWidth = '90px';
 
   const groupedFaceGroups = $derived.by((): FaceGroup[] => {
-    const groups = new Map<string, FaceGroup>();
+    const groups = new SvelteMap<string, FaceGroup>();
 
     for (const face of peopleWithFaces) {
       const id = face.person ? `person:${face.person.id}` : `face:${face.id}`;
@@ -171,14 +172,22 @@
     selectedFaceGroupIds = selectedFaceGroupIds.filter((faceGroupId) => faceGroupId !== id);
   };
 
+  const countChangedFaces = () => {
+    let count = 0;
+
+    for (const faceGroup of faceGroups) {
+      if (selectedPersonToCreate[faceGroup.id] || selectedPersonToReassign[faceGroup.id]) {
+        count += faceGroup.faces.length;
+      }
+    }
+
+    return count;
+  };
+
   const handleEditFaces = async () => {
     loaderLoadingDoneTimeout = setTimeout(() => (isShowLoadingDone = true), timeBeforeShowLoadingSpinner);
     const numberOfChanges = Object.keys(selectedPersonToCreate).length + Object.keys(selectedPersonToReassign).length;
-    const numberOfChangedFaces = faceGroups.reduce((count, faceGroup) => {
-      return selectedPersonToCreate[faceGroup.id] || selectedPersonToReassign[faceGroup.id]
-        ? count + faceGroup.faces.length
-        : count;
-    }, 0);
+    const numberOfChangedFaces = countChangedFaces();
 
     if (numberOfChanges > 0) {
       if (numberOfChangedFaces > 1) {
@@ -197,7 +206,7 @@
       try {
         peopleToCreate = [];
         assetFaceGenerated = [];
-        const createdPersonByFeaturePhoto = new Map<string, string>();
+        const createdPersonByFeaturePhoto = new SvelteMap<string, string>();
 
         for (const faceGroup of faceGroups) {
           const personId = selectedPersonToReassign[faceGroup.id]?.id;

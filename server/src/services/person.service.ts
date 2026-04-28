@@ -14,6 +14,8 @@ import {
   FaceDto,
   mapFaceAssignmentHistory,
   mapFaces,
+  mapFaceSuggestion,
+  mapFaceSuggestionFeedback,
   mapFacesWithoutPerson,
   mapPerson,
   MergePersonDto,
@@ -25,6 +27,10 @@ import {
   PersonFaceAssignmentHistorySearchDto,
   PersonFacesResponseDto,
   PersonFacesSearchDto,
+  PersonFaceSuggestionFeedbackDto,
+  PersonFaceSuggestionFeedbackResponseDto,
+  PersonFaceSuggestionPageResponseDto,
+  PersonFaceSuggestionSearchDto,
   PersonResponseDto,
   PersonSearchDto,
   PersonStatisticsResponseDto,
@@ -35,6 +41,7 @@ import {
   AssetVisibility,
   CacheControl,
   FaceAssignmentHistorySource,
+  FaceSuggestionFeedbackDecision,
   JobName,
   JobStatus,
   Permission,
@@ -73,6 +80,7 @@ type FaceDetectionSource = {
 @Injectable()
 export class PersonService extends BaseService {
   private static readonly UNASSIGNED_FACE_SAMPLE_SIZE = 5;
+  private static readonly FACE_SUGGESTION_REFERENCE_FACE_LIMIT = 10;
 
   async getAll(auth: AuthDto, dto: PersonSearchDto): Promise<PeopleResponseDto> {
     const { withHidden = false, closestAssetId, closestPersonId, page, size } = dto;
@@ -220,9 +228,88 @@ export class PersonService extends BaseService {
     );
 
     return {
-      history: items.map(mapFaceAssignmentHistory),
+      history: items.map((item) => mapFaceAssignmentHistory(item)),
       hasNextPage,
     };
+  }
+
+  async getFaceSuggestions(
+    auth: AuthDto,
+    id: string,
+    dto: PersonFaceSuggestionSearchDto,
+  ): Promise<PersonFaceSuggestionPageResponseDto> {
+    await this.requireAccess({ auth, permission: Permission.PersonRead, ids: [id] });
+
+    const { machineLearning } = await this.getConfig({ withCache: true });
+    const { page, size, maxDistance = machineLearning.facialRecognition.maxDistance } = dto;
+    const { items, hasNextPage } = await this.personRepository.getFaceSuggestionsForPerson(
+      { take: size, skip: (page - 1) * size },
+      auth.user.id,
+      id,
+      {
+        maxDistance,
+        referenceFaceLimit: PersonService.FACE_SUGGESTION_REFERENCE_FACE_LIMIT,
+      },
+    );
+
+    return {
+      suggestions: items.map((item) => mapFaceSuggestion(item)),
+      hasNextPage,
+    };
+  }
+
+  async respondToFaceSuggestion(
+    auth: AuthDto,
+    id: string,
+    faceId: string,
+    dto: PersonFaceSuggestionFeedbackDto,
+  ): Promise<PersonFaceSuggestionFeedbackResponseDto> {
+    await this.requireAccess({ auth, permission: Permission.PersonUpdate, ids: [id] });
+
+    const face = await this.personRepository.getFaceForSuggestionFeedback(auth.user.id, faceId);
+    if (!face) {
+      throw new NotFoundException('Face suggestion not found');
+    }
+
+    if (face.personId) {
+      if (face.personId === id && dto.decision === FaceSuggestionFeedbackDecision.Accepted) {
+        const feedback = await this.personRepository.upsertFaceSuggestionFeedback({
+          ownerId: auth.user.id,
+          personId: id,
+          faceId,
+          actorId: auth.user.id,
+          decision: dto.decision,
+        });
+        return mapFaceSuggestionFeedback(feedback);
+      }
+
+      throw new ConflictException('Face suggestion is no longer unassigned');
+    }
+
+    if (dto.decision === FaceSuggestionFeedbackDecision.Accepted) {
+      const person = await this.findOrFail(id);
+      const move = await this.personRepository.reassignFaceWithHistory({
+        faceId,
+        newPersonId: id,
+        ownerId: auth.user.id,
+        actorId: auth.user.id,
+        source: FaceAssignmentHistorySource.SuggestionAccepted,
+      });
+
+      if (move && person.faceAssetId === null) {
+        await this.createNewFeaturePhoto([id]);
+      }
+    }
+
+    const feedback = await this.personRepository.upsertFaceSuggestionFeedback({
+      ownerId: auth.user.id,
+      personId: id,
+      faceId,
+      actorId: auth.user.id,
+      decision: dto.decision,
+    });
+
+    return mapFaceSuggestionFeedback(feedback);
   }
 
   async revertFaceAssignmentHistory(

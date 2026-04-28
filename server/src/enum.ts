@@ -394,12 +394,23 @@ export enum FaceAssignmentHistorySource {
   ManualReassign = 'manual-reassign',
   ManualBulkReassign = 'manual-bulk-reassign',
   Merge = 'merge',
+  SuggestionAccepted = 'suggestion-accepted',
 }
 
 export const FaceAssignmentHistorySourceSchema = z
   .enum(FaceAssignmentHistorySource)
   .describe('Face assignment history source')
   .meta({ id: 'FaceAssignmentHistorySource' });
+
+export enum FaceSuggestionFeedbackDecision {
+  Accepted = 'accepted',
+  Rejected = 'rejected',
+}
+
+export const FaceSuggestionFeedbackDecisionSchema = z
+  .enum(FaceSuggestionFeedbackDecision)
+  .describe('Face suggestion feedback decision')
+  .meta({ id: 'FaceSuggestionFeedbackDecision' });
 
 export enum ManualJobName {
   PersonCleanup = 'person-cleanup',

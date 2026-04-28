@@ -4,12 +4,19 @@ import { jsonObjectFrom } from 'kysely/helpers/postgres';
 import { InjectKysely } from 'nestjs-kysely';
 import { AssetFace } from 'src/database';
 import { Chunked, ChunkedArray, DummyValue, GenerateSql } from 'src/decorators';
-import { AssetFileType, AssetVisibility, FaceAssignmentHistorySource, SourceType } from 'src/enum';
+import {
+  AssetFileType,
+  AssetVisibility,
+  FaceAssignmentHistorySource,
+  FaceSuggestionFeedbackDecision,
+  SourceType,
+} from 'src/enum';
 import { DB } from 'src/schema';
 import { AssetFaceFrameTable } from 'src/schema/tables/asset-face-frame.table';
 import { AssetFaceTable } from 'src/schema/tables/asset-face.table';
 import { FaceAssignmentHistoryTable } from 'src/schema/tables/face-assignment-history.table';
 import { FaceSearchTable } from 'src/schema/tables/face-search.table';
+import { FaceSuggestionFeedbackTable } from 'src/schema/tables/face-suggestion-feedback.table';
 import { PersonTable } from 'src/schema/tables/person.table';
 import { dummy, removeUndefinedKeys, withFilePath } from 'src/utils/database';
 import { paginationHelper, PaginationOptions } from 'src/utils/pagination';
@@ -61,6 +68,28 @@ export interface FaceAssignmentHistoryMove {
   previousPersonId: string | null;
   newPersonId: string | null;
   history: Selectable<FaceAssignmentHistoryTable>;
+}
+
+export interface FaceSuggestionCandidate extends Selectable<AssetFaceTable> {
+  distance: number;
+}
+
+export interface FaceSuggestionOptions {
+  maxDistance: number;
+  referenceFaceLimit: number;
+}
+
+export interface FaceSuggestionFeedbackData {
+  ownerId: string;
+  personId: string;
+  faceId: string;
+  actorId?: string;
+  decision: FaceSuggestionFeedbackDecision;
+}
+
+export interface FaceForSuggestionFeedback {
+  id: string;
+  personId: string | null;
 }
 
 export type RevertFaceAssignmentHistoryResult =
@@ -468,6 +497,108 @@ export class PersonRepository {
       .execute();
 
     return paginationHelper(items, pagination.take);
+  }
+
+  async getFaceSuggestionsForPerson(
+    pagination: PaginationOptions,
+    ownerId: string,
+    personId: string,
+    options: FaceSuggestionOptions,
+  ) {
+    const distance = sql<number>`min(face_search.embedding <=> reference_face_embeddings.embedding)`;
+    const items = await this.db
+      .with('reference_face_embeddings', (qb) =>
+        qb
+          .selectFrom('asset_face')
+          .innerJoin('asset', (join) =>
+            join
+              .onRef('asset.id', '=', 'asset_face.assetId')
+              .on('asset.ownerId', '=', ownerId)
+              .on('asset.visibility', '=', sql.lit(AssetVisibility.Timeline))
+              .on('asset.deletedAt', 'is', null)
+              .on('asset.isOffline', '=', false),
+          )
+          .innerJoin('face_search', 'face_search.faceId', 'asset_face.id')
+          .select(['face_search.embedding'])
+          .where('asset_face.personId', '=', personId)
+          .where('asset_face.deletedAt', 'is', null)
+          .where('asset_face.isVisible', 'is', true)
+          .orderBy('asset_face.updatedAt', 'desc')
+          .limit(options.referenceFaceLimit),
+      )
+      .selectFrom('asset_face')
+      .selectAll('asset_face')
+      .select(distance.as('distance'))
+      .innerJoin('asset', (join) =>
+        join
+          .onRef('asset.id', '=', 'asset_face.assetId')
+          .on('asset.ownerId', '=', ownerId)
+          .on('asset.visibility', '=', sql.lit(AssetVisibility.Timeline))
+          .on('asset.deletedAt', 'is', null)
+          .on('asset.isOffline', '=', false),
+      )
+      .innerJoin('face_search', 'face_search.faceId', 'asset_face.id')
+      .innerJoin('reference_face_embeddings', (join) => join.on(sql<boolean>`true`))
+      .leftJoin('face_suggestion_feedback', (join) =>
+        join
+          .onRef('face_suggestion_feedback.faceId', '=', 'asset_face.id')
+          .on('face_suggestion_feedback.ownerId', '=', ownerId)
+          .on('face_suggestion_feedback.personId', '=', personId)
+          .on('face_suggestion_feedback.decision', '=', FaceSuggestionFeedbackDecision.Rejected),
+      )
+      .where('asset_face.personId', 'is', null)
+      .where('asset_face.deletedAt', 'is', null)
+      .where('asset_face.isVisible', 'is', true)
+      .where('face_suggestion_feedback.id', 'is', null)
+      .groupBy('asset_face.id')
+      .having(distance, '<=', options.maxDistance)
+      .orderBy('distance')
+      .orderBy('asset_face.updatedAt', 'desc')
+      .offset(pagination.skip ?? 0)
+      .limit(pagination.take + 1)
+      .execute();
+
+    return paginationHelper(items as FaceSuggestionCandidate[], pagination.take);
+  }
+
+  async getFaceForSuggestionFeedback(ownerId: string, faceId: string): Promise<FaceForSuggestionFeedback | undefined> {
+    return this.db
+      .selectFrom('asset_face')
+      .innerJoin('asset', (join) =>
+        join
+          .onRef('asset.id', '=', 'asset_face.assetId')
+          .on('asset.ownerId', '=', ownerId)
+          .on('asset.deletedAt', 'is', null)
+          .on('asset.isOffline', '=', false),
+      )
+      .select(['asset_face.id', 'asset_face.personId'])
+      .where('asset_face.id', '=', faceId)
+      .where('asset_face.deletedAt', 'is', null)
+      .where('asset_face.isVisible', 'is', true)
+      .executeTakeFirst();
+  }
+
+  async upsertFaceSuggestionFeedback(
+    data: FaceSuggestionFeedbackData,
+  ): Promise<Selectable<FaceSuggestionFeedbackTable>> {
+    return this.db
+      .insertInto('face_suggestion_feedback')
+      .values({
+        ownerId: data.ownerId,
+        personId: data.personId,
+        faceId: data.faceId,
+        actorId: data.actorId ?? null,
+        decision: data.decision,
+      })
+      .onConflict((oc) =>
+        oc.columns(['ownerId', 'personId', 'faceId']).doUpdateSet({
+          actorId: data.actorId ?? null,
+          decision: data.decision,
+          updatedAt: sql`clock_timestamp()`,
+        }),
+      )
+      .returningAll()
+      .executeTakeFirstOrThrow();
   }
 
   async getFaceAssignmentHistoryForPerson(pagination: PaginationOptions, ownerId: string, personId: string) {

@@ -29,6 +29,11 @@ import {
   PersonFaceAssignmentHistorySearchDto,
   PersonFacesResponseDto,
   PersonFacesSearchDto,
+  PersonFaceSuggestionFeedbackDto,
+  PersonFaceSuggestionFeedbackParamDto,
+  PersonFaceSuggestionFeedbackResponseDto,
+  PersonFaceSuggestionPageResponseDto,
+  PersonFaceSuggestionSearchDto,
   PersonResponseDto,
   PersonSearchDto,
   PersonStatisticsResponseDto,
@@ -124,6 +129,37 @@ export class PersonController {
     @Param() { id, historyId }: PersonFaceAssignmentHistoryParamDto,
   ): Promise<PersonFaceAssignmentHistoryResponseDto> {
     return this.service.revertFaceAssignmentHistory(auth, id, historyId);
+  }
+
+  @Get(':id/face-suggestions')
+  @Authenticated({ permission: Permission.PersonRead })
+  @Endpoint({
+    summary: 'Get person face suggestions',
+    description: 'Retrieve unassigned faces that look similar to a person.',
+    history: new HistoryBuilder().added('v2.8.0').beta('v2.8.0'),
+  })
+  getPersonFaceSuggestions(
+    @Auth() auth: AuthDto,
+    @Param() { id }: UUIDParamDto,
+    @Query() dto: PersonFaceSuggestionSearchDto,
+  ): Promise<PersonFaceSuggestionPageResponseDto> {
+    return this.service.getFaceSuggestions(auth, id, dto);
+  }
+
+  @Post(':id/face-suggestions/:faceId/feedback')
+  @Authenticated({ permission: Permission.PersonUpdate })
+  @HttpCode(HttpStatus.OK)
+  @Endpoint({
+    summary: 'Respond to a person face suggestion',
+    description: 'Accept or reject an unassigned face suggestion for a person.',
+    history: new HistoryBuilder().added('v2.8.0').beta('v2.8.0'),
+  })
+  respondToPersonFaceSuggestion(
+    @Auth() auth: AuthDto,
+    @Param() { id, faceId }: PersonFaceSuggestionFeedbackParamDto,
+    @Body() dto: PersonFaceSuggestionFeedbackDto,
+  ): Promise<PersonFaceSuggestionFeedbackResponseDto> {
+    return this.service.respondToFaceSuggestion(auth, id, faceId, dto);
   }
 
   @Get(':id')

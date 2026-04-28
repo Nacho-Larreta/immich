@@ -47,6 +47,7 @@ import { AssetOcrTable } from 'src/schema/tables/asset-ocr.table';
 import { AssetTable } from 'src/schema/tables/asset.table';
 import { FaceAssignmentHistoryTable } from 'src/schema/tables/face-assignment-history.table';
 import { FaceSearchTable } from 'src/schema/tables/face-search.table';
+import { FaceSuggestionFeedbackTable } from 'src/schema/tables/face-suggestion-feedback.table';
 import { GeodataPlacesTable } from 'src/schema/tables/geodata-places.table';
 import { LibraryTable } from 'src/schema/tables/library.table';
 import { MemoryAssetAuditTable } from 'src/schema/tables/memory-asset-audit.table';
@@ -107,6 +108,7 @@ export class ImmichDatabase {
     AssetExifTable,
     FaceAssignmentHistoryTable,
     FaceSearchTable,
+    FaceSuggestionFeedbackTable,
     GeodataPlacesTable,
     LibraryTable,
     MemoryTable,
@@ -205,6 +207,7 @@ export interface DB {
 
   face_search: FaceSearchTable;
   face_assignment_history: FaceAssignmentHistoryTable;
+  face_suggestion_feedback: FaceSuggestionFeedbackTable;
 
   geodata_places: GeodataPlacesTable;
 

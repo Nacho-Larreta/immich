@@ -8802,6 +8802,176 @@
         "x-immich-state": "Beta"
       }
     },
+    "/people/{id}/face-suggestions": {
+      "get": {
+        "description": "Retrieve unassigned faces that look similar to a person.",
+        "operationId": "getPersonFaceSuggestions",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            }
+          },
+          {
+            "name": "maxDistance",
+            "required": false,
+            "in": "query",
+            "description": "Override face embedding max distance for suggestions",
+            "schema": {
+              "minimum": 0,
+              "maximum": 2,
+              "type": "number"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "description": "Page number for pagination",
+            "schema": {
+              "minimum": 1,
+              "default": 1,
+              "type": "number"
+            }
+          },
+          {
+            "name": "size",
+            "required": false,
+            "in": "query",
+            "description": "Number of suggestions per page",
+            "schema": {
+              "minimum": 1,
+              "maximum": 50,
+              "default": 10,
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonFaceSuggestionPageResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Get person face suggestions",
+        "tags": [
+          "People"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2.8.0",
+            "state": "Added"
+          },
+          {
+            "version": "v2.8.0",
+            "state": "Beta"
+          }
+        ],
+        "x-immich-permission": "person.read",
+        "x-immich-state": "Beta"
+      }
+    },
+    "/people/{id}/face-suggestions/{faceId}/feedback": {
+      "post": {
+        "description": "Accept or reject an unassigned face suggestion for a person.",
+        "operationId": "respondToPersonFaceSuggestion",
+        "parameters": [
+          {
+            "name": "faceId",
+            "required": true,
+            "in": "path",
+            "description": "Face ID",
+            "schema": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Person ID",
+            "schema": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PersonFaceSuggestionFeedbackDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonFaceSuggestionFeedbackResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Respond to a person face suggestion",
+        "tags": [
+          "People"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2.8.0",
+            "state": "Added"
+          },
+          {
+            "version": "v2.8.0",
+            "state": "Beta"
+          }
+        ],
+        "x-immich-permission": "person.update",
+        "x-immich-state": "Beta"
+      }
+    },
     "/people/{id}/faces": {
       "get": {
         "description": "Retrieve visible face references assigned to a person.",
@@ -18411,7 +18581,8 @@
         "enum": [
           "manual-reassign",
           "manual-bulk-reassign",
-          "merge"
+          "merge",
+          "suggestion-accepted"
         ],
         "type": "string"
       },
@@ -18428,6 +18599,14 @@
           "id"
         ],
         "type": "object"
+      },
+      "FaceSuggestionFeedbackDecision": {
+        "description": "Face suggestion feedback decision",
+        "enum": [
+          "accepted",
+          "rejected"
+        ],
+        "type": "string"
       },
       "FacialRecognitionConfig": {
         "properties": {
@@ -20406,6 +20585,152 @@
           "previousPersonId",
           "revertedAt",
           "source"
+        ],
+        "type": "object"
+      },
+      "PersonFaceSuggestionFeedbackDto": {
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/FaceSuggestionFeedbackDecision"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "type": "object"
+      },
+      "PersonFaceSuggestionFeedbackResponseDto": {
+        "properties": {
+          "createdAt": {
+            "description": "Feedback creation timestamp",
+            "format": "date-time",
+            "type": "string"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/FaceSuggestionFeedbackDecision"
+          },
+          "faceId": {
+            "description": "Face ID",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
+          "id": {
+            "description": "Feedback ID",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
+          "personId": {
+            "description": "Person ID",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
+          "updatedAt": {
+            "description": "Feedback update timestamp",
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "createdAt",
+          "decision",
+          "faceId",
+          "id",
+          "personId",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "PersonFaceSuggestionPageResponseDto": {
+        "properties": {
+          "hasNextPage": {
+            "description": "Whether there are more suggestions",
+            "type": "boolean"
+          },
+          "suggestions": {
+            "description": "Suggested face candidates",
+            "items": {
+              "$ref": "#/components/schemas/PersonFaceSuggestionResponseDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "hasNextPage",
+          "suggestions"
+        ],
+        "type": "object"
+      },
+      "PersonFaceSuggestionResponseDto": {
+        "properties": {
+          "assetId": {
+            "description": "Asset ID",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
+          "boundingBoxX1": {
+            "description": "Bounding box X1 coordinate",
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
+            "type": "integer"
+          },
+          "boundingBoxX2": {
+            "description": "Bounding box X2 coordinate",
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
+            "type": "integer"
+          },
+          "boundingBoxY1": {
+            "description": "Bounding box Y1 coordinate",
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
+            "type": "integer"
+          },
+          "boundingBoxY2": {
+            "description": "Bounding box Y2 coordinate",
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
+            "type": "integer"
+          },
+          "distance": {
+            "description": "Embedding distance from the closest reference face",
+            "type": "number"
+          },
+          "id": {
+            "description": "Face ID",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
+          "imageHeight": {
+            "description": "Image height in pixels",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "imageWidth": {
+            "description": "Image width in pixels",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sourceType": {
+            "$ref": "#/components/schemas/SourceType"
+          }
+        },
+        "required": [
+          "assetId",
+          "boundingBoxX1",
+          "boundingBoxX2",
+          "boundingBoxY1",
+          "boundingBoxY2",
+          "distance",
+          "id",
+          "imageHeight",
+          "imageWidth"
         ],
         "type": "object"
       },

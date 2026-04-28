@@ -1,11 +1,18 @@
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { BulkIdErrorReason } from 'src/dtos/asset-ids.response.dto';
-import { mapFaceAssignmentHistory, mapFaces, mapPerson } from 'src/dtos/person.dto';
+import {
+  mapFaceAssignmentHistory,
+  mapFaces,
+  mapFaceSuggestion,
+  mapFaceSuggestionFeedback,
+  mapPerson,
+} from 'src/dtos/person.dto';
 import {
   AssetFileType,
   AssetType,
   CacheControl,
   FaceAssignmentHistorySource,
+  FaceSuggestionFeedbackDecision,
   JobName,
   JobStatus,
   SourceType,
@@ -31,24 +38,36 @@ import {
 import { newDate, newUuid } from 'test/small.factory';
 import { makeStream, newTestService, ServiceMocks } from 'test/utils';
 
+const makeFaceAssignmentHistory = (overrides = {}) => ({
+  id: newUuid(),
+  faceId: newUuid(),
+  ownerId: newUuid(),
+  actorId: null,
+  previousPersonId: null,
+  newPersonId: newUuid(),
+  source: FaceAssignmentHistorySource.ManualReassign,
+  batchId: null,
+  createdAt: newDate(),
+  revertedAt: null,
+  revertedById: null,
+  ...overrides,
+});
+
+const makeFaceSuggestionFeedback = (overrides = {}) => ({
+  id: newUuid(),
+  ownerId: newUuid(),
+  personId: newUuid(),
+  faceId: newUuid(),
+  actorId: null,
+  decision: FaceSuggestionFeedbackDecision.Rejected,
+  createdAt: newDate(),
+  updatedAt: newDate(),
+  ...overrides,
+});
+
 describe(PersonService.name, () => {
   let sut: PersonService;
   let mocks: ServiceMocks;
-
-  const makeFaceAssignmentHistory = (overrides = {}) => ({
-    id: newUuid(),
-    faceId: newUuid(),
-    ownerId: newUuid(),
-    actorId: null,
-    previousPersonId: null,
-    newPersonId: newUuid(),
-    source: FaceAssignmentHistorySource.ManualReassign,
-    batchId: null,
-    createdAt: newDate(),
-    revertedAt: null,
-    revertedById: null,
-    ...overrides,
-  });
 
   beforeEach(() => {
     ({ sut, mocks } = newTestService(PersonService));
@@ -375,7 +394,7 @@ describe(PersonService.name, () => {
       const auth = AuthFactory.create();
       const person = PersonFactory.create();
 
-      mocks.person.getForFeatureFaceUpdateByFaceId.mockResolvedValue(undefined);
+      mocks.person.getForFeatureFaceUpdateByFaceId.mockResolvedValue(void 0);
       mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set([person.id]));
       mocks.access.person.checkFaceOwnerAccess.mockResolvedValue(new Set([face.id]));
 
@@ -551,6 +570,152 @@ describe(PersonService.name, () => {
         BadRequestException,
       );
       expect(mocks.person.getFaceAssignmentHistoryForPerson).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getFaceSuggestions', () => {
+    it('should get face suggestions for a person', async () => {
+      const auth = AuthFactory.create();
+      const person = PersonFactory.create({ ownerId: auth.user.id });
+      const suggestion = { ...AssetFaceFactory.create(), distance: 0.22 };
+
+      mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set([person.id]));
+      mocks.person.getFaceSuggestionsForPerson.mockResolvedValue({ items: [suggestion], hasNextPage: false });
+
+      await expect(sut.getFaceSuggestions(auth, person.id, { page: 2, size: 5 })).resolves.toEqual({
+        suggestions: [mapFaceSuggestion(suggestion)],
+        hasNextPage: false,
+      });
+
+      expect(mocks.person.getFaceSuggestionsForPerson).toHaveBeenCalledWith(
+        { take: 5, skip: 5 },
+        auth.user.id,
+        person.id,
+        {
+          maxDistance: expect.any(Number),
+          referenceFaceLimit: 10,
+        },
+      );
+    });
+
+    it('should reject if the user has no access to the person', async () => {
+      const auth = AuthFactory.create();
+      const person = PersonFactory.create();
+
+      mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set());
+
+      await expect(sut.getFaceSuggestions(auth, person.id, { page: 1, size: 10 })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(mocks.person.getFaceSuggestionsForPerson).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('respondToFaceSuggestion', () => {
+    it('should accept an unassigned suggested face', async () => {
+      const auth = AuthFactory.create();
+      const person = PersonFactory.create({ ownerId: auth.user.id, faceAssetId: null });
+      const face = AssetFaceFactory.create();
+      const feedback = makeFaceSuggestionFeedback({
+        ownerId: auth.user.id,
+        personId: person.id,
+        faceId: face.id,
+        actorId: auth.user.id,
+        decision: FaceSuggestionFeedbackDecision.Accepted,
+      });
+
+      mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set([person.id]));
+      mocks.person.getFaceForSuggestionFeedback.mockResolvedValue({ id: face.id, personId: null });
+      mocks.person.getById.mockResolvedValue(person);
+      mocks.person.reassignFaceWithHistory.mockResolvedValue({
+        faceId: face.id,
+        previousPersonId: null,
+        newPersonId: person.id,
+        history: makeFaceAssignmentHistory({
+          faceId: face.id,
+          ownerId: auth.user.id,
+          newPersonId: person.id,
+          source: FaceAssignmentHistorySource.SuggestionAccepted,
+        }),
+      });
+      mocks.person.getRandomFace.mockResolvedValue(face);
+      mocks.person.update.mockResolvedValue({ ...person, faceAssetId: face.id });
+      mocks.person.upsertFaceSuggestionFeedback.mockResolvedValue(feedback);
+
+      await expect(
+        sut.respondToFaceSuggestion(auth, person.id, face.id, {
+          decision: FaceSuggestionFeedbackDecision.Accepted,
+        }),
+      ).resolves.toEqual(mapFaceSuggestionFeedback(feedback));
+
+      expect(mocks.person.reassignFaceWithHistory).toHaveBeenCalledWith({
+        faceId: face.id,
+        newPersonId: person.id,
+        ownerId: auth.user.id,
+        actorId: auth.user.id,
+        source: FaceAssignmentHistorySource.SuggestionAccepted,
+      });
+      expect(mocks.person.upsertFaceSuggestionFeedback).toHaveBeenCalledWith({
+        ownerId: auth.user.id,
+        personId: person.id,
+        faceId: face.id,
+        actorId: auth.user.id,
+        decision: FaceSuggestionFeedbackDecision.Accepted,
+      });
+      expect(mocks.job.queueAll).toHaveBeenCalledWith([
+        { name: JobName.PersonGenerateThumbnail, data: { id: person.id } },
+      ]);
+    });
+
+    it('should reject an unassigned suggested face without reassigning it', async () => {
+      const auth = AuthFactory.create();
+      const person = PersonFactory.create({ ownerId: auth.user.id });
+      const face = AssetFaceFactory.create();
+      const feedback = makeFaceSuggestionFeedback({
+        ownerId: auth.user.id,
+        personId: person.id,
+        faceId: face.id,
+        actorId: auth.user.id,
+        decision: FaceSuggestionFeedbackDecision.Rejected,
+      });
+
+      mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set([person.id]));
+      mocks.person.getFaceForSuggestionFeedback.mockResolvedValue({ id: face.id, personId: null });
+      mocks.person.upsertFaceSuggestionFeedback.mockResolvedValue(feedback);
+
+      await expect(
+        sut.respondToFaceSuggestion(auth, person.id, face.id, {
+          decision: FaceSuggestionFeedbackDecision.Rejected,
+        }),
+      ).resolves.toEqual(mapFaceSuggestionFeedback(feedback));
+
+      expect(mocks.person.reassignFaceWithHistory).not.toHaveBeenCalled();
+      expect(mocks.person.upsertFaceSuggestionFeedback).toHaveBeenCalledWith({
+        ownerId: auth.user.id,
+        personId: person.id,
+        faceId: face.id,
+        actorId: auth.user.id,
+        decision: FaceSuggestionFeedbackDecision.Rejected,
+      });
+    });
+
+    it('should throw conflict if a suggested face was assigned to another person', async () => {
+      const auth = AuthFactory.create();
+      const person = PersonFactory.create({ ownerId: auth.user.id });
+      const otherPerson = PersonFactory.create({ ownerId: auth.user.id });
+      const face = AssetFaceFactory.create({ personId: otherPerson.id });
+
+      mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set([person.id]));
+      mocks.person.getFaceForSuggestionFeedback.mockResolvedValue({ id: face.id, personId: otherPerson.id });
+
+      await expect(
+        sut.respondToFaceSuggestion(auth, person.id, face.id, {
+          decision: FaceSuggestionFeedbackDecision.Accepted,
+        }),
+      ).rejects.toBeInstanceOf(ConflictException);
+
+      expect(mocks.person.reassignFaceWithHistory).not.toHaveBeenCalled();
+      expect(mocks.person.upsertFaceSuggestionFeedback).not.toHaveBeenCalled();
     });
   });
 

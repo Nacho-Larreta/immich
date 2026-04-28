@@ -4,9 +4,10 @@ import { AssetFace, Person } from 'src/database';
 import { HistoryBuilder } from 'src/decorators';
 import { AuthDto } from 'src/dtos/auth.dto';
 import { AssetEditActionItem } from 'src/dtos/editing.dto';
-import { FaceAssignmentHistorySourceSchema, SourceTypeSchema } from 'src/enum';
+import { FaceAssignmentHistorySourceSchema, FaceSuggestionFeedbackDecisionSchema, SourceTypeSchema } from 'src/enum';
 import { AssetFaceTable } from 'src/schema/tables/asset-face.table';
 import { FaceAssignmentHistoryTable } from 'src/schema/tables/face-assignment-history.table';
+import { FaceSuggestionFeedbackTable } from 'src/schema/tables/face-suggestion-feedback.table';
 import { ImageDimensions, MaybeDehydrated } from 'src/types';
 import { asBirthDateString, asDateString } from 'src/utils/date';
 import { transformFaceBoundingBox } from 'src/utils/transform';
@@ -184,6 +185,66 @@ export class PersonFaceAssignmentHistoryPageResponseDto extends createZodDto(
   PersonFaceAssignmentHistoryPageResponseSchema,
 ) {}
 
+const PersonFaceSuggestionSearchSchema = z
+  .object({
+    page: z.coerce.number().min(1).default(1).describe('Page number for pagination'),
+    size: z.coerce.number().min(1).max(50).default(10).describe('Number of suggestions per page'),
+    maxDistance: z.coerce
+      .number()
+      .min(0)
+      .max(2)
+      .optional()
+      .describe('Override face embedding max distance for suggestions'),
+  })
+  .meta({ id: 'PersonFaceSuggestionSearchDto' });
+
+export class PersonFaceSuggestionSearchDto extends createZodDto(PersonFaceSuggestionSearchSchema) {}
+
+const PersonFaceSuggestionResponseSchema = AssetFaceWithoutPersonResponseSchema.extend({
+  distance: z.number().describe('Embedding distance from the closest reference face'),
+}).meta({ id: 'PersonFaceSuggestionResponseDto' });
+
+export class PersonFaceSuggestionResponseDto extends createZodDto(PersonFaceSuggestionResponseSchema) {}
+
+const PersonFaceSuggestionPageResponseSchema = z
+  .object({
+    suggestions: z.array(PersonFaceSuggestionResponseSchema).describe('Suggested face candidates'),
+    hasNextPage: z.boolean().describe('Whether there are more suggestions'),
+  })
+  .meta({ id: 'PersonFaceSuggestionPageResponseDto' });
+
+export class PersonFaceSuggestionPageResponseDto extends createZodDto(PersonFaceSuggestionPageResponseSchema) {}
+
+const PersonFaceSuggestionFeedbackParamSchema = z
+  .object({
+    id: z.uuidv4().describe('Person ID'),
+    faceId: z.uuidv4().describe('Face ID'),
+  })
+  .meta({ id: 'PersonFaceSuggestionFeedbackParamDto' });
+
+export class PersonFaceSuggestionFeedbackParamDto extends createZodDto(PersonFaceSuggestionFeedbackParamSchema) {}
+
+const PersonFaceSuggestionFeedbackSchema = z
+  .object({
+    decision: FaceSuggestionFeedbackDecisionSchema,
+  })
+  .meta({ id: 'PersonFaceSuggestionFeedbackDto' });
+
+export class PersonFaceSuggestionFeedbackDto extends createZodDto(PersonFaceSuggestionFeedbackSchema) {}
+
+const PersonFaceSuggestionFeedbackResponseSchema = z
+  .object({
+    id: z.uuidv4().describe('Feedback ID'),
+    personId: z.uuidv4().describe('Person ID'),
+    faceId: z.uuidv4().describe('Face ID'),
+    decision: FaceSuggestionFeedbackDecisionSchema,
+    createdAt: z.string().meta({ format: 'date-time' }).describe('Feedback creation timestamp'),
+    updatedAt: z.string().meta({ format: 'date-time' }).describe('Feedback update timestamp'),
+  })
+  .meta({ id: 'PersonFaceSuggestionFeedbackResponseDto' });
+
+export class PersonFaceSuggestionFeedbackResponseDto extends createZodDto(PersonFaceSuggestionFeedbackResponseSchema) {}
+
 const AssetFaceUpdateItemSchema = z
   .object({
     personId: z.uuidv4().describe('Person ID'),
@@ -299,6 +360,15 @@ export function mapFaces(
   };
 }
 
+export function mapFaceSuggestion(
+  face: MaybeDehydrated<Selectable<AssetFaceTable>> & { distance: number },
+): PersonFaceSuggestionResponseDto {
+  return {
+    ...mapFacesWithoutPerson(face),
+    distance: face.distance,
+  };
+}
+
 export function mapFaceAssignmentHistory(
   history: Selectable<FaceAssignmentHistoryTable>,
 ): PersonFaceAssignmentHistoryResponseDto {
@@ -311,5 +381,18 @@ export function mapFaceAssignmentHistory(
     batchId: history.batchId,
     createdAt: asDateString(history.createdAt),
     revertedAt: history.revertedAt ? asDateString(history.revertedAt) : null,
+  };
+}
+
+export function mapFaceSuggestionFeedback(
+  feedback: Selectable<FaceSuggestionFeedbackTable>,
+): PersonFaceSuggestionFeedbackResponseDto {
+  return {
+    id: feedback.id,
+    personId: feedback.personId,
+    faceId: feedback.faceId,
+    decision: feedback.decision,
+    createdAt: asDateString(feedback.createdAt),
+    updatedAt: asDateString(feedback.updatedAt),
   };
 }

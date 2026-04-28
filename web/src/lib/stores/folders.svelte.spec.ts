@@ -25,7 +25,7 @@ describe('foldersStore', () => {
     vi.mocked(getUniqueOriginalPaths).mockReturnValue(
       new Promise<string[]>((resolve) => {
         resolvePaths = resolve;
-      }),
+      }) as unknown as ReturnType<typeof getUniqueOriginalPaths>,
     );
 
     const first = foldersStore.fetchTree();

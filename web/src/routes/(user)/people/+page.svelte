@@ -30,6 +30,7 @@
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
   import { quintOut } from 'svelte/easing';
+  import { SvelteMap } from 'svelte/reactivity';
   import { fly } from 'svelte/transition';
   import type { PageData } from './$types';
 
@@ -54,7 +55,7 @@
 
   type UnassignedPeopleFace = AssetFaceWithoutPersonResponseDto;
 
-  const unassignedFacePreviewCache = new Map<string, Promise<string | null>>();
+  const unassignedFacePreviewCache = new SvelteMap<string, Promise<string | null>>();
 
   const loadUnassignedFacePreview = async (face: UnassignedPeopleFace) => {
     const image = new Image();

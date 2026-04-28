@@ -6,14 +6,18 @@
   import { handleError } from '$lib/utils/handle-error';
   import {
     FaceAssignmentHistorySource,
+    FaceSuggestionFeedbackDecision,
     getPerson,
     getPersonFaceAssignmentHistory,
     getPersonFaces,
+    getPersonFaceSuggestions,
     reassignFacesById,
+    respondToPersonFaceSuggestion,
     revertPersonFaceAssignmentHistory,
     updatePerson,
     type AssetFaceResponseDto,
     type PersonFaceAssignmentHistoryResponseDto,
+    type PersonFaceSuggestionResponseDto,
     type PersonResponseDto,
   } from '@immich/sdk';
   import { Button, LoadingSpinner, modalManager, toastManager } from '@immich/ui';
@@ -31,24 +35,38 @@
 
   const pageSize = 48;
   const historyPageSize = 10;
-  const facePreviewCache = new Map<string, Promise<string | null>>();
+  const suggestionPageSize = 12;
+  const facePreviewCache: Record<string, Promise<string | null> | undefined> = {};
+
+  type FacePreviewSource = Pick<
+    AssetFaceResponseDto,
+    'id' | 'imageWidth' | 'imageHeight' | 'boundingBoxX1' | 'boundingBoxX2' | 'boundingBoxY1' | 'boundingBoxY2'
+  >;
 
   let faces: AssetFaceResponseDto[] = $state([]);
   let history: PersonFaceAssignmentHistoryResponseDto[] = $state([]);
+  let suggestions: PersonFaceSuggestionResponseDto[] = $state([]);
   let page = $state(1);
+  let suggestionPage = $state(1);
   let hasNextPage = $state(false);
+  let hasNextSuggestionPage = $state(false);
   let isLoading = $state(true);
   let isLoadingHistory = $state(true);
+  let isLoadingSuggestions = $state(true);
   let isLoadingMore = $state(false);
+  let isLoadingMoreSuggestions = $state(false);
   let updatingFaceId = $state<string | null>(null);
   let reassigningFaceId = $state<string | null>(null);
   let revertingHistoryId = $state<string | null>(null);
+  let respondingSuggestionFaceId = $state<string | null>(null);
   let featureThumbnailUrlOverride = $state<string | null>(null);
 
-  const isUpdating = $derived(!!updatingFaceId || !!reassigningFaceId || !!revertingHistoryId);
+  const isUpdating = $derived(
+    !!updatingFaceId || !!reassigningFaceId || !!revertingHistoryId || !!respondingSuggestionFaceId,
+  );
   const featureThumbnailUrl = $derived(featureThumbnailUrlOverride ?? getPeopleThumbnailUrl(person));
 
-  const loadFacePreview = async (face: AssetFaceResponseDto) => {
+  const loadFacePreview = async (face: FacePreviewSource) => {
     const image = new Image();
     image.src = getFaceSourceImageUrl(face.id);
 
@@ -91,14 +109,14 @@
     return canvas.toDataURL('image/jpeg', 0.85);
   };
 
-  const getFacePreview = (face: AssetFaceResponseDto) => {
-    const cached = facePreviewCache.get(face.id);
+  const getFacePreview = (face: FacePreviewSource) => {
+    const cached = facePreviewCache[face.id];
     if (cached) {
       return cached;
     }
 
     const preview = loadFacePreview(face);
-    facePreviewCache.set(face.id, preview);
+    facePreviewCache[face.id] = preview;
     return preview;
   };
 
@@ -138,6 +156,28 @@
     }
   };
 
+  const loadSuggestions = async ({ reset = false } = {}) => {
+    if (reset) {
+      isLoadingSuggestions = true;
+      suggestionPage = 1;
+    } else {
+      isLoadingMoreSuggestions = true;
+    }
+
+    try {
+      const nextPage = reset ? 1 : suggestionPage;
+      const response = await getPersonFaceSuggestions({ id: person.id, page: nextPage, size: suggestionPageSize });
+      suggestions = reset ? response.suggestions : [...suggestions, ...response.suggestions];
+      hasNextSuggestionPage = response.hasNextPage;
+      suggestionPage = nextPage + 1;
+    } catch (error) {
+      handleError(error, $t('errors.unable_to_load_face_suggestions'));
+    } finally {
+      isLoadingSuggestions = false;
+      isLoadingMoreSuggestions = false;
+    }
+  };
+
   const formatHistoryDate = (date: string) =>
     DateTime.fromISO(date, { locale: $locale ?? undefined }).toLocaleString(DateTime.DATETIME_MED);
 
@@ -151,6 +191,9 @@
       }
       case FaceAssignmentHistorySource.Merge: {
         return $t('face_assignment_history_source_merge');
+      }
+      case FaceAssignmentHistorySource.SuggestionAccepted: {
+        return $t('face_assignment_history_source_suggestion');
       }
     }
   };
@@ -252,8 +295,47 @@
     }
   };
 
+  const handleSuggestionFeedback = async (
+    suggestion: PersonFaceSuggestionResponseDto,
+    decision: FaceSuggestionFeedbackDecision,
+  ) => {
+    if (isUpdating) {
+      return;
+    }
+
+    respondingSuggestionFaceId = suggestion.id;
+    try {
+      await respondToPersonFaceSuggestion({
+        id: person.id,
+        faceId: suggestion.id,
+        personFaceSuggestionFeedbackDto: { decision },
+      });
+
+      suggestions = suggestions.filter(({ id }) => id !== suggestion.id);
+
+      if (decision === FaceSuggestionFeedbackDecision.Accepted) {
+        featureThumbnailUrlOverride = null;
+        await Promise.all([loadFaces({ reset: true }), loadHistory(), loadSuggestions({ reset: true })]);
+
+        const refreshedPerson = await getPerson({ id: person.id });
+        onPersonUpdate(refreshedPerson);
+        toastManager.primary($t('face_suggestion_accepted'));
+      } else {
+        toastManager.primary($t('face_suggestion_rejected'));
+      }
+    } catch (error) {
+      handleError(error, $t('errors.unable_to_update_face_suggestion'));
+    } finally {
+      respondingSuggestionFaceId = null;
+    }
+  };
+
+  const handleSkipSuggestion = (suggestion: PersonFaceSuggestionResponseDto) => {
+    suggestions = suggestions.filter(({ id }) => id !== suggestion.id);
+  };
+
   onMount(() => {
-    void Promise.all([loadFaces({ reset: true }), loadHistory()]);
+    void Promise.all([loadFaces({ reset: true }), loadHistory(), loadSuggestions({ reset: true })]);
   });
 </script>
 
@@ -283,6 +365,115 @@
       <LoadingSpinner />
     </div>
   {:else}
+    <div
+      class="mb-8 rounded-3xl border border-immich-primary/20 bg-immich-primary/5 p-4 dark:border-immich-dark-primary/30 dark:bg-immich-dark-primary/20"
+    >
+      <div class="mb-3 flex items-start justify-between gap-4">
+        <div>
+          <h2 class="text-base font-semibold">{$t('face_suggestions')}</h2>
+          <p class="mt-1 text-sm text-gray-600 dark:text-gray-300">
+            {$t('face_suggestions_description', { values: { name: person.name || $t('person') } })}
+          </p>
+        </div>
+      </div>
+
+      {#if isLoadingSuggestions}
+        <div class="flex h-28 items-center justify-center">
+          <LoadingSpinner />
+        </div>
+      {:else if suggestions.length === 0}
+        <p
+          class="rounded-2xl border border-dashed border-immich-primary/30 p-4 text-sm text-gray-500 dark:border-immich-dark-primary/40 dark:text-gray-400"
+        >
+          {$t('face_suggestions_empty')}
+        </p>
+      {:else}
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+          {#each suggestions as suggestion (suggestion.id)}
+            <article
+              class="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-black/20"
+            >
+              <div class="grid grid-cols-[6rem_1fr] gap-3 p-3">
+                <div class="relative aspect-square overflow-hidden rounded-xl bg-gray-100 dark:bg-immich-dark-gray">
+                  {#await getFacePreview(suggestion)}
+                    <div class="flex h-full w-full items-center justify-center">
+                      <LoadingSpinner />
+                    </div>
+                  {:then preview}
+                    <img
+                      src={preview ?? '/src/lib/assets/no-thumbnail.png'}
+                      alt={$t('face_suggestion_preview_alt', { values: { name: person.name || $t('person') } })}
+                      class="h-full w-full object-cover"
+                      draggable="false"
+                    />
+                  {/await}
+                </div>
+
+                <div class="flex min-w-0 flex-col justify-between gap-3">
+                  <div>
+                    <p class="font-semibold">
+                      {$t('face_suggestion_question', { values: { name: person.name || $t('person') } })}
+                    </p>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      {$t('face_suggestion_distance', { values: { distance: suggestion.distance.toFixed(3) } })}
+                    </p>
+                  </div>
+
+                  <div class="grid grid-cols-3 gap-2">
+                    <Button
+                      size="small"
+                      leadingIcon={mdiImageCheckOutline}
+                      loading={respondingSuggestionFaceId === suggestion.id}
+                      disabled={isUpdating}
+                      onclick={() => handleSuggestionFeedback(suggestion, FaceSuggestionFeedbackDecision.Accepted)}
+                    >
+                      {$t('yes')}
+                    </Button>
+
+                    <Button
+                      size="small"
+                      color="secondary"
+                      variant="outline"
+                      loading={respondingSuggestionFaceId === suggestion.id}
+                      disabled={isUpdating}
+                      onclick={() => handleSuggestionFeedback(suggestion, FaceSuggestionFeedbackDecision.Rejected)}
+                    >
+                      {$t('no')}
+                    </Button>
+
+                    <Button
+                      size="small"
+                      color="secondary"
+                      variant="ghost"
+                      disabled={isUpdating}
+                      onclick={() => handleSkipSuggestion(suggestion)}
+                    >
+                      {$t('skip')}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </article>
+          {/each}
+        </div>
+
+        {#if hasNextSuggestionPage}
+          <div class="mt-4 flex justify-center">
+            <Button
+              size="small"
+              color="secondary"
+              variant="outline"
+              loading={isLoadingMoreSuggestions}
+              disabled={isLoadingMoreSuggestions}
+              onclick={() => loadSuggestions()}
+            >
+              {$t('load_more_face_suggestions')}
+            </Button>
+          </div>
+        {/if}
+      {/if}
+    </div>
+
     <div
       class="mb-8 rounded-3xl border border-gray-200 bg-gray-50/80 p-4 dark:border-gray-800 dark:bg-immich-dark-gray/50"
     >
