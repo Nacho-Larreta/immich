@@ -125,6 +125,15 @@ describe(PersonController.name, () => {
       expect(body).toEqual(errorDto.badRequest(['[featureFaceAssetId] Invalid UUID']));
     });
 
+    it(`should require featureFaceId to be a uuid`, async () => {
+      const { status, body } = await request(ctx.getHttpServer())
+        .put(`/people/${factory.uuid()}`)
+        .send({ featureFaceId: 'invalid' })
+        .set('Authorization', `Bearer token`);
+      expect(status).toBe(400);
+      expect(body).toEqual(errorDto.badRequest(['[featureFaceId] Invalid UUID']));
+    });
+
     it(`should require isFavorite to be a boolean`, async () => {
       const { status, body } = await request(ctx.getHttpServer())
         .put(`/people/${factory.uuid()}`)

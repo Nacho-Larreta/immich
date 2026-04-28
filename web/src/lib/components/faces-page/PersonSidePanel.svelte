@@ -15,6 +15,7 @@
     deleteFace,
     getFaces,
     reassignFacesById,
+    updatePerson,
     type AssetFaceResponseDto,
     type PersonResponseDto,
   } from '@immich/sdk';
@@ -25,6 +26,7 @@
     mdiChevronDown,
     mdiCheckCircle,
     mdiCircleOutline,
+    mdiFaceManProfile,
     mdiPencil,
     mdiRestart,
     mdiTrashCan,
@@ -71,6 +73,7 @@
   let editedFace: AssetFaceResponseDto | undefined = $state();
   let editedFaceGroupId: string | undefined = $state();
   let editedFaceGroupIds: string[] = $state([]);
+  let updatingFeatureFaceIds: string[] = $state([]);
 
   // loading spinners
   let isShowLoadingDone = $state(false);
@@ -304,6 +307,40 @@
 
   const clearSelectedFaceGroups = () => {
     selectedFaceGroupIds = [];
+  };
+
+  const canSetFeatureFace = (faceGroup: FaceGroup) =>
+    Boolean(faceGroup.person) &&
+    faceGroup.faces.length === 1 &&
+    !selectedPersonToCreate[faceGroup.id] &&
+    !selectedPersonToReassign[faceGroup.id];
+
+  const isUpdatingFeatureFace = (faceGroup: FaceGroup) => updatingFeatureFaceIds.includes(faceGroup.face.id);
+
+  const handleSetFeatureFace = async (faceGroup: FaceGroup) => {
+    if (!faceGroup.person || isUpdatingFeatureFace(faceGroup)) {
+      return;
+    }
+
+    const faceId = faceGroup.face.id;
+    updatingFeatureFaceIds = [...updatingFeatureFaceIds, faceId];
+
+    try {
+      const updatedPerson = await updatePerson({
+        id: faceGroup.person.id,
+        personUpdateDto: { featureFaceId: faceId },
+      });
+
+      peopleWithFaces = peopleWithFaces.map((face) =>
+        face.person?.id === updatedPerson.id ? { ...face, person: updatedPerson } : face,
+      );
+      eventManager.emit('PersonUpdate', updatedPerson);
+      toastManager.primary($t('feature_photo_updated'));
+    } catch (error) {
+      handleError(error, $t('errors.unable_to_set_feature_photo'));
+    } finally {
+      updatingFeatureFaceIds = updatingFeatureFaceIds.filter((id) => id !== faceId);
+    }
   };
 
   const handleBatchFacePicker = () => {
@@ -608,6 +645,24 @@
                   onclick={() => deleteAssetFaceGroup(faceGroup)}
                 />
               </div>
+              {#if canSetFeatureFace(faceGroup)}
+                <div class="absolute end-1 top-[68px] h-5 w-5 rounded-full">
+                  <button
+                    type="button"
+                    aria-label={$t('set_as_featured_photo')}
+                    title={$t('set_as_featured_photo')}
+                    disabled={isUpdatingFeatureFace(faceGroup)}
+                    class="absolute start-1/2 top-1/2 flex h-8 w-8 translate-x-[-50%] translate-y-[-50%] transform items-center justify-center rounded-full bg-white/95 text-black shadow-sm ring-1 ring-black/20 hover:bg-white disabled:cursor-wait disabled:opacity-70 focus-visible:outline-2 focus-visible:outline-immich-primary dark:bg-white/95 dark:text-black"
+                    onclick={() => handleSetFeatureFace(faceGroup)}
+                  >
+                    {#if isUpdatingFeatureFace(faceGroup)}
+                      <LoadingSpinner />
+                    {:else}
+                      <Icon icon={mdiFaceManProfile} aria-hidden size="20" />
+                    {/if}
+                  </button>
+                </div>
+              {/if}
             </div>
           </div>
         {/each}

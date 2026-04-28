@@ -33,7 +33,7 @@
   async function loadPeople() {
     const timeout = setTimeout(() => (isShowLoadingPeople = true), timeBeforeShowLoadingSpinner);
     try {
-      const { people } = await getAllPeople({ withHidden: true, closestAssetId: editedFace.id });
+      const { people } = await getAllPeople({ withHidden: true, closestAssetId: assetId });
       allPeople = people;
     } catch (error) {
       handleError(error, $t('errors.cant_get_faces'));

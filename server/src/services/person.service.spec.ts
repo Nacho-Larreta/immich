@@ -293,6 +293,47 @@ describe(PersonService.name, () => {
       expect(mocks.access.person.checkOwnerAccess).toHaveBeenCalledWith(auth.user.id, new Set([person.id]));
     });
 
+    it("should update a person's thumbnailPath by face id", async () => {
+      const face = AssetFaceFactory.create();
+      const auth = AuthFactory.create();
+      const person = PersonFactory.create();
+
+      mocks.person.update.mockResolvedValue(person);
+      mocks.person.getForFeatureFaceUpdateByFaceId.mockResolvedValue(face);
+      mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set([person.id]));
+      mocks.access.person.checkFaceOwnerAccess.mockResolvedValue(new Set([face.id]));
+
+      await expect(sut.update(auth, person.id, { featureFaceId: face.id })).resolves.toEqual(
+        expect.objectContaining({ id: person.id }),
+      );
+
+      expect(mocks.person.update).toHaveBeenCalledWith({ id: person.id, faceAssetId: face.id });
+      expect(mocks.person.getForFeatureFaceUpdateByFaceId).toHaveBeenCalledWith({
+        faceId: face.id,
+        personId: person.id,
+      });
+      expect(mocks.job.queue).toHaveBeenCalledWith({
+        name: JobName.PersonGenerateThumbnail,
+        data: { id: person.id },
+      });
+      expect(mocks.access.person.checkOwnerAccess).toHaveBeenCalledWith(auth.user.id, new Set([person.id]));
+      expect(mocks.access.person.checkFaceOwnerAccess).toHaveBeenCalledWith(auth.user.id, new Set([face.id]));
+    });
+
+    it('should throw an error when both feature face fields are provided', async () => {
+      const face = AssetFaceFactory.create();
+      const auth = AuthFactory.create();
+      const person = PersonFactory.create();
+
+      mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set([person.id]));
+
+      await expect(
+        sut.update(auth, person.id, { featureFaceAssetId: face.assetId, featureFaceId: face.id }),
+      ).rejects.toThrow(BadRequestException);
+      expect(mocks.person.update).not.toHaveBeenCalled();
+      expect(mocks.access.person.checkOwnerAccess).toHaveBeenCalledWith(auth.user.id, new Set([person.id]));
+    });
+
     it('should throw an error when the face feature assetId is invalid', async () => {
       const auth = AuthFactory.create();
       const person = PersonFactory.create();
@@ -303,6 +344,21 @@ describe(PersonService.name, () => {
       await expect(sut.update(auth, person.id, { featureFaceAssetId: '-1' })).rejects.toThrow(BadRequestException);
       expect(mocks.person.update).not.toHaveBeenCalled();
       expect(mocks.access.person.checkOwnerAccess).toHaveBeenCalledWith(auth.user.id, new Set([person.id]));
+    });
+
+    it('should throw an error when the feature faceId is invalid', async () => {
+      const face = AssetFaceFactory.create();
+      const auth = AuthFactory.create();
+      const person = PersonFactory.create();
+
+      mocks.person.getForFeatureFaceUpdateByFaceId.mockResolvedValue(undefined);
+      mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set([person.id]));
+      mocks.access.person.checkFaceOwnerAccess.mockResolvedValue(new Set([face.id]));
+
+      await expect(sut.update(auth, person.id, { featureFaceId: face.id })).rejects.toThrow(BadRequestException);
+      expect(mocks.person.update).not.toHaveBeenCalled();
+      expect(mocks.access.person.checkOwnerAccess).toHaveBeenCalledWith(auth.user.id, new Set([person.id]));
+      expect(mocks.access.person.checkFaceOwnerAccess).toHaveBeenCalledWith(auth.user.id, new Set([face.id]));
     });
   });
 

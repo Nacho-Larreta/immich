@@ -1478,6 +1478,8 @@ export type PeopleUpdateItem = {
     color?: string | null;
     /** Asset ID used for feature face thumbnail */
     featureFaceAssetId?: string;
+    /** Asset face ID used for feature face thumbnail */
+    featureFaceId?: string;
     /** Person ID */
     id: string;
     /** Mark as favorite */
@@ -1498,6 +1500,8 @@ export type PersonUpdateDto = {
     color?: string | null;
     /** Asset ID used for feature face thumbnail */
     featureFaceAssetId?: string;
+    /** Asset face ID used for feature face thumbnail */
+    featureFaceId?: string;
     /** Mark as favorite */
     isFavorite?: boolean;
     /** Person visibility (hidden) */

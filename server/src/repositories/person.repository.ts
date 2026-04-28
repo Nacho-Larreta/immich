@@ -670,4 +670,17 @@ export class PersonRepository {
       .innerJoin('asset', (join) => join.onRef('asset.id', '=', 'asset_face.assetId').on('asset.isOffline', '=', false))
       .executeTakeFirst();
   }
+
+  @GenerateSql({ params: [{ personId: DummyValue.UUID, faceId: DummyValue.UUID }] })
+  getForFeatureFaceUpdateByFaceId({ personId, faceId }: { personId: string; faceId: string }) {
+    return this.db
+      .selectFrom('asset_face')
+      .select('asset_face.id')
+      .where('asset_face.id', '=', faceId)
+      .where('asset_face.personId', '=', personId)
+      .where('asset_face.deletedAt', 'is', null)
+      .where('asset_face.isVisible', 'is', true)
+      .innerJoin('asset', (join) => join.onRef('asset.id', '=', 'asset_face.assetId').on('asset.isOffline', '=', false))
+      .executeTakeFirst();
+  }
 }

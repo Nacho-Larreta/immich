@@ -28,6 +28,7 @@ const PersonCreateSchema = z
 
 const PersonUpdateSchema = PersonCreateSchema.extend({
   featureFaceAssetId: z.uuidv4().optional().describe('Asset ID used for feature face thumbnail'),
+  featureFaceId: z.uuidv4().optional().describe('Asset face ID used for feature face thumbnail'),
 }).meta({ id: 'PersonUpdateDto' });
 
 const PeopleUpdateItemSchema = PersonUpdateSchema.extend({

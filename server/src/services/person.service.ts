@@ -235,10 +235,22 @@ export class PersonService extends BaseService {
   async update(auth: AuthDto, id: string, dto: PersonUpdateDto): Promise<PersonResponseDto> {
     await this.requireAccess({ auth, permission: Permission.PersonUpdate, ids: [id] });
 
-    const { name, birthDate, isHidden, featureFaceAssetId: assetId, isFavorite, color } = dto;
-    // TODO: set by faceId directly
+    const { name, birthDate, isHidden, featureFaceAssetId: assetId, featureFaceId, isFavorite, color } = dto;
     let faceId: string | undefined = undefined;
-    if (assetId) {
+
+    if (assetId && featureFaceId) {
+      throw new BadRequestException('Use either featureFaceId or featureFaceAssetId, not both');
+    }
+
+    if (featureFaceId) {
+      await this.requireAccess({ auth, permission: Permission.FaceRead, ids: [featureFaceId] });
+      const face = await this.personRepository.getForFeatureFaceUpdateByFaceId({ personId: id, faceId: featureFaceId });
+      if (!face) {
+        throw new BadRequestException('Invalid faceId for feature face or asset is offline');
+      }
+
+      faceId = face.id;
+    } else if (assetId) {
       await this.requireAccess({ auth, permission: Permission.AssetRead, ids: [assetId] });
       const face = await this.personRepository.getForFeatureFaceUpdate({ personId: id, assetId });
       if (!face) {
@@ -258,7 +270,7 @@ export class PersonService extends BaseService {
       color,
     });
 
-    if (assetId) {
+    if (faceId) {
       await this.jobRepository.queue({ name: JobName.PersonGenerateThumbnail, data: { id } });
     }
 
@@ -278,6 +290,7 @@ export class PersonService extends BaseService {
           name: person.name,
           birthDate: person.birthDate,
           featureFaceAssetId: person.featureFaceAssetId,
+          featureFaceId: person.featureFaceId,
           isFavorite: person.isFavorite,
         });
         results.push({ id: person.id, success: true });
