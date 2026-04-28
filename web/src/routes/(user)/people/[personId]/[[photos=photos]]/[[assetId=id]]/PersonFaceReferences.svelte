@@ -1,11 +1,19 @@
 <script lang="ts">
   import ImageThumbnail from '$lib/components/assets/thumbnail/ImageThumbnail.svelte';
+  import PeoplePickerModal from '$lib/modals/PeoplePickerModal.svelte';
   import { Route } from '$lib/route';
   import { getFaceSourceImageUrl, getPeopleThumbnailUrl } from '$lib/utils';
   import { handleError } from '$lib/utils/handle-error';
-  import { getPersonFaces, updatePerson, type AssetFaceResponseDto, type PersonResponseDto } from '@immich/sdk';
-  import { Button, LoadingSpinner, toastManager } from '@immich/ui';
-  import { mdiImageCheckOutline, mdiOpenInNew } from '@mdi/js';
+  import {
+    getPerson,
+    getPersonFaces,
+    reassignFacesById,
+    updatePerson,
+    type AssetFaceResponseDto,
+    type PersonResponseDto,
+  } from '@immich/sdk';
+  import { Button, LoadingSpinner, modalManager, toastManager } from '@immich/ui';
+  import { mdiImageCheckOutline, mdiOpenInNew, mdiSwapHorizontal } from '@mdi/js';
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
 
@@ -25,6 +33,11 @@
   let isLoading = $state(true);
   let isLoadingMore = $state(false);
   let updatingFaceId = $state<string | null>(null);
+  let reassigningFaceId = $state<string | null>(null);
+  let featureThumbnailUrlOverride = $state<string | null>(null);
+
+  const isUpdating = $derived(!!updatingFaceId || !!reassigningFaceId);
+  const featureThumbnailUrl = $derived(featureThumbnailUrlOverride ?? getPeopleThumbnailUrl(person));
 
   const loadFacePreview = async (face: AssetFaceResponseDto) => {
     const image = new Image();
@@ -110,17 +123,57 @@
 
     updatingFaceId = face.id;
     try {
-      const updatedPerson = await updatePerson({
-        id: person.id,
-        personUpdateDto: { featureFaceId: face.id },
-      });
+      const [updatedPerson, preview] = await Promise.all([
+        updatePerson({
+          id: person.id,
+          personUpdateDto: { featureFaceId: face.id },
+        }),
+        getFacePreview(face),
+      ]);
 
+      featureThumbnailUrlOverride = preview ?? getPeopleThumbnailUrl(updatedPerson, Date.now().toString());
       onPersonUpdate(updatedPerson);
       toastManager.primary($t('feature_photo_updated'));
     } catch (error) {
       handleError(error, $t('errors.unable_to_set_feature_photo'));
     } finally {
       updatingFaceId = null;
+    }
+  };
+
+  const handleReassignFace = async (face: AssetFaceResponseDto) => {
+    if (isUpdating) {
+      return;
+    }
+
+    const selectedPeople = await modalManager.show(PeoplePickerModal, { excludedIds: [person.id] });
+    const selectedPerson = selectedPeople?.[0];
+    if (!selectedPerson) {
+      return;
+    }
+
+    reassigningFaceId = face.id;
+    try {
+      await reassignFacesById({
+        id: selectedPerson.id,
+        faceDto: { id: face.id },
+      });
+
+      faces = faces.filter(({ id }) => id !== face.id);
+      featureThumbnailUrlOverride = null;
+
+      const refreshedPerson = await getPerson({ id: person.id });
+      onPersonUpdate(refreshedPerson);
+
+      toastManager.primary(
+        $t('face_reference_reassigned', {
+          values: { name: selectedPerson.name || $t('add_a_name') },
+        }),
+      );
+    } catch (error) {
+      handleError(error, $t('errors.unable_to_reassign_face_reference'));
+    } finally {
+      reassigningFaceId = null;
     }
   };
 
@@ -132,14 +185,16 @@
 <section class="h-full overflow-y-auto px-4 py-12 text-primary sm:px-6 lg:px-10">
   <div class="mb-8 max-w-3xl">
     <div class="flex items-center gap-4">
-      <ImageThumbnail
-        circle
-        shadow
-        url={getPeopleThumbnailUrl(person)}
-        altText={person.name}
-        widthStyle="4rem"
-        heightStyle="4rem"
-      />
+      {#key featureThumbnailUrl}
+        <ImageThumbnail
+          circle
+          shadow
+          url={featureThumbnailUrl}
+          altText={person.name}
+          widthStyle="4rem"
+          heightStyle="4rem"
+        />
+      {/key}
 
       <div>
         <h1 class="text-2xl font-semibold">{person.name || $t('add_a_name')}</h1>
@@ -185,10 +240,23 @@
               size="small"
               leadingIcon={mdiImageCheckOutline}
               loading={updatingFaceId === face.id}
-              disabled={!!updatingFaceId}
+              disabled={isUpdating}
               onclick={() => handleSetFeaturePhoto(face)}
             >
               {$t('set_as_featured_photo')}
+            </Button>
+
+            <Button
+              fullWidth
+              size="small"
+              color="secondary"
+              variant="outline"
+              leadingIcon={mdiSwapHorizontal}
+              loading={reassigningFaceId === face.id}
+              disabled={isUpdating}
+              onclick={() => handleReassignFace(face)}
+            >
+              {$t('change_person')}
             </Button>
 
             <Button

@@ -260,7 +260,10 @@
   onMount(() => {
     if (!enableRouting) {
       invisible = false;
+      return;
     }
+
+    void scrollAfterNavigate();
   });
 
   const scrollToSegmentPercentage = (segmentTop: number, segmentHeight: number, timelineMonthScrollPercent: number) => {
