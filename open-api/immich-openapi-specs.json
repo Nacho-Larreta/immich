@@ -274,6 +274,13 @@
         ],
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -317,6 +324,13 @@
         "parameters": [],
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -371,6 +385,13 @@
         },
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -456,6 +477,13 @@
         "parameters": [],
         "responses": {
           "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -494,6 +522,13 @@
         },
         "responses": {
           "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -602,6 +637,13 @@
         },
         "responses": {
           "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -1892,6 +1934,13 @@
         ],
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -2315,6 +2364,13 @@
         ],
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -2385,6 +2441,13 @@
         },
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -2670,6 +2733,13 @@
         ],
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -2851,6 +2921,13 @@
         },
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -2997,6 +3074,13 @@
         },
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -3110,6 +3194,13 @@
         },
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -3163,6 +3254,13 @@
         },
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -3216,6 +3314,13 @@
         },
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -3546,6 +3651,13 @@
         ],
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -3862,6 +3974,13 @@
         ],
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -4522,6 +4641,13 @@
         },
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -4573,6 +4699,13 @@
         },
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -4624,6 +4757,13 @@
         },
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -4667,6 +4807,13 @@
         "parameters": [],
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -4719,6 +4866,13 @@
         },
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -5024,6 +5178,13 @@
         },
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -5188,6 +5349,13 @@
         ],
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -5304,6 +5472,13 @@
         },
         "responses": {
           "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -5368,6 +5543,13 @@
         },
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -5603,6 +5785,13 @@
         },
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -5847,6 +6036,13 @@
         ],
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -6032,6 +6228,13 @@
         ],
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -6685,6 +6888,13 @@
         ],
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -7012,6 +7222,13 @@
         },
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -7151,6 +7368,13 @@
         },
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -7205,6 +7429,13 @@
         ],
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -7434,6 +7665,13 @@
         },
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -7774,6 +8012,13 @@
         ],
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -7954,6 +8199,13 @@
         },
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -8230,6 +8482,13 @@
         ],
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -8392,6 +8651,155 @@
         ],
         "x-immich-permission": "person.update",
         "x-immich-state": "Stable"
+      }
+    },
+    "/people/{id}/assignment-history": {
+      "get": {
+        "description": "Retrieve manual face assignment changes involving this person.",
+        "operationId": "getPersonFaceAssignmentHistory",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "description": "Page number for pagination",
+            "schema": {
+              "minimum": 1,
+              "default": 1,
+              "type": "number"
+            }
+          },
+          {
+            "name": "size",
+            "required": false,
+            "in": "query",
+            "description": "Number of history entries per page",
+            "schema": {
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20,
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonFaceAssignmentHistoryPageResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Get person face assignment history",
+        "tags": [
+          "People"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2.8.0",
+            "state": "Added"
+          },
+          {
+            "version": "v2.8.0",
+            "state": "Beta"
+          }
+        ],
+        "x-immich-permission": "person.read",
+        "x-immich-state": "Beta"
+      }
+    },
+    "/people/{id}/assignment-history/{historyId}/revert": {
+      "post": {
+        "description": "Undo a manual face assignment change if the face still has the expected current person.",
+        "operationId": "revertPersonFaceAssignmentHistory",
+        "parameters": [
+          {
+            "name": "historyId",
+            "required": true,
+            "in": "path",
+            "description": "Face assignment history ID",
+            "schema": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Person ID",
+            "schema": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonFaceAssignmentHistoryResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Revert a person face assignment history entry",
+        "tags": [
+          "People"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2.8.0",
+            "state": "Added"
+          },
+          {
+            "version": "v2.8.0",
+            "state": "Beta"
+          }
+        ],
+        "x-immich-permission": "person.update",
+        "x-immich-state": "Beta"
       }
     },
     "/people/{id}/faces": {
@@ -9096,6 +9504,13 @@
         },
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -10166,16 +10581,6 @@
         ],
         "responses": {
           "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              }
-            },
             "description": ""
           }
         },
@@ -10395,6 +10800,13 @@
         "parameters": [],
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -10856,6 +11268,13 @@
         "parameters": [],
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -11019,6 +11438,13 @@
         ],
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -11142,6 +11568,13 @@
         ],
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -11474,6 +11907,13 @@
         ],
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -11801,6 +12241,13 @@
         },
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -11976,6 +12423,13 @@
         ],
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -12168,6 +12622,13 @@
         ],
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -12221,6 +12682,13 @@
         },
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -12323,6 +12791,13 @@
         },
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -12376,6 +12851,13 @@
         },
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -12690,6 +13172,13 @@
         },
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -13079,6 +13568,13 @@
         ],
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -14090,6 +14586,13 @@
         "parameters": [],
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -14239,6 +14742,13 @@
         "parameters": [],
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -14496,6 +15006,13 @@
         "parameters": [],
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -14783,16 +15300,6 @@
         "parameters": [],
         "responses": {
           "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              }
-            },
             "description": ""
           }
         },
@@ -14950,6 +15457,13 @@
         ],
         "responses": {
           "204": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -17892,6 +18406,15 @@
         },
         "type": "object"
       },
+      "FaceAssignmentHistorySource": {
+        "description": "Face assignment history source",
+        "enum": [
+          "manual-reassign",
+          "manual-bulk-reassign",
+          "merge"
+        ],
+        "type": "string"
+      },
       "FaceDto": {
         "properties": {
           "id": {
@@ -19802,6 +20325,88 @@
             "type": "string"
           }
         },
+        "type": "object"
+      },
+      "PersonFaceAssignmentHistoryPageResponseDto": {
+        "properties": {
+          "hasNextPage": {
+            "description": "Whether there are more history entries",
+            "type": "boolean"
+          },
+          "history": {
+            "description": "Face assignment history entries",
+            "items": {
+              "$ref": "#/components/schemas/PersonFaceAssignmentHistoryResponseDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "hasNextPage",
+          "history"
+        ],
+        "type": "object"
+      },
+      "PersonFaceAssignmentHistoryResponseDto": {
+        "properties": {
+          "batchId": {
+            "description": "Shared ID for related history entries",
+            "format": "uuid",
+            "nullable": true,
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
+          "createdAt": {
+            "description": "Change timestamp",
+            "format": "date-time",
+            "type": "string"
+          },
+          "faceId": {
+            "description": "Face ID",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
+          "id": {
+            "description": "Face assignment history ID",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
+          "newPersonId": {
+            "description": "Person ID after the change",
+            "format": "uuid",
+            "nullable": true,
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
+          "previousPersonId": {
+            "description": "Person ID before the change",
+            "format": "uuid",
+            "nullable": true,
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
+          "revertedAt": {
+            "description": "Revert timestamp",
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/FaceAssignmentHistorySource"
+          }
+        },
+        "required": [
+          "batchId",
+          "createdAt",
+          "faceId",
+          "id",
+          "newPersonId",
+          "previousPersonId",
+          "revertedAt",
+          "source"
+        ],
         "type": "object"
       },
       "PersonFacesResponseDto": {

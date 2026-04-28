@@ -23,6 +23,10 @@ import {
   PeopleResponseDto,
   PeopleUpdateDto,
   PersonCreateDto,
+  PersonFaceAssignmentHistoryPageResponseDto,
+  PersonFaceAssignmentHistoryParamDto,
+  PersonFaceAssignmentHistoryResponseDto,
+  PersonFaceAssignmentHistorySearchDto,
   PersonFacesResponseDto,
   PersonFacesSearchDto,
   PersonResponseDto,
@@ -90,6 +94,36 @@ export class PersonController {
   })
   deletePeople(@Auth() auth: AuthDto, @Body() dto: BulkIdsDto): Promise<void> {
     return this.service.deleteAll(auth, dto);
+  }
+
+  @Get(':id/assignment-history')
+  @Authenticated({ permission: Permission.PersonRead })
+  @Endpoint({
+    summary: 'Get person face assignment history',
+    description: 'Retrieve manual face assignment changes involving this person.',
+    history: new HistoryBuilder().added('v2.8.0').beta('v2.8.0'),
+  })
+  getPersonFaceAssignmentHistory(
+    @Auth() auth: AuthDto,
+    @Param() { id }: UUIDParamDto,
+    @Query() dto: PersonFaceAssignmentHistorySearchDto,
+  ): Promise<PersonFaceAssignmentHistoryPageResponseDto> {
+    return this.service.getFaceAssignmentHistory(auth, id, dto);
+  }
+
+  @Post(':id/assignment-history/:historyId/revert')
+  @Authenticated({ permission: Permission.PersonUpdate })
+  @HttpCode(HttpStatus.OK)
+  @Endpoint({
+    summary: 'Revert a person face assignment history entry',
+    description: 'Undo a manual face assignment change if the face still has the expected current person.',
+    history: new HistoryBuilder().added('v2.8.0').beta('v2.8.0'),
+  })
+  revertPersonFaceAssignmentHistory(
+    @Auth() auth: AuthDto,
+    @Param() { id, historyId }: PersonFaceAssignmentHistoryParamDto,
+  ): Promise<PersonFaceAssignmentHistoryResponseDto> {
+    return this.service.revertFaceAssignmentHistory(auth, id, historyId);
   }
 
   @Get(':id')

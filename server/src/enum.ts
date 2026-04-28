@@ -390,6 +390,17 @@ export enum SourceType {
 
 export const SourceTypeSchema = z.enum(SourceType).describe('Face detection source type').meta({ id: 'SourceType' });
 
+export enum FaceAssignmentHistorySource {
+  ManualReassign = 'manual-reassign',
+  ManualBulkReassign = 'manual-bulk-reassign',
+  Merge = 'merge',
+}
+
+export const FaceAssignmentHistorySourceSchema = z
+  .enum(FaceAssignmentHistorySource)
+  .describe('Face assignment history source')
+  .meta({ id: 'FaceAssignmentHistorySource' });
+
 export enum ManualJobName {
   PersonCleanup = 'person-cleanup',
   TagCleanup = 'tag-cleanup',

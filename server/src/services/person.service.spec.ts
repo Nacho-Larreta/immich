@@ -1,7 +1,16 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { BulkIdErrorReason } from 'src/dtos/asset-ids.response.dto';
-import { mapFaces, mapPerson } from 'src/dtos/person.dto';
-import { AssetFileType, AssetType, CacheControl, JobName, JobStatus, SourceType, SystemMetadataKey } from 'src/enum';
+import { mapFaceAssignmentHistory, mapFaces, mapPerson } from 'src/dtos/person.dto';
+import {
+  AssetFileType,
+  AssetType,
+  CacheControl,
+  FaceAssignmentHistorySource,
+  JobName,
+  JobStatus,
+  SourceType,
+  SystemMetadataKey,
+} from 'src/enum';
 import { FaceSearchResult } from 'src/repositories/search.repository';
 import { PersonService } from 'src/services/person.service';
 import { ImmichFileResponse } from 'src/utils/file';
@@ -25,6 +34,21 @@ import { makeStream, newTestService, ServiceMocks } from 'test/utils';
 describe(PersonService.name, () => {
   let sut: PersonService;
   let mocks: ServiceMocks;
+
+  const makeFaceAssignmentHistory = (overrides = {}) => ({
+    id: newUuid(),
+    faceId: newUuid(),
+    ownerId: newUuid(),
+    actorId: null,
+    previousPersonId: null,
+    newPersonId: newUuid(),
+    source: FaceAssignmentHistorySource.ManualReassign,
+    batchId: null,
+    createdAt: newDate(),
+    revertedAt: null,
+    revertedById: null,
+    ...overrides,
+  });
 
   beforeEach(() => {
     ({ sut, mocks } = newTestService(PersonService));
@@ -396,10 +420,19 @@ describe(PersonService.name, () => {
       mocks.person.getById.mockResolvedValue(person);
       mocks.access.person.checkFaceOwnerAccess.mockResolvedValue(new Set([face.id]));
       mocks.person.getFacesByIds.mockResolvedValue([getForAssetFace(face)]);
-      mocks.person.reassignFace.mockResolvedValue(1);
       mocks.person.getRandomFace.mockResolvedValue(AssetFaceFactory.create());
       mocks.person.refreshFaces.mockResolvedValue();
-      mocks.person.reassignFace.mockResolvedValue(5);
+      mocks.person.reassignFaceWithHistory.mockResolvedValue({
+        faceId: face.id,
+        previousPersonId: null,
+        newPersonId: person.id,
+        history: makeFaceAssignmentHistory({
+          faceId: face.id,
+          ownerId: auth.user.id,
+          newPersonId: person.id,
+          source: FaceAssignmentHistorySource.ManualBulkReassign,
+        }),
+      });
       mocks.person.update.mockResolvedValue(person);
 
       await expect(
@@ -414,6 +447,13 @@ describe(PersonService.name, () => {
           data: { id: person.id },
         },
       ]);
+      expect(mocks.person.reassignFaceWithHistory).toHaveBeenCalledWith({
+        faceId: face.id,
+        newPersonId: person.id,
+        ownerId: auth.user.id,
+        actorId: auth.user.id,
+        source: FaceAssignmentHistorySource.ManualBulkReassign,
+      });
     });
   });
 
@@ -473,6 +513,110 @@ describe(PersonService.name, () => {
         BadRequestException,
       );
       expect(mocks.person.getFacesForPerson).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getFaceAssignmentHistory', () => {
+    it('should get face assignment history for a person', async () => {
+      const auth = AuthFactory.create();
+      const person = PersonFactory.create({ ownerId: auth.user.id });
+      const history = makeFaceAssignmentHistory({
+        ownerId: auth.user.id,
+        previousPersonId: null,
+        newPersonId: person.id,
+      });
+
+      mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set([person.id]));
+      mocks.person.getFaceAssignmentHistoryForPerson.mockResolvedValue({ items: [history], hasNextPage: false });
+
+      await expect(sut.getFaceAssignmentHistory(auth, person.id, { page: 2, size: 10 })).resolves.toEqual({
+        history: [mapFaceAssignmentHistory(history)],
+        hasNextPage: false,
+      });
+
+      expect(mocks.person.getFaceAssignmentHistoryForPerson).toHaveBeenCalledWith(
+        { take: 10, skip: 10 },
+        auth.user.id,
+        person.id,
+      );
+    });
+
+    it('should reject if the user has no access to the person', async () => {
+      const auth = AuthFactory.create();
+      const person = PersonFactory.create();
+
+      mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set());
+
+      await expect(sut.getFaceAssignmentHistory(auth, person.id, { page: 1, size: 10 })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(mocks.person.getFaceAssignmentHistoryForPerson).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('revertFaceAssignmentHistory', () => {
+    it('should revert a face assignment history entry', async () => {
+      const auth = AuthFactory.create();
+      const face = AssetFaceFactory.create();
+      const previousPerson = PersonFactory.create({ ownerId: auth.user.id, faceAssetId: newUuid() });
+      const currentPerson = PersonFactory.create({ ownerId: auth.user.id, faceAssetId: newUuid() });
+      const history = makeFaceAssignmentHistory({
+        faceId: face.id,
+        ownerId: auth.user.id,
+        previousPersonId: previousPerson.id,
+        newPersonId: currentPerson.id,
+        revertedAt: newDate(),
+        revertedById: auth.user.id,
+      });
+
+      mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set([currentPerson.id]));
+      mocks.person.revertFaceAssignmentHistory.mockResolvedValue({
+        status: 'reverted',
+        history,
+        faceId: face.id,
+        fromPersonId: currentPerson.id,
+        toPersonId: previousPerson.id,
+      });
+      mocks.person.getById.mockResolvedValueOnce(previousPerson).mockResolvedValueOnce(currentPerson);
+
+      await expect(sut.revertFaceAssignmentHistory(auth, currentPerson.id, history.id)).resolves.toEqual(
+        mapFaceAssignmentHistory(history),
+      );
+
+      expect(mocks.person.revertFaceAssignmentHistory).toHaveBeenCalledWith(
+        history.id,
+        auth.user.id,
+        currentPerson.id,
+        auth.user.id,
+      );
+      expect(mocks.job.queueAll).not.toHaveBeenCalled();
+    });
+
+    it('should throw conflict when the history entry cannot be reverted safely', async () => {
+      const auth = AuthFactory.create();
+      const person = PersonFactory.create({ ownerId: auth.user.id });
+      const history = makeFaceAssignmentHistory({ ownerId: auth.user.id, newPersonId: person.id });
+
+      mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set([person.id]));
+      mocks.person.revertFaceAssignmentHistory.mockResolvedValue({ status: 'conflict', history });
+
+      await expect(sut.revertFaceAssignmentHistory(auth, person.id, history.id)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(mocks.job.queueAll).not.toHaveBeenCalled();
+    });
+
+    it('should throw not found when the history entry does not belong to the person', async () => {
+      const auth = AuthFactory.create();
+      const person = PersonFactory.create({ ownerId: auth.user.id });
+
+      mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set([person.id]));
+      mocks.person.revertFaceAssignmentHistory.mockResolvedValue({ status: 'not-found' });
+
+      await expect(sut.revertFaceAssignmentHistory(auth, person.id, newUuid())).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(mocks.job.queueAll).not.toHaveBeenCalled();
     });
   });
 
@@ -574,14 +718,25 @@ describe(PersonService.name, () => {
   describe('reassignFacesById', () => {
     it('should create a new person', async () => {
       const face = AssetFaceFactory.create();
-      const person = PersonFactory.create();
+      const person = PersonFactory.create({ faceAssetId: newUuid() });
+      const auth = AuthFactory.create();
 
       mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set([person.id]));
       mocks.access.person.checkFaceOwnerAccess.mockResolvedValue(new Set([face.id]));
       mocks.person.getFaceById.mockResolvedValue(getForAssetFace(face));
-      mocks.person.reassignFace.mockResolvedValue(1);
+      mocks.person.reassignFaceWithHistory.mockResolvedValue({
+        faceId: face.id,
+        previousPersonId: null,
+        newPersonId: person.id,
+        history: makeFaceAssignmentHistory({
+          faceId: face.id,
+          ownerId: auth.user.id,
+          newPersonId: person.id,
+          source: FaceAssignmentHistorySource.ManualReassign,
+        }),
+      });
       mocks.person.getById.mockResolvedValue(person);
-      await expect(sut.reassignFacesById(AuthFactory.create(), person.id, { id: face.id })).resolves.toEqual({
+      await expect(sut.reassignFacesById(auth, person.id, { id: face.id })).resolves.toEqual({
         birthDate: person.birthDate,
         isHidden: person.isHidden,
         isFavorite: person.isFavorite,
@@ -591,6 +746,13 @@ describe(PersonService.name, () => {
         updatedAt: expect.any(String),
       });
 
+      expect(mocks.person.reassignFaceWithHistory).toHaveBeenCalledWith({
+        faceId: face.id,
+        newPersonId: person.id,
+        ownerId: auth.user.id,
+        actorId: auth.user.id,
+        source: FaceAssignmentHistorySource.ManualReassign,
+      });
       expect(mocks.job.queue).not.toHaveBeenCalledWith();
       expect(mocks.job.queueAll).not.toHaveBeenCalledWith();
     });
@@ -601,7 +763,6 @@ describe(PersonService.name, () => {
 
       mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set([person.id]));
       mocks.person.getFaceById.mockResolvedValue(getForAssetFace(face));
-      mocks.person.reassignFace.mockResolvedValue(1);
       mocks.person.getById.mockResolvedValue(person);
       await expect(
         sut.reassignFacesById(AuthFactory.create(), person.id, {
@@ -996,7 +1157,7 @@ describe(PersonService.name, () => {
         { name: JobName.FacialRecognition, data: { id: face.id } },
       ]);
       expect(mocks.person.reassignFace).not.toHaveBeenCalled();
-      expect(mocks.person.reassignFaces).not.toHaveBeenCalled();
+      expect(mocks.person.reassignFacesWithHistory).not.toHaveBeenCalled();
     });
 
     it('should process enabled videos by sampling frames', async () => {
@@ -1076,7 +1237,7 @@ describe(PersonService.name, () => {
       expect(mocks.person.refreshFaces).toHaveBeenCalledWith([], [asset.faces[0].id], []);
       expect(mocks.job.queueAll).not.toHaveBeenCalled();
       expect(mocks.person.reassignFace).not.toHaveBeenCalled();
-      expect(mocks.person.reassignFaces).not.toHaveBeenCalled();
+      expect(mocks.person.reassignFacesWithHistory).not.toHaveBeenCalled();
     });
 
     it('should add new face and delete an existing face not among the new detected faces', async () => {
@@ -1392,9 +1553,12 @@ describe(PersonService.name, () => {
     it('should merge two people without smart merge', async () => {
       const auth = AuthFactory.create();
       const [person, mergePerson] = [PersonFactory.create(), PersonFactory.create()];
+      const batchId = newUuid();
 
       mocks.person.getById.mockResolvedValueOnce(person);
       mocks.person.getById.mockResolvedValueOnce(mergePerson);
+      mocks.crypto.randomUUID.mockReturnValue(batchId);
+      mocks.person.reassignFacesWithHistory.mockResolvedValue([]);
       mocks.access.person.checkOwnerAccess.mockResolvedValueOnce(new Set([person.id]));
       mocks.access.person.checkOwnerAccess.mockResolvedValueOnce(new Set([mergePerson.id]));
 
@@ -1402,9 +1566,13 @@ describe(PersonService.name, () => {
         { id: mergePerson.id, success: true },
       ]);
 
-      expect(mocks.person.reassignFaces).toHaveBeenCalledWith({
+      expect(mocks.person.reassignFacesWithHistory).toHaveBeenCalledWith({
         newPersonId: person.id,
         oldPersonId: mergePerson.id,
+        ownerId: auth.user.id,
+        actorId: auth.user.id,
+        source: FaceAssignmentHistorySource.Merge,
+        batchId,
       });
 
       expect(mocks.access.person.checkOwnerAccess).toHaveBeenCalledWith(auth.user.id, new Set([person.id]));
@@ -1416,10 +1584,13 @@ describe(PersonService.name, () => {
         PersonFactory.create({ name: undefined }),
         PersonFactory.create({ name: 'Merge person' }),
       ];
+      const batchId = newUuid();
 
       mocks.person.getById.mockResolvedValueOnce(person);
       mocks.person.getById.mockResolvedValueOnce(mergePerson);
       mocks.person.update.mockResolvedValue({ ...person, name: mergePerson.name });
+      mocks.crypto.randomUUID.mockReturnValue(batchId);
+      mocks.person.reassignFacesWithHistory.mockResolvedValue([]);
       mocks.access.person.checkOwnerAccess.mockResolvedValueOnce(new Set([person.id]));
       mocks.access.person.checkOwnerAccess.mockResolvedValueOnce(new Set([mergePerson.id]));
 
@@ -1427,9 +1598,13 @@ describe(PersonService.name, () => {
         { id: mergePerson.id, success: true },
       ]);
 
-      expect(mocks.person.reassignFaces).toHaveBeenCalledWith({
+      expect(mocks.person.reassignFacesWithHistory).toHaveBeenCalledWith({
         newPersonId: person.id,
         oldPersonId: mergePerson.id,
+        ownerId: auth.user.id,
+        actorId: auth.user.id,
+        source: FaceAssignmentHistorySource.Merge,
+        batchId,
       });
 
       expect(mocks.person.update).toHaveBeenCalledWith({
@@ -1463,7 +1638,7 @@ describe(PersonService.name, () => {
         { id: 'unknown', success: false, error: BulkIdErrorReason.NOT_FOUND },
       ]);
 
-      expect(mocks.person.reassignFaces).not.toHaveBeenCalled();
+      expect(mocks.person.reassignFacesWithHistory).not.toHaveBeenCalled();
       expect(mocks.person.delete).not.toHaveBeenCalled();
       expect(mocks.access.person.checkOwnerAccess).toHaveBeenCalledWith(auth.user.id, new Set([person.id]));
     });
@@ -1474,7 +1649,7 @@ describe(PersonService.name, () => {
 
       mocks.person.getById.mockResolvedValueOnce(person);
       mocks.person.getById.mockResolvedValueOnce(mergePerson);
-      mocks.person.reassignFaces.mockRejectedValue(new Error('update failed'));
+      mocks.person.reassignFacesWithHistory.mockRejectedValue(new Error('update failed'));
       mocks.access.person.checkOwnerAccess.mockResolvedValueOnce(new Set([person.id]));
       mocks.access.person.checkOwnerAccess.mockResolvedValueOnce(new Set([mergePerson.id]));
 

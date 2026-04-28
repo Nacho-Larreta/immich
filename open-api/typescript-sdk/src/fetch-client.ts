@@ -1509,6 +1509,29 @@ export type PersonUpdateDto = {
     /** Person name */
     name?: string;
 };
+export type PersonFaceAssignmentHistoryResponseDto = {
+    /** Shared ID for related history entries */
+    batchId: string | null;
+    /** Change timestamp */
+    createdAt: string;
+    /** Face ID */
+    faceId: string;
+    /** Face assignment history ID */
+    id: string;
+    /** Person ID after the change */
+    newPersonId: string | null;
+    /** Person ID before the change */
+    previousPersonId: string | null;
+    /** Revert timestamp */
+    revertedAt: string | null;
+    source: FaceAssignmentHistorySource;
+};
+export type PersonFaceAssignmentHistoryPageResponseDto = {
+    /** Whether there are more history entries */
+    hasNextPage: boolean;
+    /** Face assignment history entries */
+    history: PersonFaceAssignmentHistoryResponseDto[];
+};
 export type PersonFacesResponseDto = {
     /** Face references assigned to the person */
     faces: AssetFaceResponseDto[];
@@ -5213,6 +5236,39 @@ export function updatePerson({ id, personUpdateDto }: {
     })));
 }
 /**
+ * Get person face assignment history
+ */
+export function getPersonFaceAssignmentHistory({ id, page, size }: {
+    id: string;
+    page?: number;
+    size?: number;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchJson<{
+        status: 200;
+        data: PersonFaceAssignmentHistoryPageResponseDto;
+    }>(`/people/${encodeURIComponent(id)}/assignment-history${QS.query(QS.explode({
+        page,
+        size
+    }))}`, {
+        ...opts
+    }));
+}
+/**
+ * Revert a person face assignment history entry
+ */
+export function revertPersonFaceAssignmentHistory({ id, historyId }: {
+    id: string;
+    historyId: string;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchJson<{
+        status: 200;
+        data: PersonFaceAssignmentHistoryResponseDto;
+    }>(`/people/${encodeURIComponent(id)}/assignment-history/${encodeURIComponent(historyId)}/revert`, {
+        ...opts,
+        method: "POST"
+    }));
+}
+/**
  * Get person face references
  */
 export function getPersonFaces({ id, page, size }: {
@@ -6995,6 +7051,11 @@ export enum SourceType {
     MachineLearning = "machine-learning",
     Exif = "exif",
     Manual = "manual"
+}
+export enum FaceAssignmentHistorySource {
+    ManualReassign = "manual-reassign",
+    ManualBulkReassign = "manual-bulk-reassign",
+    Merge = "merge"
 }
 export enum AssetTypeEnum {
     Image = "IMAGE",

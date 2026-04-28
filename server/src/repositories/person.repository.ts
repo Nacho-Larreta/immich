@@ -4,10 +4,11 @@ import { jsonObjectFrom } from 'kysely/helpers/postgres';
 import { InjectKysely } from 'nestjs-kysely';
 import { AssetFace } from 'src/database';
 import { Chunked, ChunkedArray, DummyValue, GenerateSql } from 'src/decorators';
-import { AssetFileType, AssetVisibility, SourceType } from 'src/enum';
+import { AssetFileType, AssetVisibility, FaceAssignmentHistorySource, SourceType } from 'src/enum';
 import { DB } from 'src/schema';
 import { AssetFaceFrameTable } from 'src/schema/tables/asset-face-frame.table';
 import { AssetFaceTable } from 'src/schema/tables/asset-face.table';
+import { FaceAssignmentHistoryTable } from 'src/schema/tables/face-assignment-history.table';
 import { FaceSearchTable } from 'src/schema/tables/face-search.table';
 import { PersonTable } from 'src/schema/tables/person.table';
 import { dummy, removeUndefinedKeys, withFilePath } from 'src/utils/database';
@@ -38,6 +39,41 @@ export interface UpdateFacesData {
   faceIds?: string[];
   newPersonId: string;
 }
+
+export interface ReassignFaceWithHistoryData {
+  faceId: string;
+  newPersonId: string;
+  ownerId: string;
+  actorId?: string;
+  source: FaceAssignmentHistorySource;
+  batchId?: string;
+}
+
+export interface ReassignFacesWithHistoryData extends UpdateFacesData {
+  ownerId: string;
+  actorId?: string;
+  source: FaceAssignmentHistorySource;
+  batchId?: string;
+}
+
+export interface FaceAssignmentHistoryMove {
+  faceId: string;
+  previousPersonId: string | null;
+  newPersonId: string | null;
+  history: Selectable<FaceAssignmentHistoryTable>;
+}
+
+export type RevertFaceAssignmentHistoryResult =
+  | { status: 'not-found' }
+  | { status: 'already-reverted'; history: Selectable<FaceAssignmentHistoryTable> }
+  | { status: 'conflict'; history: Selectable<FaceAssignmentHistoryTable> }
+  | {
+      status: 'reverted';
+      history: Selectable<FaceAssignmentHistoryTable>;
+      faceId: string;
+      fromPersonId: string | null;
+      toPersonId: string | null;
+    };
 
 export interface PersonStatistics {
   assets: number;
@@ -94,6 +130,106 @@ export class PersonRepository {
       .executeTakeFirst();
 
     return Number(result.numChangedRows ?? 0);
+  }
+
+  async reassignFaceWithHistory(data: ReassignFaceWithHistoryData): Promise<FaceAssignmentHistoryMove | null> {
+    return this.db.transaction().execute(async (trx) => {
+      const face = await trx
+        .selectFrom('asset_face')
+        .select(['asset_face.id', 'asset_face.personId'])
+        .where('asset_face.id', '=', data.faceId)
+        .executeTakeFirst();
+
+      if (!face || face.personId === data.newPersonId) {
+        return null;
+      }
+
+      await trx
+        .updateTable('asset_face')
+        .set({ personId: data.newPersonId })
+        .where('asset_face.id', '=', face.id)
+        .execute();
+
+      const history = await trx
+        .insertInto('face_assignment_history')
+        .values({
+          faceId: face.id,
+          ownerId: data.ownerId,
+          actorId: data.actorId ?? null,
+          previousPersonId: face.personId,
+          newPersonId: data.newPersonId,
+          source: data.source,
+          batchId: data.batchId ?? null,
+          revertedAt: null,
+          revertedById: null,
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+
+      return {
+        faceId: face.id,
+        previousPersonId: face.personId,
+        newPersonId: data.newPersonId,
+        history,
+      };
+    });
+  }
+
+  async reassignFacesWithHistory(data: ReassignFacesWithHistoryData): Promise<FaceAssignmentHistoryMove[]> {
+    if (!data.oldPersonId && !data.faceIds) {
+      return [];
+    }
+
+    if (data.faceIds && data.faceIds.length === 0) {
+      return [];
+    }
+
+    return this.db.transaction().execute(async (trx) => {
+      const faces = await trx
+        .selectFrom('asset_face')
+        .select(['asset_face.id', 'asset_face.personId'])
+        .$if(!!data.oldPersonId, (qb) => qb.where('asset_face.personId', '=', data.oldPersonId!))
+        .$if(!!data.faceIds, (qb) => qb.where('asset_face.id', 'in', data.faceIds!))
+        .execute();
+
+      const changedFaces = faces.filter((face) => face.personId !== data.newPersonId);
+      if (changedFaces.length === 0) {
+        return [];
+      }
+
+      const faceIds = changedFaces.map(({ id }) => id);
+      await trx
+        .updateTable('asset_face')
+        .set({ personId: data.newPersonId })
+        .where('asset_face.id', 'in', faceIds)
+        .execute();
+
+      const histories = await trx
+        .insertInto('face_assignment_history')
+        .values(
+          changedFaces.map((face) => ({
+            faceId: face.id,
+            ownerId: data.ownerId,
+            actorId: data.actorId ?? null,
+            previousPersonId: face.personId,
+            newPersonId: data.newPersonId,
+            source: data.source,
+            batchId: data.batchId ?? null,
+            revertedAt: null,
+            revertedById: null,
+          })),
+        )
+        .returningAll()
+        .execute();
+
+      const historyByFaceId = new Map(histories.map((history) => [history.faceId, history]));
+      return changedFaces.map((face) => ({
+        faceId: face.id,
+        previousPersonId: face.personId,
+        newPersonId: data.newPersonId,
+        history: historyByFaceId.get(face.id)!,
+      }));
+    });
   }
 
   async unassignFaces({ sourceType }: UnassignFacesOptions): Promise<void> {
@@ -332,6 +468,88 @@ export class PersonRepository {
       .execute();
 
     return paginationHelper(items, pagination.take);
+  }
+
+  async getFaceAssignmentHistoryForPerson(pagination: PaginationOptions, ownerId: string, personId: string) {
+    const items = await this.db
+      .selectFrom('face_assignment_history')
+      .selectAll('face_assignment_history')
+      .where('face_assignment_history.ownerId', '=', ownerId)
+      .where((eb) =>
+        eb.or([
+          eb('face_assignment_history.previousPersonId', '=', personId),
+          eb('face_assignment_history.newPersonId', '=', personId),
+        ]),
+      )
+      .orderBy('face_assignment_history.createdAt', 'desc')
+      .orderBy('face_assignment_history.id', 'desc')
+      .offset(pagination.skip ?? 0)
+      .limit(pagination.take + 1)
+      .execute();
+
+    return paginationHelper(items, pagination.take);
+  }
+
+  async revertFaceAssignmentHistory(
+    id: string,
+    ownerId: string,
+    personId: string,
+    actorId?: string,
+  ): Promise<RevertFaceAssignmentHistoryResult> {
+    return this.db.transaction().execute(async (trx) => {
+      const history = await trx
+        .selectFrom('face_assignment_history')
+        .selectAll('face_assignment_history')
+        .where('face_assignment_history.id', '=', id)
+        .where('face_assignment_history.ownerId', '=', ownerId)
+        .where((eb) =>
+          eb.or([
+            eb('face_assignment_history.previousPersonId', '=', personId),
+            eb('face_assignment_history.newPersonId', '=', personId),
+          ]),
+        )
+        .executeTakeFirst();
+
+      if (!history) {
+        return { status: 'not-found' };
+      }
+
+      if (history.revertedAt) {
+        return { status: 'already-reverted', history };
+      }
+
+      const face = await trx
+        .selectFrom('asset_face')
+        .select(['asset_face.id', 'asset_face.personId'])
+        .where('asset_face.id', '=', history.faceId)
+        .where('asset_face.deletedAt', 'is', null)
+        .executeTakeFirst();
+
+      if (!face || face.personId !== history.newPersonId) {
+        return { status: 'conflict', history };
+      }
+
+      await trx
+        .updateTable('asset_face')
+        .set({ personId: history.previousPersonId })
+        .where('asset_face.id', '=', history.faceId)
+        .execute();
+
+      const revertedHistory = await trx
+        .updateTable('face_assignment_history')
+        .set({ revertedAt: new Date(), revertedById: actorId ?? null })
+        .where('face_assignment_history.id', '=', history.id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+
+      return {
+        status: 'reverted',
+        history: revertedHistory,
+        faceId: history.faceId,
+        fromPersonId: history.newPersonId,
+        toPersonId: history.previousPersonId,
+      };
+    });
   }
 
   @GenerateSql({ params: [DummyValue.UUID] })

@@ -5,17 +5,22 @@
   import { getFaceSourceImageUrl, getPeopleThumbnailUrl } from '$lib/utils';
   import { handleError } from '$lib/utils/handle-error';
   import {
+    FaceAssignmentHistorySource,
     getPerson,
+    getPersonFaceAssignmentHistory,
     getPersonFaces,
     reassignFacesById,
+    revertPersonFaceAssignmentHistory,
     updatePerson,
     type AssetFaceResponseDto,
+    type PersonFaceAssignmentHistoryResponseDto,
     type PersonResponseDto,
   } from '@immich/sdk';
   import { Button, LoadingSpinner, modalManager, toastManager } from '@immich/ui';
-  import { mdiImageCheckOutline, mdiOpenInNew, mdiSwapHorizontal } from '@mdi/js';
+  import { mdiHistory, mdiImageCheckOutline, mdiOpenInNew, mdiSwapHorizontal } from '@mdi/js';
+  import { DateTime } from 'luxon';
   import { onMount } from 'svelte';
-  import { t } from 'svelte-i18n';
+  import { locale, t } from 'svelte-i18n';
 
   interface Props {
     person: PersonResponseDto;
@@ -25,18 +30,22 @@
   let { person, onPersonUpdate }: Props = $props();
 
   const pageSize = 48;
+  const historyPageSize = 10;
   const facePreviewCache = new Map<string, Promise<string | null>>();
 
   let faces: AssetFaceResponseDto[] = $state([]);
+  let history: PersonFaceAssignmentHistoryResponseDto[] = $state([]);
   let page = $state(1);
   let hasNextPage = $state(false);
   let isLoading = $state(true);
+  let isLoadingHistory = $state(true);
   let isLoadingMore = $state(false);
   let updatingFaceId = $state<string | null>(null);
   let reassigningFaceId = $state<string | null>(null);
+  let revertingHistoryId = $state<string | null>(null);
   let featureThumbnailUrlOverride = $state<string | null>(null);
 
-  const isUpdating = $derived(!!updatingFaceId || !!reassigningFaceId);
+  const isUpdating = $derived(!!updatingFaceId || !!reassigningFaceId || !!revertingHistoryId);
   const featureThumbnailUrl = $derived(featureThumbnailUrlOverride ?? getPeopleThumbnailUrl(person));
 
   const loadFacePreview = async (face: AssetFaceResponseDto) => {
@@ -116,6 +125,41 @@
     }
   };
 
+  const loadHistory = async () => {
+    isLoadingHistory = true;
+
+    try {
+      const response = await getPersonFaceAssignmentHistory({ id: person.id, page: 1, size: historyPageSize });
+      history = response.history;
+    } catch (error) {
+      handleError(error, $t('errors.unable_to_load_face_assignment_history'));
+    } finally {
+      isLoadingHistory = false;
+    }
+  };
+
+  const formatHistoryDate = (date: string) =>
+    DateTime.fromISO(date, { locale: $locale ?? undefined }).toLocaleString(DateTime.DATETIME_MED);
+
+  const getHistorySourceLabel = (source: FaceAssignmentHistorySource) => {
+    switch (source) {
+      case FaceAssignmentHistorySource.ManualReassign: {
+        return $t('face_assignment_history_source_manual');
+      }
+      case FaceAssignmentHistorySource.ManualBulkReassign: {
+        return $t('face_assignment_history_source_bulk');
+      }
+      case FaceAssignmentHistorySource.Merge: {
+        return $t('face_assignment_history_source_merge');
+      }
+    }
+  };
+
+  const getHistoryActionLabel = (entry: PersonFaceAssignmentHistoryResponseDto) =>
+    entry.newPersonId === person.id
+      ? $t('face_assignment_history_assigned_to_person')
+      : $t('face_assignment_history_moved_from_person');
+
   const handleSetFeaturePhoto = async (face: AssetFaceResponseDto) => {
     if (updatingFaceId) {
       return;
@@ -164,6 +208,7 @@
 
       const refreshedPerson = await getPerson({ id: person.id });
       onPersonUpdate(refreshedPerson);
+      await loadHistory();
 
       toastManager.primary(
         $t('face_reference_reassigned', {
@@ -177,8 +222,38 @@
     }
   };
 
+  const handleRevertHistory = async (entry: PersonFaceAssignmentHistoryResponseDto) => {
+    if (isUpdating || entry.revertedAt) {
+      return;
+    }
+
+    const confirmed = await modalManager.showDialog({
+      prompt: $t('face_assignment_history_revert_confirmation'),
+      confirmText: $t('undo'),
+    });
+    if (!confirmed) {
+      return;
+    }
+
+    revertingHistoryId = entry.id;
+    try {
+      await revertPersonFaceAssignmentHistory({ id: person.id, historyId: entry.id });
+
+      featureThumbnailUrlOverride = null;
+      await Promise.all([loadFaces({ reset: true }), loadHistory()]);
+
+      const refreshedPerson = await getPerson({ id: person.id });
+      onPersonUpdate(refreshedPerson);
+      toastManager.primary($t('face_assignment_history_revert_success'));
+    } catch (error) {
+      handleError(error, $t('errors.unable_to_revert_face_assignment_history'));
+    } finally {
+      revertingHistoryId = null;
+    }
+  };
+
   onMount(() => {
-    void loadFaces({ reset: true });
+    void Promise.all([loadFaces({ reset: true }), loadHistory()]);
   });
 </script>
 
@@ -207,86 +282,146 @@
     <div class="flex h-56 items-center justify-center">
       <LoadingSpinner />
     </div>
-  {:else if faces.length === 0}
-    <div
-      class="flex min-h-56 items-center justify-center rounded-3xl border border-dashed border-gray-300 text-gray-500 dark:border-gray-700 dark:text-gray-400"
-    >
-      {$t('no_face_references')}
-    </div>
   {:else}
-    <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 2xl:grid-cols-8">
-      {#each faces as face (face.id)}
-        <article
-          class="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-immich-dark-gray"
+    <div
+      class="mb-8 rounded-3xl border border-gray-200 bg-gray-50/80 p-4 dark:border-gray-800 dark:bg-immich-dark-gray/50"
+    >
+      <div class="mb-3 flex items-start justify-between gap-4">
+        <div>
+          <h2 class="text-base font-semibold">{$t('face_assignment_history')}</h2>
+          <p class="mt-1 text-sm text-gray-600 dark:text-gray-300">{$t('face_assignment_history_description')}</p>
+        </div>
+      </div>
+
+      {#if isLoadingHistory}
+        <div class="flex h-20 items-center justify-center">
+          <LoadingSpinner />
+        </div>
+      {:else if history.length === 0}
+        <p
+          class="rounded-2xl border border-dashed border-gray-300 p-4 text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400"
         >
-          <div class="relative aspect-square bg-gray-100 dark:bg-immich-dark-primary/20">
-            {#await getFacePreview(face)}
-              <div class="flex h-full w-full items-center justify-center">
-                <LoadingSpinner />
+          {$t('face_assignment_history_empty')}
+        </p>
+      {:else}
+        <ul class="space-y-2">
+          {#each history as entry (entry.id)}
+            <li
+              class="flex flex-col gap-3 rounded-2xl border border-gray-200 bg-white p-3 dark:border-gray-800 dark:bg-black/20 sm:flex-row sm:items-center sm:justify-between"
+            >
+              <div>
+                <p class="font-medium">{getHistoryActionLabel(entry)}</p>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                  {getHistorySourceLabel(entry.source)} · {formatHistoryDate(entry.createdAt)}
+                </p>
               </div>
-            {:then preview}
-              <img
-                src={preview ?? '/src/lib/assets/no-thumbnail.png'}
-                alt={person.name || $t('person')}
-                class="h-full w-full object-cover"
-                draggable="false"
-              />
-            {/await}
-          </div>
 
-          <div class="space-y-2 p-3">
-            <Button
-              fullWidth
-              size="small"
-              leadingIcon={mdiImageCheckOutline}
-              loading={updatingFaceId === face.id}
-              disabled={isUpdating}
-              onclick={() => handleSetFeaturePhoto(face)}
-            >
-              {$t('set_as_featured_photo')}
-            </Button>
-
-            <Button
-              fullWidth
-              size="small"
-              color="secondary"
-              variant="outline"
-              leadingIcon={mdiSwapHorizontal}
-              loading={reassigningFaceId === face.id}
-              disabled={isUpdating}
-              onclick={() => handleReassignFace(face)}
-            >
-              {$t('change_person')}
-            </Button>
-
-            <Button
-              fullWidth
-              size="small"
-              color="secondary"
-              variant="ghost"
-              href={Route.viewAsset({ id: face.assetId })}
-              leadingIcon={mdiOpenInNew}
-            >
-              {$t('view')}
-            </Button>
-          </div>
-        </article>
-      {/each}
+              {#if entry.revertedAt}
+                <span
+                  class="rounded-full bg-gray-200 px-3 py-1 text-xs font-semibold text-gray-700 dark:bg-gray-700 dark:text-gray-200"
+                >
+                  {$t('face_assignment_history_reverted')}
+                </span>
+              {:else}
+                <Button
+                  size="small"
+                  color="secondary"
+                  variant="outline"
+                  leadingIcon={mdiHistory}
+                  loading={revertingHistoryId === entry.id}
+                  disabled={isUpdating}
+                  onclick={() => handleRevertHistory(entry)}
+                >
+                  {$t('undo')}
+                </Button>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
     </div>
 
-    {#if hasNextPage}
-      <div class="mt-8 flex justify-center">
-        <Button
-          size="small"
-          color="secondary"
-          variant="outline"
-          loading={isLoadingMore}
-          disabled={isLoadingMore}
-          onclick={() => loadFaces()}
-        >
-          {$t('load_more_face_references')}
-        </Button>
+    {#if faces.length === 0}
+      <div
+        class="flex min-h-56 items-center justify-center rounded-3xl border border-dashed border-gray-300 text-gray-500 dark:border-gray-700 dark:text-gray-400"
+      >
+        {$t('no_face_references')}
       </div>
+    {:else}
+      <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 2xl:grid-cols-8">
+        {#each faces as face (face.id)}
+          <article
+            class="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-immich-dark-gray"
+          >
+            <div class="relative aspect-square bg-gray-100 dark:bg-immich-dark-primary/20">
+              {#await getFacePreview(face)}
+                <div class="flex h-full w-full items-center justify-center">
+                  <LoadingSpinner />
+                </div>
+              {:then preview}
+                <img
+                  src={preview ?? '/src/lib/assets/no-thumbnail.png'}
+                  alt={person.name || $t('person')}
+                  class="h-full w-full object-cover"
+                  draggable="false"
+                />
+              {/await}
+            </div>
+
+            <div class="space-y-2 p-3">
+              <Button
+                fullWidth
+                size="small"
+                leadingIcon={mdiImageCheckOutline}
+                loading={updatingFaceId === face.id}
+                disabled={isUpdating}
+                onclick={() => handleSetFeaturePhoto(face)}
+              >
+                {$t('set_as_featured_photo')}
+              </Button>
+
+              <Button
+                fullWidth
+                size="small"
+                color="secondary"
+                variant="outline"
+                leadingIcon={mdiSwapHorizontal}
+                loading={reassigningFaceId === face.id}
+                disabled={isUpdating}
+                onclick={() => handleReassignFace(face)}
+              >
+                {$t('change_person')}
+              </Button>
+
+              <Button
+                fullWidth
+                size="small"
+                color="secondary"
+                variant="ghost"
+                href={Route.viewAsset({ id: face.assetId })}
+                leadingIcon={mdiOpenInNew}
+              >
+                {$t('view')}
+              </Button>
+            </div>
+          </article>
+        {/each}
+      </div>
+
+      {#if hasNextPage}
+        <div class="mt-8 flex justify-center">
+          <Button
+            size="small"
+            color="secondary"
+            variant="outline"
+            loading={isLoadingMore}
+            disabled={isLoadingMore}
+            onclick={() => loadFaces()}
+          >
+            {$t('load_more_face_references')}
+          </Button>
+        </div>
+      {/if}
     {/if}
   {/if}
 </section>

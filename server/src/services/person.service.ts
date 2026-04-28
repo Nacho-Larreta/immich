@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { Insertable, Updateable } from 'kysely';
 import { JOBS_ASSET_PAGINATION_SIZE } from 'src/constants';
 import { StorageCore } from 'src/cores/storage.core';
@@ -12,6 +12,7 @@ import {
   AssetFaceResponseDto,
   AssetFaceUpdateDto,
   FaceDto,
+  mapFaceAssignmentHistory,
   mapFaces,
   mapFacesWithoutPerson,
   mapPerson,
@@ -19,6 +20,9 @@ import {
   PeopleResponseDto,
   PeopleUpdateDto,
   PersonCreateDto,
+  PersonFaceAssignmentHistoryPageResponseDto,
+  PersonFaceAssignmentHistoryResponseDto,
+  PersonFaceAssignmentHistorySearchDto,
   PersonFacesResponseDto,
   PersonFacesSearchDto,
   PersonResponseDto,
@@ -30,6 +34,7 @@ import {
   AssetType,
   AssetVisibility,
   CacheControl,
+  FaceAssignmentHistorySource,
   JobName,
   JobStatus,
   Permission,
@@ -112,27 +117,36 @@ export class PersonService extends BaseService {
     await this.requireAccess({ auth, permission: Permission.PersonUpdate, ids: [personId] });
     const person = await this.findOrFail(personId);
     const result: PersonResponseDto[] = [];
-    const changeFeaturePhoto: string[] = [];
+    const changeFeaturePhoto = new Set<string>();
     for (const data of dto.data) {
       const faces = await this.personRepository.getFacesByIds([{ personId: data.personId, assetId: data.assetId }]);
 
       for (const face of faces) {
         await this.requireAccess({ auth, permission: Permission.PersonCreate, ids: [face.id] });
-        if (person.faceAssetId === null) {
-          changeFeaturePhoto.push(person.id);
-        }
-        if (face.person && face.person.faceAssetId === face.id) {
-          changeFeaturePhoto.push(face.person.id);
+        const move = await this.personRepository.reassignFaceWithHistory({
+          faceId: face.id,
+          newPersonId: personId,
+          ownerId: auth.user.id,
+          actorId: auth.user.id,
+          source: FaceAssignmentHistorySource.ManualBulkReassign,
+        });
+
+        if (!move) {
+          continue;
         }
 
-        await this.personRepository.reassignFace(face.id, personId);
+        if (person.faceAssetId === null) {
+          changeFeaturePhoto.add(person.id);
+        }
+        if (face.person && face.person.faceAssetId === face.id) {
+          changeFeaturePhoto.add(face.person.id);
+        }
       }
 
       result.push(mapPerson(person));
     }
-    if (changeFeaturePhoto.length > 0) {
-      // Remove duplicates
-      await this.createNewFeaturePhoto([...new Set(changeFeaturePhoto)]);
+    if (changeFeaturePhoto.size > 0) {
+      await this.createNewFeaturePhoto([...changeFeaturePhoto]);
     }
     return result;
   }
@@ -143,12 +157,25 @@ export class PersonService extends BaseService {
     const face = await this.personRepository.getFaceById(dto.id);
     const person = await this.findOrFail(personId);
 
-    await this.personRepository.reassignFace(face.id, personId);
-    if (person.faceAssetId === null) {
-      await this.createNewFeaturePhoto([person.id]);
-    }
-    if (face.person && face.person.faceAssetId === face.id) {
-      await this.createNewFeaturePhoto([face.person.id]);
+    const move = await this.personRepository.reassignFaceWithHistory({
+      faceId: face.id,
+      newPersonId: personId,
+      ownerId: auth.user.id,
+      actorId: auth.user.id,
+      source: FaceAssignmentHistorySource.ManualReassign,
+    });
+
+    if (move) {
+      const changeFeaturePhoto = new Set<string>();
+      if (person.faceAssetId === null) {
+        changeFeaturePhoto.add(person.id);
+      }
+      if (face.person && face.person.faceAssetId === face.id) {
+        changeFeaturePhoto.add(face.person.id);
+      }
+      if (changeFeaturePhoto.size > 0) {
+        await this.createNewFeaturePhoto([...changeFeaturePhoto]);
+      }
     }
 
     return await this.findOrFail(personId).then(mapPerson);
@@ -176,6 +203,51 @@ export class PersonService extends BaseService {
       faces: items.map((face) => mapFaces(face, auth)),
       hasNextPage,
     };
+  }
+
+  async getFaceAssignmentHistory(
+    auth: AuthDto,
+    id: string,
+    dto: PersonFaceAssignmentHistorySearchDto,
+  ): Promise<PersonFaceAssignmentHistoryPageResponseDto> {
+    await this.requireAccess({ auth, permission: Permission.PersonRead, ids: [id] });
+
+    const { page, size } = dto;
+    const { items, hasNextPage } = await this.personRepository.getFaceAssignmentHistoryForPerson(
+      { take: size, skip: (page - 1) * size },
+      auth.user.id,
+      id,
+    );
+
+    return {
+      history: items.map(mapFaceAssignmentHistory),
+      hasNextPage,
+    };
+  }
+
+  async revertFaceAssignmentHistory(
+    auth: AuthDto,
+    id: string,
+    historyId: string,
+  ): Promise<PersonFaceAssignmentHistoryResponseDto> {
+    await this.requireAccess({ auth, permission: Permission.PersonUpdate, ids: [id] });
+
+    const result = await this.personRepository.revertFaceAssignmentHistory(historyId, auth.user.id, id, auth.user.id);
+    switch (result.status) {
+      case 'not-found': {
+        throw new NotFoundException('Face assignment history not found');
+      }
+      case 'already-reverted': {
+        throw new ConflictException('Face assignment history entry is already reverted');
+      }
+      case 'conflict': {
+        throw new ConflictException('Face assignment history entry can no longer be reverted');
+      }
+      case 'reverted': {
+        await this.refreshFeaturePhotosForFaceMove(result.faceId, result.fromPersonId, result.toPersonId);
+        return mapFaceAssignmentHistory(result.history);
+      }
+    }
   }
 
   async getFaceSourceImage(auth: AuthDto, id: string): Promise<ImmichFileResponse> {
@@ -210,6 +282,32 @@ export class PersonService extends BaseService {
     }
 
     await this.jobRepository.queueAll(jobs);
+  }
+
+  private async refreshFeaturePhotosForFaceMove(
+    faceId: string,
+    fromPersonId: string | null,
+    toPersonId: string | null,
+  ) {
+    const changeFeaturePhoto = new Set<string>();
+
+    if (toPersonId) {
+      const toPerson = await this.personRepository.getById(toPersonId);
+      if (toPerson?.faceAssetId === null) {
+        changeFeaturePhoto.add(toPerson.id);
+      }
+    }
+
+    if (fromPersonId) {
+      const fromPerson = await this.personRepository.getById(fromPersonId);
+      if (fromPerson?.faceAssetId === faceId) {
+        changeFeaturePhoto.add(fromPerson.id);
+      }
+    }
+
+    if (changeFeaturePhoto.size > 0) {
+      await this.createNewFeaturePhoto([...changeFeaturePhoto]);
+    }
   }
 
   async getById(auth: AuthDto, id: string): Promise<PersonResponseDto> {
@@ -770,9 +868,19 @@ export class PersonService extends BaseService {
 
         const mergeName = mergePerson.name || mergePerson.id;
         const mergeData: UpdateFacesData = { oldPersonId: mergeId, newPersonId: id };
+        const batchId = this.cryptoRepository.randomUUID();
         this.logger.log(`Merging ${mergeName} into ${primaryName}`);
 
-        await this.personRepository.reassignFaces(mergeData);
+        const moves = await this.personRepository.reassignFacesWithHistory({
+          ...mergeData,
+          ownerId: auth.user.id,
+          actorId: auth.user.id,
+          source: FaceAssignmentHistorySource.Merge,
+          batchId,
+        });
+        if (primaryPerson.faceAssetId === null && moves.length > 0) {
+          await this.createNewFeaturePhoto([primaryPerson.id]);
+        }
         await this.removeAllPeople([mergePerson]);
 
         this.logger.log(`Merged ${mergeName} into ${primaryName}`);

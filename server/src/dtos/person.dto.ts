@@ -4,8 +4,9 @@ import { AssetFace, Person } from 'src/database';
 import { HistoryBuilder } from 'src/decorators';
 import { AuthDto } from 'src/dtos/auth.dto';
 import { AssetEditActionItem } from 'src/dtos/editing.dto';
-import { SourceTypeSchema } from 'src/enum';
+import { FaceAssignmentHistorySourceSchema, SourceTypeSchema } from 'src/enum';
 import { AssetFaceTable } from 'src/schema/tables/asset-face.table';
+import { FaceAssignmentHistoryTable } from 'src/schema/tables/face-assignment-history.table';
 import { ImageDimensions, MaybeDehydrated } from 'src/types';
 import { asBirthDateString, asDateString } from 'src/utils/date';
 import { transformFaceBoundingBox } from 'src/utils/transform';
@@ -139,6 +140,50 @@ const PersonFacesResponseSchema = z
 
 export class PersonFacesResponseDto extends createZodDto(PersonFacesResponseSchema) {}
 
+const PersonFaceAssignmentHistorySearchSchema = z
+  .object({
+    page: z.coerce.number().min(1).default(1).describe('Page number for pagination'),
+    size: z.coerce.number().min(1).max(100).default(20).describe('Number of history entries per page'),
+  })
+  .meta({ id: 'PersonFaceAssignmentHistorySearchDto' });
+
+export class PersonFaceAssignmentHistorySearchDto extends createZodDto(PersonFaceAssignmentHistorySearchSchema) {}
+
+const PersonFaceAssignmentHistoryParamSchema = z
+  .object({
+    id: z.uuidv4().describe('Person ID'),
+    historyId: z.uuidv4().describe('Face assignment history ID'),
+  })
+  .meta({ id: 'PersonFaceAssignmentHistoryParamDto' });
+
+export class PersonFaceAssignmentHistoryParamDto extends createZodDto(PersonFaceAssignmentHistoryParamSchema) {}
+
+const PersonFaceAssignmentHistoryResponseSchema = z
+  .object({
+    id: z.uuidv4().describe('Face assignment history ID'),
+    faceId: z.uuidv4().describe('Face ID'),
+    previousPersonId: z.uuidv4().nullable().describe('Person ID before the change'),
+    newPersonId: z.uuidv4().nullable().describe('Person ID after the change'),
+    source: FaceAssignmentHistorySourceSchema,
+    batchId: z.uuidv4().nullable().describe('Shared ID for related history entries'),
+    createdAt: z.string().meta({ format: 'date-time' }).describe('Change timestamp'),
+    revertedAt: z.string().meta({ format: 'date-time' }).nullable().describe('Revert timestamp'),
+  })
+  .meta({ id: 'PersonFaceAssignmentHistoryResponseDto' });
+
+export class PersonFaceAssignmentHistoryResponseDto extends createZodDto(PersonFaceAssignmentHistoryResponseSchema) {}
+
+const PersonFaceAssignmentHistoryPageResponseSchema = z
+  .object({
+    history: z.array(PersonFaceAssignmentHistoryResponseSchema).describe('Face assignment history entries'),
+    hasNextPage: z.boolean().describe('Whether there are more history entries'),
+  })
+  .meta({ id: 'PersonFaceAssignmentHistoryPageResponseDto' });
+
+export class PersonFaceAssignmentHistoryPageResponseDto extends createZodDto(
+  PersonFaceAssignmentHistoryPageResponseSchema,
+) {}
+
 const AssetFaceUpdateItemSchema = z
   .object({
     personId: z.uuidv4().describe('Person ID'),
@@ -251,5 +296,20 @@ export function mapFaces(
   return {
     ...mapFacesWithoutPerson(face, edits, assetDimensions),
     person: face.person?.ownerId === auth.user.id ? mapPerson(face.person) : null,
+  };
+}
+
+export function mapFaceAssignmentHistory(
+  history: Selectable<FaceAssignmentHistoryTable>,
+): PersonFaceAssignmentHistoryResponseDto {
+  return {
+    id: history.id,
+    faceId: history.faceId,
+    previousPersonId: history.previousPersonId,
+    newPersonId: history.newPersonId,
+    source: history.source,
+    batchId: history.batchId,
+    createdAt: asDateString(history.createdAt),
+    revertedAt: history.revertedAt ? asDateString(history.revertedAt) : null,
   };
 }
