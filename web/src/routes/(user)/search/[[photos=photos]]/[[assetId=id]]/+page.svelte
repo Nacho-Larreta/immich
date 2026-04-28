@@ -34,6 +34,7 @@
   import {
     type AlbumResponseDto,
     type AssetResponseDto,
+    AssetTypeEnum,
     getPerson,
     getTagById,
     type MetadataSearchDto,
@@ -269,6 +270,10 @@
               {/await}
             {:else if searchKey === 'rating'}
               {$t('rating_count', { values: { count: value ?? 0 } })}
+            {:else if searchKey === 'type' && value === AssetTypeEnum.Image}
+              {$t('image')}
+            {:else if searchKey === 'type' && value === AssetTypeEnum.Video}
+              {$t('video')}
             {:else if value === null || value === ''}
               {$t('unknown')}
             {:else}

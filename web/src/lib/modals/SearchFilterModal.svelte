@@ -177,6 +177,9 @@
         <!-- PEOPLE -->
         <SearchPeopleSection bind:selectedPeople={filter.personIds} />
 
+        <!-- MEDIA TYPE -->
+        <SearchMediaSection bind:filteredMedia={filter.mediaType} />
+
         <!-- TEXT -->
         <SearchTextSection bind:query={filter.query} bind:queryType={filter.queryType} />
 
@@ -198,9 +201,6 @@
         {/if}
 
         <div class="grid md:grid-cols-2 gap-x-5 gap-y-10">
-          <!-- MEDIA TYPE -->
-          <SearchMediaSection bind:filteredMedia={filter.mediaType} />
-
           <!-- DISPLAY OPTIONS -->
           <SearchDisplaySection bind:filters={filter.display} />
         </div>

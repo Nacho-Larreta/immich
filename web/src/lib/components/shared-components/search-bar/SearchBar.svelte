@@ -2,12 +2,13 @@
   import { goto } from '$app/navigation';
   import { focusOutside } from '$lib/actions/focus-outside';
   import { shortcuts } from '$lib/actions/shortcut';
+  import { MediaType } from '$lib/constants';
   import SearchFilterModal from '$lib/modals/SearchFilterModal.svelte';
   import { Route } from '$lib/route';
   import { searchStore } from '$lib/stores/search.svelte';
   import { handlePromiseError } from '$lib/utils';
   import { generateId } from '$lib/utils/generate-id';
-  import type { MetadataSearchDto, SmartSearchDto } from '@immich/sdk';
+  import { AssetTypeEnum, type MetadataSearchDto, type SmartSearchDto } from '@immich/sdk';
   import { Button, IconButton, modalManager } from '@immich/ui';
   import { mdiClose, mdiMagnify, mdiTune } from '@mdi/js';
   import { onDestroy, onMount, tick } from 'svelte';
@@ -31,10 +32,47 @@
   let selectedId: string | undefined = $state();
   let close: (() => Promise<void>) | undefined;
   let showSearchTypeDropdown = $state(false);
+  let showMediaTypeDropdown = $state(false);
   let currentSearchType = $state('smart');
+  let currentMediaType = $state(MediaType.All);
 
   const listboxId = generateId();
   const searchTypeId = generateId();
+
+  const getMediaTypeFromSearchQuery = (query: MetadataSearchDto | SmartSearchDto) => {
+    switch (query.type) {
+      case AssetTypeEnum.Image: {
+        return MediaType.Image;
+      }
+      case AssetTypeEnum.Video: {
+        return MediaType.Video;
+      }
+      default: {
+        return MediaType.All;
+      }
+    }
+  };
+
+  const getAssetTypeFromMediaType = (mediaType: MediaType) => {
+    switch (mediaType) {
+      case MediaType.Image: {
+        return AssetTypeEnum.Image;
+      }
+      case MediaType.Video: {
+        return AssetTypeEnum.Video;
+      }
+      default: {
+        return undefined;
+      }
+    }
+  };
+
+  const withMediaType = <T extends MetadataSearchDto | SmartSearchDto>(payload: T): T => {
+    return {
+      ...payload,
+      type: getAssetTypeFromMediaType(currentMediaType),
+    };
+  };
 
   onDestroy(() => {
     searchStore.isSearchEnabled = false;
@@ -77,22 +115,23 @@
   };
 
   const buildSearchPayload = (term: string): SmartSearchDto | MetadataSearchDto => {
+    const query = term.trim();
     const searchType = getSearchType();
     switch (searchType) {
       case 'smart': {
-        return { query: term };
+        return withMediaType(query ? { query } : {});
       }
       case 'metadata': {
-        return { originalFileName: term };
+        return withMediaType(query ? { originalFileName: query } : {});
       }
       case 'description': {
-        return { description: term };
+        return withMediaType(query ? { description: query } : {});
       }
       case 'ocr': {
-        return { ocr: term };
+        return withMediaType(query ? { ocr: query } : {});
       }
       default: {
-        return { query: term };
+        return withMediaType(query ? { query } : {});
       }
     }
   };
@@ -112,7 +151,7 @@
       return;
     }
 
-    const result = modalManager.open(SearchFilterModal, { searchQuery });
+    const result = modalManager.open(SearchFilterModal, { searchQuery: withMediaType(searchQuery) });
     close = () => result.close();
     closeDropdown();
 
@@ -131,8 +170,17 @@
   };
 
   const onSubmit = () => {
-    handlePromiseError(handleSearch(buildSearchPayload(value)));
-    saveSearchTerm(value);
+    const query = value.trim();
+    if (!query && currentMediaType === MediaType.All) {
+      input?.focus();
+      return;
+    }
+
+    handlePromiseError(handleSearch(buildSearchPayload(query)));
+
+    if (query) {
+      saveSearchTerm(query);
+    }
   };
 
   const onClear = () => {
@@ -143,6 +191,7 @@
   const onEscape = () => {
     closeDropdown();
     closeSearchTypeDropdown();
+    closeMediaTypeDropdown();
   };
 
   const onArrow = async (direction: 1 | -1) => {
@@ -180,10 +229,24 @@
     showSearchTypeDropdown = false;
   };
 
+  const toggleMediaTypeDropdown = () => {
+    showMediaTypeDropdown = !showMediaTypeDropdown;
+  };
+
+  const closeMediaTypeDropdown = () => {
+    showMediaTypeDropdown = false;
+  };
+
   const selectSearchType = (type: string) => {
     localStorage.setItem('searchQueryType', type);
     currentSearchType = type;
     showSearchTypeDropdown = false;
+    input?.focus();
+  };
+
+  const selectMediaType = (mediaType: MediaType) => {
+    currentMediaType = mediaType;
+    showMediaTypeDropdown = false;
     input?.focus();
   };
 
@@ -229,8 +292,27 @@
     }
   }
 
+  function getMediaTypeText(): string {
+    switch (currentMediaType) {
+      case MediaType.Image: {
+        return $t('image');
+      }
+      case MediaType.Video: {
+        return $t('video');
+      }
+      default: {
+        return $t('all');
+      }
+    }
+  }
+
   onMount(() => {
     getSearchType();
+    currentMediaType = getMediaTypeFromSearchQuery(searchQuery);
+  });
+
+  $effect(() => {
+    currentMediaType = getMediaTypeFromSearchQuery(searchQuery);
   });
 
   const searchTypes = [
@@ -238,6 +320,12 @@
     { value: 'metadata', label: () => $t('filename') },
     { value: 'description', label: () => $t('description') },
     { value: 'ocr', label: () => $t('ocr') },
+  ] as const;
+
+  const mediaTypes = [
+    { value: MediaType.All, label: () => $t('all') },
+    { value: MediaType.Image, label: () => $t('image') },
+    { value: MediaType.Video, label: () => $t('video') },
   ] as const;
 </script>
 
@@ -266,12 +354,11 @@
         name="q"
         id="main-search-bar"
         class="w-full transition-all border-2 ps-14 py-4 max-md:py-2 text-immich-fg/75 dark:text-immich-dark-fg
-        {showClearIcon ? 'pe-22.5' : 'pe-14'}
+        {showClearIcon ? 'pe-22.5 md:pe-72' : 'pe-14 md:pe-64'}
         {grayTheme ? 'dark:bg-immich-dark-gray' : 'dark:bg-immich-dark-bg'}
         {showSuggestions && isSearchSuggestions ? 'rounded-t-3xl' : 'rounded-3xl bg-gray-200'}
         {searchStore.isSearchEnabled ? 'border-gray-200 dark:border-gray-700 bg-white' : 'border-transparent'}"
         placeholder={$t('search_your_photos')}
-        required
         pattern="^(?!m:$).*$"
         bind:value
         bind:this={input}
@@ -309,10 +396,44 @@
 
     <div
       id={searchTypeId}
-      class="absolute inset-y-0 flex items-center end-16"
-      class:max-md:hidden={value}
+      class="absolute inset-y-0 hidden items-center gap-2 md:flex end-16"
       class:end-28={value.length > 0}
     >
+      <div class="relative" use:focusOutside={{ onFocusOut: closeMediaTypeDropdown }}>
+        <Button
+          shape="round"
+          variant={currentMediaType === MediaType.All ? 'outline' : 'filled'}
+          color={currentMediaType === MediaType.All ? 'secondary' : 'primary'}
+          class="px-3 py-1 text-xs {currentMediaType === MediaType.All
+            ? 'border border-secondary/5 text-muted hover:text-dark font-light'
+            : 'border border-transparent'}"
+          onclick={toggleMediaTypeDropdown}
+          aria-label={$t('media_type')}
+          aria-expanded={showMediaTypeDropdown}
+          aria-haspopup="listbox"
+        >
+          {getMediaTypeText()}
+        </Button>
+
+        {#if showMediaTypeDropdown}
+          <div
+            class="absolute top-full right-0 mt-1 bg-white dark:bg-immich-dark-gray border border-gray-200 dark:border-gray-600 rounded-lg shadow-lg py-1 min-w-28 z-9999"
+          >
+            {#each mediaTypes as mediaType (mediaType.value)}
+              <button
+                type="button"
+                tabindex="0"
+                class="w-full text-left px-3 py-2 text-xs hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors
+                         {currentMediaType === mediaType.value ? 'bg-gray-100 dark:bg-gray-700' : ''}"
+                onclick={() => selectMediaType(mediaType.value)}
+              >
+                {mediaType.label()}
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </div>
+
       <div class="relative" use:focusOutside={{ onFocusOut: closeSearchTypeDropdown }}>
         <Button
           shape="round"
