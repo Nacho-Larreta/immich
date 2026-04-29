@@ -1,9 +1,10 @@
 <script lang="ts">
   import ImageThumbnail from '$lib/components/assets/thumbnail/ImageThumbnail.svelte';
   import PeoplePickerModal from '$lib/modals/PeoplePickerModal.svelte';
-  import { Route } from '$lib/route';
-  import { getFaceSourceImageUrl, getPeopleThumbnailUrl } from '$lib/utils';
-  import { handleError } from '$lib/utils/handle-error';
+import { Route } from '$lib/route';
+import { getFaceSourceImageUrl, getPeopleThumbnailUrl } from '$lib/utils';
+import { handleError } from '$lib/utils/handle-error';
+import { formatFaceSuggestionMatchScore } from '$lib/utils/people-utils';
   import {
     FaceAssignmentHistorySource,
     FaceSuggestionFeedbackDecision,
@@ -489,7 +490,9 @@
                   {$t('face_suggestion_review_mode_description')}
                 </p>
                 <p class="mt-3 text-sm text-gray-500 dark:text-gray-400">
-                  {$t('face_suggestion_distance', { values: { distance: activeSuggestion.distance.toFixed(3) } })} ·
+                  {$t('face_suggestion_match_score', {
+                    values: { score: formatFaceSuggestionMatchScore(activeSuggestion.distance, $locale) },
+                  })} ·
                   {$t('face_suggestion_review_remaining', { values: { count: suggestions.length } })}
                 </p>
               </div>
@@ -561,7 +564,9 @@
                       {$t('face_suggestion_question', { values: { name: person.name || $t('person') } })}
                     </p>
                     <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                      {$t('face_suggestion_distance', { values: { distance: suggestion.distance.toFixed(3) } })}
+                      {$t('face_suggestion_match_score', {
+                        values: { score: formatFaceSuggestionMatchScore(suggestion.distance, $locale) },
+                      })}
                     </p>
                   </div>
 

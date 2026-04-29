@@ -1,6 +1,6 @@
 import type { Faces } from '$lib/stores/people.store';
 import type { Size } from '$lib/utils/container-utils';
-import { getBoundingBox } from '$lib/utils/people-utils';
+import { formatFaceSuggestionMatchScore, getBoundingBox, getFaceSuggestionMatchScore } from '$lib/utils/people-utils';
 
 const makeFace = (overrides: Partial<Faces> = {}): Faces => ({
   id: 'face-1',
@@ -66,5 +66,24 @@ describe('getBoundingBox', () => {
 
     expect(boxes).toHaveLength(2);
     expect(boxes[0].left).toBeLessThan(boxes[1].left);
+  });
+});
+
+describe('getFaceSuggestionMatchScore', () => {
+  it('should convert embedding distance to an estimated match score', () => {
+    expect(getFaceSuggestionMatchScore(0)).toBe(1);
+    expect(getFaceSuggestionMatchScore(1)).toBe(0.5);
+    expect(getFaceSuggestionMatchScore(2)).toBe(0);
+  });
+
+  it('should clamp unexpected distances', () => {
+    expect(getFaceSuggestionMatchScore(-1)).toBe(1);
+    expect(getFaceSuggestionMatchScore(3)).toBe(0);
+  });
+});
+
+describe('formatFaceSuggestionMatchScore', () => {
+  it('should format the score as a localized percentage', () => {
+    expect(formatFaceSuggestionMatchScore(0.889, 'en-US')).toBe('56%');
   });
 });

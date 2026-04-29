@@ -5,6 +5,19 @@ import { mapNormalizedRectToContent, type Rect, type Size } from '$lib/utils/con
 
 export type BoundingBox = Rect & { id: string };
 
+const maxFaceSuggestionDistance = 2;
+
+export const getFaceSuggestionMatchScore = (distance: number) => {
+  return Math.max(0, Math.min(1, 1 - distance / maxFaceSuggestionDistance));
+};
+
+export const formatFaceSuggestionMatchScore = (distance: number, locale: string | null | undefined) => {
+  return getFaceSuggestionMatchScore(distance).toLocaleString(locale ?? undefined, {
+    style: 'percent',
+    maximumFractionDigits: 0,
+  });
+};
+
 export const getBoundingBox = (faces: Faces[], imageSize: Size): BoundingBox[] => {
   const boxes: BoundingBox[] = [];
 

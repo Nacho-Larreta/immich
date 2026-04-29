@@ -1,9 +1,10 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import ImageThumbnail from '$lib/components/assets/thumbnail/ImageThumbnail.svelte';
-  import { Route } from '$lib/route';
-  import { getFaceSourceImageUrl, getPeopleThumbnailUrl } from '$lib/utils';
-  import { handleError } from '$lib/utils/handle-error';
+import ImageThumbnail from '$lib/components/assets/thumbnail/ImageThumbnail.svelte';
+import { Route } from '$lib/route';
+import { getFaceSourceImageUrl, getPeopleThumbnailUrl } from '$lib/utils';
+import { handleError } from '$lib/utils/handle-error';
+import { formatFaceSuggestionMatchScore } from '$lib/utils/people-utils';
   import {
     FaceSuggestionFeedbackDecision,
     getFaceSuggestionSummary,
@@ -15,7 +16,7 @@
   import { Button, Icon, LoadingSpinner, toastManager } from '@immich/ui';
   import { mdiArrowLeft, mdiFaceRecognition, mdiImageCheckOutline, mdiOpenInNew } from '@mdi/js';
   import { onMount } from 'svelte';
-  import { t } from 'svelte-i18n';
+  import { locale, t } from 'svelte-i18n';
 
   type FacePreviewSource = Pick<
     PersonFaceSuggestionResponseDto,
@@ -303,7 +304,9 @@
             <div class="min-w-0">
               <p class="truncate text-lg font-semibold">{activePersonName}</p>
               <p class="text-sm text-gray-500 dark:text-gray-400">
-                {$t('face_suggestion_distance', { values: { distance: activeItem.suggestion.distance.toFixed(3) } })}
+                {$t('face_suggestion_match_score', {
+                  values: { score: formatFaceSuggestionMatchScore(activeItem.suggestion.distance, $locale) },
+                })}
               </p>
             </div>
           </div>
