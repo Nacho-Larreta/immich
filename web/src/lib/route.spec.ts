@@ -1,4 +1,4 @@
-import { OpenQueryParam } from '$lib/constants';
+import { OpenQueryParam, QueryParameter } from '$lib/constants';
 import { Route } from '$lib/route';
 
 describe('Route', () => {
@@ -21,6 +21,14 @@ describe('Route', () => {
 
     it('should support query parameters', () => {
       expect(Route.systemSettings({ isOpen: OpenQueryParam.OAUTH })).toBe('/admin/system-settings?isOpen=oauth');
+    });
+  });
+
+  describe(Route.viewAsset.name, () => {
+    it('should support previous route', () => {
+      expect(Route.viewAsset({ id: 'asset-id' }, { [QueryParameter.PREVIOUS_ROUTE]: '/people/suggestions' })).toBe(
+        '/photos/asset-id?previousRoute=%2Fpeople%2Fsuggestions',
+      );
     });
   });
 

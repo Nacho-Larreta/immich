@@ -2,6 +2,7 @@ import { get } from 'svelte/store';
 import { goto } from '$app/navigation';
 import { page } from '$app/stores';
 import type { RouteId } from '$app/types';
+import { QueryParameter } from '$lib/constants';
 import { assetCacheManager } from '$lib/managers/AssetCacheManager.svelte';
 import { Route } from '$lib/route';
 
@@ -28,8 +29,27 @@ export function getAssetInfoFromParam({ assetId, slug, key }: { assetId?: string
   return assetId ? assetCacheManager.getAsset({ id: assetId, slug, key }, false) : undefined;
 }
 
+function getInternalPreviousRoute(url: URL) {
+  const previousRoute = url.searchParams.get(QueryParameter.PREVIOUS_ROUTE);
+  if (!previousRoute) {
+    return;
+  }
+
+  const previousUrl = new URL(previousRoute, globalThis.location.href);
+  if (previousUrl.origin !== globalThis.location.origin) {
+    return;
+  }
+
+  return previousUrl.pathname + previousUrl.search + previousUrl.hash;
+}
+
 function currentUrlWithoutAsset() {
   const $page = get(page);
+  const previousRoute = getInternalPreviousRoute($page.url);
+  if (previousRoute) {
+    return previousRoute;
+  }
+
   // This contains special casing for the /photos/:assetId route, which hangs directly
   // off / instead of a subpath, unlike every other asset-containing route.
   return isPhotosRoute($page.route.id)
@@ -58,14 +78,15 @@ function replaceScrollTarget(url: string, searchParams?: AssetGridRouteSearchPar
   const { at: assetId } = searchParams || { at: null };
 
   if (!assetId) {
-    return parsed.pathname;
+    return parsed.pathname + parsed.search;
   }
 
-  const params = new URLSearchParams($page.url.search);
+  const params = new URLSearchParams(parsed.search);
   if (assetId) {
     params.set('at', assetId);
   }
-  return parsed.pathname + '?' + params.toString();
+  const paramsString = params.toString();
+  return parsed.pathname + (paramsString ? `?${paramsString}` : '');
 }
 
 function currentUrl() {

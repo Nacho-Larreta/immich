@@ -1,6 +1,6 @@
 import { QueueName, type MetadataSearchDto, type SmartSearchDto } from '@immich/sdk';
 import { omitBy } from 'lodash-es';
-import { OpenQueryParam, type SharedLinkTab } from '$lib/constants';
+import { OpenQueryParam, QueryParameter, type SharedLinkTab } from '$lib/constants';
 
 const asQueueSlug = (name: QueueName) => {
   return name.replaceAll(/[A-Z]/g, (m) => '-' + m.toLowerCase());
@@ -100,7 +100,8 @@ export const Route = {
 
   // photos
   photos: (params?: { at?: string }) => '/photos' + asQueryString(params),
-  viewAsset: ({ id }: { id: string }) => `/photos/${id}`,
+  viewAsset: ({ id }: { id: string }, params?: { previousRoute?: string }) =>
+    `/photos/${id}` + asQueryString({ [QueryParameter.PREVIOUS_ROUTE]: params?.previousRoute }),
   archive: () => '/archive',
   favorites: () => '/favorites',
   locked: () => '/locked',

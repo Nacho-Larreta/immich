@@ -379,7 +379,10 @@
                 color="secondary"
                 variant="ghost"
                 leadingIcon={mdiOpenInNew}
-                href={Route.viewAsset({ id: activeItem.suggestion.assetId })}
+                href={Route.viewAsset(
+                  { id: activeItem.suggestion.assetId },
+                  { previousRoute: Route.faceSuggestions() },
+                )}
               >
                 {$t('view')}
               </Button>
