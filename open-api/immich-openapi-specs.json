@@ -8975,6 +8975,73 @@
         "x-immich-state": "Beta"
       }
     },
+    "/people/{id}/face-suggestions/feedback": {
+      "post": {
+        "description": "Accept or reject multiple unassigned face suggestions for a person.",
+        "operationId": "respondToPersonFaceSuggestions",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PersonFaceSuggestionBatchFeedbackDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonFaceSuggestionBatchFeedbackResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Respond to multiple person face suggestions",
+        "tags": [
+          "People"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2.8.0",
+            "state": "Added"
+          },
+          {
+            "version": "v2.8.0",
+            "state": "Beta"
+          }
+        ],
+        "x-immich-permission": "person.update",
+        "x-immich-state": "Beta"
+      }
+    },
     "/people/{id}/face-suggestions/{faceId}/feedback": {
       "post": {
         "description": "Accept or reject an unassigned face suggestion for a person.",
@@ -20675,6 +20742,71 @@
           "previousPersonId",
           "revertedAt",
           "source"
+        ],
+        "type": "object"
+      },
+      "PersonFaceSuggestionBatchFeedbackDto": {
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/FaceSuggestionFeedbackDecision"
+          },
+          "faceIds": {
+            "description": "Face IDs to review",
+            "items": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "decision",
+          "faceIds"
+        ],
+        "type": "object"
+      },
+      "PersonFaceSuggestionBatchFeedbackFailedItem": {
+        "properties": {
+          "faceId": {
+            "description": "Face ID that could not be reviewed",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Reason why the face review failed",
+            "type": "string"
+          }
+        },
+        "required": [
+          "faceId",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "PersonFaceSuggestionBatchFeedbackResponseDto": {
+        "properties": {
+          "failed": {
+            "description": "Face suggestions that could not be reviewed",
+            "items": {
+              "$ref": "#/components/schemas/PersonFaceSuggestionBatchFeedbackFailedItem"
+            },
+            "type": "array"
+          },
+          "results": {
+            "description": "Successfully reviewed face suggestions",
+            "items": {
+              "$ref": "#/components/schemas/PersonFaceSuggestionFeedbackResponseDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "failed",
+          "results"
         ],
         "type": "object"
       },

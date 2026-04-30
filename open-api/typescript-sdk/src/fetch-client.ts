@@ -1573,8 +1573,16 @@ export type PersonFaceSuggestionPageResponseDto = {
     /** Suggested face candidates */
     suggestions: PersonFaceSuggestionResponseDto[];
 };
-export type PersonFaceSuggestionFeedbackDto = {
+export type PersonFaceSuggestionBatchFeedbackDto = {
     decision: FaceSuggestionFeedbackDecision;
+    /** Face IDs to review */
+    faceIds: string[];
+};
+export type PersonFaceSuggestionBatchFeedbackFailedItem = {
+    /** Face ID that could not be reviewed */
+    faceId: string;
+    /** Reason why the face review failed */
+    reason: string;
 };
 export type PersonFaceSuggestionFeedbackResponseDto = {
     /** Feedback creation timestamp */
@@ -1588,6 +1596,15 @@ export type PersonFaceSuggestionFeedbackResponseDto = {
     personId: string;
     /** Feedback update timestamp */
     updatedAt: string;
+};
+export type PersonFaceSuggestionBatchFeedbackResponseDto = {
+    /** Face suggestions that could not be reviewed */
+    failed: PersonFaceSuggestionBatchFeedbackFailedItem[];
+    /** Successfully reviewed face suggestions */
+    results: PersonFaceSuggestionFeedbackResponseDto[];
+};
+export type PersonFaceSuggestionFeedbackDto = {
+    decision: FaceSuggestionFeedbackDecision;
 };
 export type PersonFacesResponseDto = {
     /** Face references assigned to the person */
@@ -5476,6 +5493,22 @@ export function getPersonFaceSuggestions({ id, maxDistance, page, size }: {
     }))}`, {
         ...opts
     }));
+}
+/**
+ * Respond to multiple person face suggestions
+ */
+export function respondToPersonFaceSuggestions({ id, personFaceSuggestionBatchFeedbackDto }: {
+    id: string;
+    personFaceSuggestionBatchFeedbackDto: PersonFaceSuggestionBatchFeedbackDto;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchJson<{
+        status: 200;
+        data: PersonFaceSuggestionBatchFeedbackResponseDto;
+    }>(`/people/${encodeURIComponent(id)}/face-suggestions/feedback`, oazapfts.json({
+        ...opts,
+        method: "POST",
+        body: personFaceSuggestionBatchFeedbackDto
+    })));
 }
 /**
  * Respond to a person face suggestion

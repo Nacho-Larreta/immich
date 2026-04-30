@@ -7,6 +7,7 @@
   import { handleError } from '$lib/utils/handle-error';
   import { formatFaceSuggestionMatchScore } from '$lib/utils/people-utils';
   import {
+    AssetJobName,
     FaceAssignmentHistorySource,
     FaceSuggestionFeedbackDecision,
     getPerson,
@@ -14,8 +15,9 @@
     getPersonFaces,
     getPersonFaceSuggestions,
     reassignFacesById,
-    respondToPersonFaceSuggestion,
+    respondToPersonFaceSuggestions,
     revertPersonFaceAssignmentHistory,
+    runAssetJobs,
     updatePerson,
     type AssetFaceResponseDto,
     type PersonFaceAssignmentHistoryResponseDto,
@@ -23,7 +25,7 @@
     type PersonResponseDto,
   } from '@immich/sdk';
   import { Button, LoadingSpinner, modalManager, toastManager } from '@immich/ui';
-  import { mdiHistory, mdiImageCheckOutline, mdiOpenInNew, mdiSwapHorizontal } from '@mdi/js';
+  import { mdiHistory, mdiImageCheckOutline, mdiImageRefreshOutline, mdiOpenInNew, mdiSwapHorizontal } from '@mdi/js';
   import { DateTime } from 'luxon';
   import { onMount } from 'svelte';
   import { locale, t } from 'svelte-i18n';
@@ -60,15 +62,38 @@
   let updatingFaceId = $state<string | null>(null);
   let reassigningFaceId = $state<string | null>(null);
   let revertingHistoryId = $state<string | null>(null);
-  let respondingSuggestionFaceId = $state<string | null>(null);
+  let pendingSuggestionIds = $state<string[]>([]);
+  let selectedSuggestionIds = $state<string[]>([]);
+  let brokenPreviewFaceIds = $state<string[]>([]);
+  let regeneratingThumbnailAssetIds = $state<string[]>([]);
   let featureThumbnailUrlOverride = $state<string | null>(null);
   let isReviewMode = $state(false);
 
+  const isRegeneratingThumbnails = $derived(regeneratingThumbnailAssetIds.length > 0);
   const isUpdating = $derived(
-    !!updatingFaceId || !!reassigningFaceId || !!revertingHistoryId || !!respondingSuggestionFaceId,
+    !!updatingFaceId || !!reassigningFaceId || !!revertingHistoryId || isRegeneratingThumbnails,
   );
   const featureThumbnailUrl = $derived(featureThumbnailUrlOverride ?? getPeopleThumbnailUrl(person));
   const activeSuggestion = $derived(suggestions[0] ?? null);
+  const referencesRoute = $derived(Route.viewPerson(person, { action: 'references' }));
+  const selectedSuggestions = $derived(suggestions.filter(({ id }) => selectedSuggestionIds.includes(id)));
+  const allVisibleSuggestionsSelected = $derived(
+    suggestions.length > 0 && selectedSuggestions.length === suggestions.length,
+  );
+  const brokenVisibleFaceCount = $derived(
+    [...faces, ...suggestions].filter(({ id }) => brokenPreviewFaceIds.includes(id)).length,
+  );
+
+  const setFacePreviewBroken = (faceId: string, broken: boolean) => {
+    if (broken && !brokenPreviewFaceIds.includes(faceId)) {
+      brokenPreviewFaceIds = [...brokenPreviewFaceIds, faceId];
+      return;
+    }
+
+    if (!broken && brokenPreviewFaceIds.includes(faceId)) {
+      brokenPreviewFaceIds = brokenPreviewFaceIds.filter((id) => id !== faceId);
+    }
+  };
 
   const loadFacePreview = async (face: FacePreviewSource) => {
     const image = new Image();
@@ -119,7 +144,10 @@
       return cached;
     }
 
-    const preview = loadFacePreview(face);
+    const preview = loadFacePreview(face).then((preview) => {
+      setFacePreviewBroken(face.id, preview === null);
+      return preview;
+    });
     facePreviewCache[face.id] = preview;
     return preview;
   };
@@ -172,6 +200,9 @@
       const nextPage = reset ? 1 : suggestionPage;
       const response = await getPersonFaceSuggestions({ id: person.id, page: nextPage, size: suggestionPageSize });
       suggestions = reset ? response.suggestions : [...suggestions, ...response.suggestions];
+      selectedSuggestionIds = selectedSuggestionIds.filter((id) =>
+        suggestions.some((suggestion) => suggestion.id === id),
+      );
       hasNextSuggestionPage = response.hasNextPage;
       suggestionPage = nextPage + 1;
     } catch (error) {
@@ -299,46 +330,109 @@
     }
   };
 
-  const handleSuggestionFeedback = async (
+  const getUniqueAssetIds = (items: Array<Pick<AssetFaceResponseDto, 'assetId'>>) => [
+    ...new Set(items.map(({ assetId }) => assetId)),
+  ];
+
+  const getBrokenVisibleFaces = () => [...faces, ...suggestions].filter(({ id }) => brokenPreviewFaceIds.includes(id));
+
+  const isSuggestionPending = (suggestion: PersonFaceSuggestionResponseDto) =>
+    pendingSuggestionIds.includes(suggestion.id);
+
+  const getSameAssetSuggestionCount = (suggestion: PersonFaceSuggestionResponseDto) =>
+    suggestions.filter(({ assetId }) => assetId === suggestion.assetId).length;
+
+  const toggleSuggestionSelection = (suggestion: PersonFaceSuggestionResponseDto) => {
+    selectedSuggestionIds = selectedSuggestionIds.includes(suggestion.id)
+      ? selectedSuggestionIds.filter((id) => id !== suggestion.id)
+      : [...selectedSuggestionIds, suggestion.id];
+  };
+
+  const toggleAllVisibleSuggestions = () => {
+    selectedSuggestionIds = allVisibleSuggestionsSelected ? [] : suggestions.map(({ id }) => id);
+  };
+
+  const selectSuggestionsByAsset = (assetId: string) => {
+    const sameAssetSuggestionIds = suggestions
+      .filter((suggestion) => suggestion.assetId === assetId)
+      .map(({ id }) => id);
+
+    selectedSuggestionIds = [...new Set([...selectedSuggestionIds, ...sameAssetSuggestionIds])];
+  };
+
+  const refreshPersonInBackground = () => {
+    void getPerson({ id: person.id })
+      .then((refreshedPerson) => onPersonUpdate(refreshedPerson))
+      .catch((error) => handleError(error, $t('errors.failed_to_load_people')));
+  };
+
+  const handleSuggestionFeedback = (
     suggestion: PersonFaceSuggestionResponseDto,
     decision: FaceSuggestionFeedbackDecision,
+  ) => handleSuggestionBatchFeedback([suggestion], decision);
+
+  const handleSuggestionBatchFeedback = async (
+    targetSuggestions: PersonFaceSuggestionResponseDto[],
+    decision: FaceSuggestionFeedbackDecision,
   ) => {
-    if (isUpdating) {
+    const activeSuggestions = targetSuggestions.filter((suggestion) => !isSuggestionPending(suggestion));
+    if (isUpdating || activeSuggestions.length === 0) {
       return;
     }
 
-    respondingSuggestionFaceId = suggestion.id;
+    const targetIds = activeSuggestions.map(({ id }) => id);
+    const targetIdSet = new Set(targetIds);
+    const optimisticSuggestions = suggestions.filter(({ id }) => targetIdSet.has(id));
+    const remainingSuggestions = suggestions.filter(({ id }) => !targetIdSet.has(id));
+
+    suggestions = remainingSuggestions;
+    selectedSuggestionIds = selectedSuggestionIds.filter((id) => !targetIdSet.has(id));
+    pendingSuggestionIds = [...pendingSuggestionIds, ...targetIds];
+
     try {
-      await respondToPersonFaceSuggestion({
+      const response = await respondToPersonFaceSuggestions({
         id: person.id,
-        faceId: suggestion.id,
-        personFaceSuggestionFeedbackDto: { decision },
+        personFaceSuggestionBatchFeedbackDto: { faceIds: targetIds, decision },
       });
 
-      const remainingSuggestions = suggestions.filter(({ id }) => id !== suggestion.id);
-      suggestions = remainingSuggestions;
+      const failedIds = new Set(response.failed.map(({ faceId }) => faceId));
+      const failedSuggestions = optimisticSuggestions.filter(({ id }) => failedIds.has(id));
+      if (failedSuggestions.length > 0) {
+        suggestions = [...failedSuggestions, ...suggestions];
+      }
 
       if (decision === FaceSuggestionFeedbackDecision.Accepted) {
         featureThumbnailUrlOverride = null;
-        await Promise.all([loadFaces({ reset: true }), loadHistory(), loadSuggestions({ reset: true })]);
-
-        const refreshedPerson = await getPerson({ id: person.id });
-        onPersonUpdate(refreshedPerson);
-        toastManager.primary($t('face_suggestion_accepted'));
+        const acceptedSuggestions = optimisticSuggestions.filter(({ id }) => !failedIds.has(id));
+        faces = [
+          ...acceptedSuggestions.map((suggestion) => ({ ...suggestion, person })),
+          ...faces.filter(({ id }) => !targetIdSet.has(id)),
+        ];
+        refreshPersonInBackground();
+        void loadHistory();
+        toastManager.primary($t('face_suggestions_accepted_count', { values: { count: response.results.length } }));
       } else {
-        await refillSuggestionsIfNeeded(remainingSuggestions);
-        toastManager.primary($t('face_suggestion_rejected'));
+        toastManager.primary($t('face_suggestions_rejected_count', { values: { count: response.results.length } }));
       }
+
+      if (response.failed.length > 0) {
+        toastManager.warning($t('face_suggestions_failed_count', { values: { count: response.failed.length } }));
+      }
+
+      void refillSuggestionsIfNeeded(suggestions);
     } catch (error) {
+      suggestions = [...optimisticSuggestions, ...suggestions];
+      selectedSuggestionIds = [...new Set([...selectedSuggestionIds, ...targetIds])];
       handleError(error, $t('errors.unable_to_update_face_suggestion'));
     } finally {
-      respondingSuggestionFaceId = null;
+      pendingSuggestionIds = pendingSuggestionIds.filter((id) => !targetIdSet.has(id));
     }
   };
 
   const handleSkipSuggestion = (suggestion: PersonFaceSuggestionResponseDto) => {
     const remainingSuggestions = suggestions.filter(({ id }) => id !== suggestion.id);
     suggestions = remainingSuggestions;
+    selectedSuggestionIds = selectedSuggestionIds.filter((id) => id !== suggestion.id);
     void refillSuggestionsIfNeeded(remainingSuggestions);
   };
 
@@ -348,6 +442,56 @@
     }
 
     await loadSuggestions();
+  };
+
+  const handleSkipSelectedSuggestions = () => {
+    if (selectedSuggestions.length === 0) {
+      return;
+    }
+
+    const selectedIds = new Set(selectedSuggestions.map(({ id }) => id));
+    const remainingSuggestions = suggestions.filter(({ id }) => !selectedIds.has(id));
+    suggestions = remainingSuggestions;
+    selectedSuggestionIds = [];
+    void refillSuggestionsIfNeeded(remainingSuggestions);
+  };
+
+  const handleRegenerateThumbnails = async (targetFaces: Array<Pick<AssetFaceResponseDto, 'id' | 'assetId'>>) => {
+    const assetIds = getUniqueAssetIds(targetFaces);
+    if (assetIds.length === 0 || isRegeneratingThumbnails) {
+      return;
+    }
+
+    if (assetIds.length > 1) {
+      const confirmed = await modalManager.showDialog({
+        prompt: $t('regenerate_thumbnails_confirmation', { values: { count: assetIds.length } }),
+        confirmText: $t('refresh_thumbnails'),
+      });
+
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    regeneratingThumbnailAssetIds = [...regeneratingThumbnailAssetIds, ...assetIds];
+    try {
+      await runAssetJobs({
+        assetJobsDto: {
+          name: AssetJobName.RegenerateThumbnail,
+          assetIds,
+        },
+      });
+
+      for (const face of targetFaces) {
+        delete facePreviewCache[face.id];
+      }
+      brokenPreviewFaceIds = brokenPreviewFaceIds.filter((id) => !targetFaces.some((face) => face.id === id));
+      toastManager.primary($t('regenerating_thumbnails'));
+    } catch (error) {
+      handleError(error, $t('errors.unable_to_submit_job'));
+    } finally {
+      regeneratingThumbnailAssetIds = regeneratingThumbnailAssetIds.filter((id) => !assetIds.includes(id));
+    }
   };
 
   const isEditableKeyboardTarget = (target: EventTarget | null) => {
@@ -503,8 +647,8 @@
               <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <Button
                   leadingIcon={mdiImageCheckOutline}
-                  loading={respondingSuggestionFaceId === activeSuggestion.id}
-                  disabled={isUpdating}
+                  loading={isSuggestionPending(activeSuggestion)}
+                  disabled={isUpdating || isSuggestionPending(activeSuggestion)}
                   onclick={() => handleSuggestionFeedback(activeSuggestion, FaceSuggestionFeedbackDecision.Accepted)}
                 >
                   {$t('yes')}
@@ -514,8 +658,8 @@
                 <Button
                   color="secondary"
                   variant="outline"
-                  loading={respondingSuggestionFaceId === activeSuggestion.id}
-                  disabled={isUpdating}
+                  loading={isSuggestionPending(activeSuggestion)}
+                  disabled={isUpdating || isSuggestionPending(activeSuggestion)}
                   onclick={() => handleSuggestionFeedback(activeSuggestion, FaceSuggestionFeedbackDecision.Rejected)}
                 >
                   {$t('no')}
@@ -525,7 +669,7 @@
                 <Button
                   color="secondary"
                   variant="ghost"
-                  disabled={isUpdating}
+                  disabled={isUpdating || isSuggestionPending(activeSuggestion)}
                   onclick={() => handleSkipSuggestion(activeSuggestion)}
                 >
                   {$t('skip')}
@@ -540,13 +684,86 @@
           </article>
         {/if}
       {:else}
+        <div
+          class="mb-4 flex flex-col gap-3 rounded-2xl border border-immich-primary/15 bg-white/70 p-3 dark:border-immich-dark-primary/25 dark:bg-black/20"
+        >
+          <div class="flex flex-wrap items-center gap-2">
+            <Button size="small" color="secondary" variant="outline" onclick={toggleAllVisibleSuggestions}>
+              {allVisibleSuggestionsSelected ? $t('clear_selection') : $t('select_all_visible')}
+            </Button>
+
+            {#if selectedSuggestions.length > 0}
+              <Button
+                size="small"
+                leadingIcon={mdiImageCheckOutline}
+                disabled={isUpdating}
+                onclick={() =>
+                  handleSuggestionBatchFeedback(selectedSuggestions, FaceSuggestionFeedbackDecision.Accepted)}
+              >
+                {$t('accept_selected_face_suggestions', { values: { count: selectedSuggestions.length } })}
+              </Button>
+
+              <Button
+                size="small"
+                color="secondary"
+                variant="outline"
+                disabled={isUpdating}
+                onclick={() =>
+                  handleSuggestionBatchFeedback(selectedSuggestions, FaceSuggestionFeedbackDecision.Rejected)}
+              >
+                {$t('reject_selected_face_suggestions', { values: { count: selectedSuggestions.length } })}
+              </Button>
+
+              <Button size="small" color="secondary" variant="ghost" onclick={handleSkipSelectedSuggestions}>
+                {$t('skip_selected_face_suggestions', { values: { count: selectedSuggestions.length } })}
+              </Button>
+            {/if}
+          </div>
+
+          <div class="flex flex-wrap items-center gap-2">
+            <Button
+              size="small"
+              color="secondary"
+              variant="outline"
+              leadingIcon={mdiImageRefreshOutline}
+              loading={isRegeneratingThumbnails}
+              disabled={isRegeneratingThumbnails}
+              onclick={() => handleRegenerateThumbnails(suggestions)}
+            >
+              {$t('regenerate_visible_thumbnails')}
+            </Button>
+
+            <Button
+              size="small"
+              color="secondary"
+              variant="outline"
+              leadingIcon={mdiImageRefreshOutline}
+              loading={isRegeneratingThumbnails}
+              disabled={isRegeneratingThumbnails || brokenVisibleFaceCount === 0}
+              onclick={() => handleRegenerateThumbnails(getBrokenVisibleFaces())}
+            >
+              {$t('regenerate_broken_thumbnails', { values: { count: brokenVisibleFaceCount } })}
+            </Button>
+          </div>
+        </div>
+
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
           {#each suggestions as suggestion (suggestion.id)}
             <article
-              class="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-black/20"
+              class={`overflow-hidden rounded-2xl border bg-white shadow-sm transition dark:bg-black/20 ${
+                selectedSuggestionIds.includes(suggestion.id)
+                  ? 'border-immich-primary ring-2 ring-immich-primary/40 dark:border-immich-dark-primary dark:ring-immich-dark-primary/40'
+                  : 'border-gray-200 dark:border-gray-800'
+              }`}
             >
               <div class="grid grid-cols-[6rem_1fr] gap-3 p-3">
-                <div class="relative aspect-square overflow-hidden rounded-xl bg-gray-100 dark:bg-immich-dark-gray">
+                <button
+                  type="button"
+                  class="relative aspect-square overflow-hidden rounded-xl bg-gray-100 text-left dark:bg-immich-dark-gray"
+                  aria-pressed={selectedSuggestionIds.includes(suggestion.id)}
+                  aria-label={$t('select_face_suggestion')}
+                  onclick={() => toggleSuggestionSelection(suggestion)}
+                >
                   {#await getFacePreview(suggestion)}
                     <div class="flex h-full w-full items-center justify-center">
                       <LoadingSpinner />
@@ -559,7 +776,15 @@
                       draggable="false"
                     />
                   {/await}
-                </div>
+                  <span
+                    class={`absolute right-2 top-2 h-5 w-5 rounded-full border-2 ${
+                      selectedSuggestionIds.includes(suggestion.id)
+                        ? 'border-immich-primary bg-immich-primary dark:border-immich-dark-primary dark:bg-immich-dark-primary'
+                        : 'border-white bg-black/40'
+                    }`}
+                    aria-hidden="true"
+                  ></span>
+                </button>
 
                 <div class="flex min-w-0 flex-col justify-between gap-3">
                   <div>
@@ -571,14 +796,27 @@
                         values: { score: formatFaceSuggestionMatchScore(suggestion.distance, $locale) },
                       })}
                     </p>
+                    {#if getSameAssetSuggestionCount(suggestion) > 1}
+                      <Button
+                        size="small"
+                        color="secondary"
+                        variant="ghost"
+                        disabled={isUpdating}
+                        onclick={() => selectSuggestionsByAsset(suggestion.assetId)}
+                      >
+                        {$t('select_same_asset_face_suggestions', {
+                          values: { count: getSameAssetSuggestionCount(suggestion) },
+                        })}
+                      </Button>
+                    {/if}
                   </div>
 
                   <div class="grid grid-cols-3 gap-2">
                     <Button
                       size="small"
                       leadingIcon={mdiImageCheckOutline}
-                      loading={respondingSuggestionFaceId === suggestion.id}
-                      disabled={isUpdating}
+                      loading={isSuggestionPending(suggestion)}
+                      disabled={isUpdating || isSuggestionPending(suggestion)}
                       onclick={() => handleSuggestionFeedback(suggestion, FaceSuggestionFeedbackDecision.Accepted)}
                     >
                       {$t('yes')}
@@ -588,8 +826,8 @@
                       size="small"
                       color="secondary"
                       variant="outline"
-                      loading={respondingSuggestionFaceId === suggestion.id}
-                      disabled={isUpdating}
+                      loading={isSuggestionPending(suggestion)}
+                      disabled={isUpdating || isSuggestionPending(suggestion)}
                       onclick={() => handleSuggestionFeedback(suggestion, FaceSuggestionFeedbackDecision.Rejected)}
                     >
                       {$t('no')}
@@ -599,12 +837,25 @@
                       size="small"
                       color="secondary"
                       variant="ghost"
-                      disabled={isUpdating}
+                      disabled={isUpdating || isSuggestionPending(suggestion)}
                       onclick={() => handleSkipSuggestion(suggestion)}
                     >
                       {$t('skip')}
                     </Button>
                   </div>
+
+                  <Button
+                    fullWidth
+                    size="small"
+                    color="secondary"
+                    variant="ghost"
+                    leadingIcon={mdiImageRefreshOutline}
+                    loading={regeneratingThumbnailAssetIds.includes(suggestion.assetId)}
+                    disabled={isRegeneratingThumbnails}
+                    onclick={() => handleRegenerateThumbnails([suggestion])}
+                  >
+                    {$t('regenerate_thumbnail')}
+                  </Button>
                 </div>
               </div>
             </article>
@@ -693,6 +944,32 @@
         {$t('no_face_references')}
       </div>
     {:else}
+      <div class="mb-4 flex flex-wrap items-center gap-2">
+        <Button
+          size="small"
+          color="secondary"
+          variant="outline"
+          leadingIcon={mdiImageRefreshOutline}
+          loading={isRegeneratingThumbnails}
+          disabled={isRegeneratingThumbnails}
+          onclick={() => handleRegenerateThumbnails(faces)}
+        >
+          {$t('regenerate_visible_thumbnails')}
+        </Button>
+
+        <Button
+          size="small"
+          color="secondary"
+          variant="outline"
+          leadingIcon={mdiImageRefreshOutline}
+          loading={isRegeneratingThumbnails}
+          disabled={isRegeneratingThumbnails || brokenVisibleFaceCount === 0}
+          onclick={() => handleRegenerateThumbnails(getBrokenVisibleFaces())}
+        >
+          {$t('regenerate_broken_thumbnails', { values: { count: brokenVisibleFaceCount } })}
+        </Button>
+      </div>
+
       <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 2xl:grid-cols-8">
         {#each faces as face (face.id)}
           <article
@@ -743,7 +1020,20 @@
                 size="small"
                 color="secondary"
                 variant="ghost"
-                href={Route.viewAsset({ id: face.assetId })}
+                leadingIcon={mdiImageRefreshOutline}
+                loading={regeneratingThumbnailAssetIds.includes(face.assetId)}
+                disabled={isRegeneratingThumbnails}
+                onclick={() => handleRegenerateThumbnails([face])}
+              >
+                {$t('regenerate_thumbnail')}
+              </Button>
+
+              <Button
+                fullWidth
+                size="small"
+                color="secondary"
+                variant="ghost"
+                href={Route.viewAsset({ id: face.assetId }, { previousRoute: referencesRoute })}
                 leadingIcon={mdiOpenInNew}
               >
                 {$t('view')}

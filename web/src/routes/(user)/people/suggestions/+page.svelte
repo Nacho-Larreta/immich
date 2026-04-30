@@ -10,7 +10,7 @@
     FaceSuggestionFeedbackDecision,
     getFaceSuggestionSummary,
     getPersonFaceSuggestions,
-    respondToPersonFaceSuggestion,
+    respondToPersonFaceSuggestions,
     type PersonFaceSuggestionResponseDto,
     type PersonFaceSuggestionSummaryItemResponseDto,
   } from '@immich/sdk';
@@ -125,11 +125,10 @@
     const [nextSuggestion] = response.suggestions;
 
     if (nextSuggestion) {
-      queue = [{ person: current.person, suggestion: nextSuggestion }, ...queue.slice(1)];
+      queue = [{ person: current.person, suggestion: nextSuggestion }, ...queue];
       return;
     }
 
-    queue = queue.slice(1);
     pendingPeople = Math.max(0, pendingPeople - 1);
 
     if (queue.length === 0 && (hasMorePeople || pendingPeople > 0)) {
@@ -143,25 +142,36 @@
     }
 
     const current = activeItem;
+    const previousQueue = queue;
+    queue = queue.slice(1);
     isResponding = true;
     try {
-      await respondToPersonFaceSuggestion({
+      const response = await respondToPersonFaceSuggestions({
         id: current.person.id,
-        faceId: current.suggestion.id,
-        personFaceSuggestionFeedbackDto: { decision },
+        personFaceSuggestionBatchFeedbackDto: { faceIds: [current.suggestion.id], decision },
       });
 
-      if (decision === FaceSuggestionFeedbackDecision.Accepted) {
-        await loadQueue();
-      } else {
-        await replaceCurrentSuggestion(current);
+      if (response.failed.length > 0) {
+        queue = previousQueue;
+        toastManager.warning($t('face_suggestions_failed_count', { values: { count: response.failed.length } }));
+        return;
       }
+
+      try {
+        await replaceCurrentSuggestion(current);
+      } catch {
+        if (queue.length === 0 && (hasMorePeople || pendingPeople > 0)) {
+          await loadQueue();
+        }
+      }
+
       toastManager.primary(
         decision === FaceSuggestionFeedbackDecision.Accepted
           ? $t('face_suggestion_accepted')
           : $t('face_suggestion_rejected'),
       );
     } catch (error) {
+      queue = previousQueue;
       handleError(error, $t('errors.unable_to_update_face_suggestion'));
     } finally {
       isResponding = false;

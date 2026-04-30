@@ -7,16 +7,18 @@
   import { getAssetMediaUrl, getAssetPlaybackUrl } from '$lib/utils';
   import { timeToSeconds } from '$lib/utils/date-time';
   import { moveFocus } from '$lib/utils/focus-util';
+  import { handleError } from '$lib/utils/handle-error';
   import { currentUrlReplaceAssetId } from '$lib/utils/navigation';
   import { getAltText } from '$lib/utils/thumbnail-util';
-  import { AssetMediaSize, AssetVisibility, type UserResponseDto } from '@immich/sdk';
-  import { Icon } from '@immich/ui';
+  import { AssetJobName, AssetMediaSize, AssetVisibility, runAssetJobs, type UserResponseDto } from '@immich/sdk';
+  import { Icon, toastManager } from '@immich/ui';
   import {
     mdiArchiveArrowDownOutline,
     mdiCameraBurst,
     mdiCheckCircle,
     mdiFileGifBox,
     mdiHeart,
+    mdiImageRefreshOutline,
     mdiMagnifyPlusOutline,
     mdiMotionPauseOutline,
     mdiMotionPlayOutline,
@@ -24,6 +26,7 @@
   } from '@mdi/js';
   import { onMount } from 'svelte';
   import type { ClassValue } from 'svelte/elements';
+  import { t } from 'svelte-i18n';
   import { fade } from 'svelte/transition';
   import Thumbhash from '$lib/components/Thumbhash.svelte';
   import ImageThumbnail from './ImageThumbnail.svelte';
@@ -79,6 +82,7 @@
   let mouseOver = $state(false);
   let loaded = $state(false);
   let thumbError = $state(false);
+  let regeneratingThumbnail = $state(false);
 
   let width = $derived(thumbnailSize || thumbnailWidth || 235);
   let height = $derived(thumbnailSize || thumbnailHeight || 235);
@@ -110,6 +114,30 @@
     e.stopPropagation();
     e.preventDefault();
     callClickHandlers();
+  };
+
+  const handleRegenerateThumbnail = async (event: MouseEvent) => {
+    event.stopPropagation();
+    event.preventDefault();
+
+    if (regeneratingThumbnail) {
+      return;
+    }
+
+    regeneratingThumbnail = true;
+    try {
+      await runAssetJobs({
+        assetJobsDto: {
+          assetIds: [asset.id],
+          name: AssetJobName.RegenerateThumbnail,
+        },
+      });
+      toastManager.primary($t('regenerating_thumbnails'));
+    } catch (error) {
+      handleError(error, $t('errors.unable_to_submit_job'));
+    } finally {
+      regeneratingThumbnail = false;
+    }
   };
 
   const onMouseEnter = () => {
@@ -377,6 +405,19 @@
           </div>
         {/if}
 
+        {#if thumbError && !readonly && !authManager.isSharedLink}
+          <button
+            type="button"
+            class="absolute z-10 bottom-2 inset-s-2 rounded-full bg-black/70 p-2 text-white shadow-md transition-colors hover:bg-black focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white disabled:cursor-not-allowed disabled:opacity-60"
+            onclick={handleRegenerateThumbnail}
+            disabled={regeneratingThumbnail}
+            title={$t('regenerate_thumbnail')}
+            aria-label={$t('regenerate_thumbnail')}
+          >
+            <Icon icon={mdiImageRefreshOutline} size="18" />
+          </button>
+        {/if}
+
         <!-- Stacked asset -->
         {#if asset.stack && showStackedIcon}
           <div
@@ -394,7 +435,7 @@
       </div>
 
       <!-- lazy show the url on mouse over-->
-      {#if !usingMobileDevice && mouseOver && !disableLinkMouseOver}
+      {#if !usingMobileDevice && mouseOver && !disableLinkMouseOver && !thumbError}
         <a
           class="z-2 absolute w-full top-0 bottom-0"
           style:cursor="unset"

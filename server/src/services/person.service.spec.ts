@@ -803,6 +803,103 @@ describe(PersonService.name, () => {
     });
   });
 
+  describe('respondToFaceSuggestions', () => {
+    it('should accept multiple suggested faces and report partial failures', async () => {
+      const auth = AuthFactory.create();
+      const person = PersonFactory.create({ ownerId: auth.user.id, faceAssetId: newUuid() });
+      const otherPerson = PersonFactory.create({ ownerId: auth.user.id });
+      const acceptedFace = AssetFaceFactory.create();
+      const assignedFace = AssetFaceFactory.create({ personId: otherPerson.id });
+      const feedback = makeFaceSuggestionFeedback({
+        ownerId: auth.user.id,
+        personId: person.id,
+        faceId: acceptedFace.id,
+        actorId: auth.user.id,
+        decision: FaceSuggestionFeedbackDecision.Accepted,
+      });
+
+      mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set([person.id]));
+      mocks.person.getById.mockResolvedValue(person);
+      mocks.person.getFaceForSuggestionFeedback
+        .mockResolvedValueOnce({ id: acceptedFace.id, personId: null })
+        .mockResolvedValueOnce({ id: assignedFace.id, personId: otherPerson.id });
+      mocks.person.reassignFaceWithHistory.mockResolvedValue({
+        faceId: acceptedFace.id,
+        previousPersonId: null,
+        newPersonId: person.id,
+        history: makeFaceAssignmentHistory({
+          faceId: acceptedFace.id,
+          ownerId: auth.user.id,
+          newPersonId: person.id,
+          source: FaceAssignmentHistorySource.SuggestionAccepted,
+        }),
+      });
+      mocks.person.upsertFaceSuggestionFeedback.mockResolvedValue(feedback);
+
+      await expect(
+        sut.respondToFaceSuggestions(auth, person.id, {
+          faceIds: [acceptedFace.id, assignedFace.id],
+          decision: FaceSuggestionFeedbackDecision.Accepted,
+        }),
+      ).resolves.toEqual({
+        results: [mapFaceSuggestionFeedback(feedback)],
+        failed: [{ faceId: assignedFace.id, reason: 'Face suggestion is no longer unassigned' }],
+      });
+
+      expect(mocks.person.getById).toHaveBeenCalledTimes(1);
+      expect(mocks.person.reassignFaceWithHistory).toHaveBeenCalledTimes(1);
+      expect(mocks.person.reassignFaceWithHistory).toHaveBeenCalledWith({
+        faceId: acceptedFace.id,
+        newPersonId: person.id,
+        ownerId: auth.user.id,
+        actorId: auth.user.id,
+        source: FaceAssignmentHistorySource.SuggestionAccepted,
+      });
+      expect(mocks.person.upsertFaceSuggestionFeedback).toHaveBeenCalledTimes(1);
+    });
+
+    it('should reject unique suggested faces in bulk without reassigning them', async () => {
+      const auth = AuthFactory.create();
+      const person = PersonFactory.create({ ownerId: auth.user.id });
+      const face1 = AssetFaceFactory.create();
+      const face2 = AssetFaceFactory.create();
+      const feedback1 = makeFaceSuggestionFeedback({
+        ownerId: auth.user.id,
+        personId: person.id,
+        faceId: face1.id,
+        actorId: auth.user.id,
+        decision: FaceSuggestionFeedbackDecision.Rejected,
+      });
+      const feedback2 = makeFaceSuggestionFeedback({
+        ownerId: auth.user.id,
+        personId: person.id,
+        faceId: face2.id,
+        actorId: auth.user.id,
+        decision: FaceSuggestionFeedbackDecision.Rejected,
+      });
+
+      mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set([person.id]));
+      mocks.person.getFaceForSuggestionFeedback
+        .mockResolvedValueOnce({ id: face1.id, personId: null })
+        .mockResolvedValueOnce({ id: face2.id, personId: null });
+      mocks.person.upsertFaceSuggestionFeedback.mockResolvedValueOnce(feedback1).mockResolvedValueOnce(feedback2);
+
+      await expect(
+        sut.respondToFaceSuggestions(auth, person.id, {
+          faceIds: [face1.id, face1.id, face2.id],
+          decision: FaceSuggestionFeedbackDecision.Rejected,
+        }),
+      ).resolves.toEqual({
+        results: [mapFaceSuggestionFeedback(feedback1), mapFaceSuggestionFeedback(feedback2)],
+        failed: [],
+      });
+
+      expect(mocks.person.getFaceForSuggestionFeedback).toHaveBeenCalledTimes(2);
+      expect(mocks.person.reassignFaceWithHistory).not.toHaveBeenCalled();
+      expect(mocks.person.upsertFaceSuggestionFeedback).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe('revertFaceAssignmentHistory', () => {
     it('should revert a face assignment history entry', async () => {
       const auth = AuthFactory.create();

@@ -27,6 +27,8 @@ import {
   PersonFaceAssignmentHistorySearchDto,
   PersonFacesResponseDto,
   PersonFacesSearchDto,
+  PersonFaceSuggestionBatchFeedbackDto,
+  PersonFaceSuggestionBatchFeedbackResponseDto,
   PersonFaceSuggestionFeedbackDto,
   PersonFaceSuggestionFeedbackResponseDto,
   PersonFaceSuggestionPageResponseDto,
@@ -265,7 +267,11 @@ export class PersonService extends BaseService {
     dto: PersonFaceSuggestionSummarySearchDto,
   ): Promise<PersonFaceSuggestionSummaryResponseDto> {
     const { machineLearning } = await this.getConfig({ withCache: true });
-    const { size, peopleLimit, maxDistance = this.getFaceSuggestionMaxDistance(machineLearning.facialRecognition) } = dto;
+    const {
+      size,
+      peopleLimit,
+      maxDistance = this.getFaceSuggestionMaxDistance(machineLearning.facialRecognition),
+    } = dto;
 
     const { items: people, hasNextPage } = await this.personRepository.getAllForUser(
       { take: peopleLimit, skip: 0 },
@@ -324,6 +330,48 @@ export class PersonService extends BaseService {
   ): Promise<PersonFaceSuggestionFeedbackResponseDto> {
     await this.requireAccess({ auth, permission: Permission.PersonUpdate, ids: [id] });
 
+    return this.respondToFaceSuggestionWithAccessChecked(auth, id, faceId, dto);
+  }
+
+  async respondToFaceSuggestions(
+    auth: AuthDto,
+    id: string,
+    dto: PersonFaceSuggestionBatchFeedbackDto,
+  ): Promise<PersonFaceSuggestionBatchFeedbackResponseDto> {
+    await this.requireAccess({ auth, permission: Permission.PersonUpdate, ids: [id] });
+
+    const context =
+      dto.decision === FaceSuggestionFeedbackDecision.Accepted
+        ? {
+            acceptedPerson: await this.findOrFail(id),
+            featurePhotoQueued: false,
+          }
+        : undefined;
+
+    const results: PersonFaceSuggestionFeedbackResponseDto[] = [];
+    const failed: PersonFaceSuggestionBatchFeedbackResponseDto['failed'] = [];
+
+    for (const faceId of new Set(dto.faceIds)) {
+      try {
+        results.push(await this.respondToFaceSuggestionWithAccessChecked(auth, id, faceId, dto, context));
+      } catch (error: unknown) {
+        failed.push({
+          faceId,
+          reason: this.getFaceSuggestionFeedbackFailureReason(error),
+        });
+      }
+    }
+
+    return { results, failed };
+  }
+
+  private async respondToFaceSuggestionWithAccessChecked(
+    auth: AuthDto,
+    id: string,
+    faceId: string,
+    dto: PersonFaceSuggestionFeedbackDto,
+    context?: { acceptedPerson: Person; featurePhotoQueued: boolean },
+  ): Promise<PersonFaceSuggestionFeedbackResponseDto> {
     const face = await this.personRepository.getFaceForSuggestionFeedback(auth.user.id, faceId);
     if (!face) {
       throw new NotFoundException('Face suggestion not found');
@@ -345,7 +393,7 @@ export class PersonService extends BaseService {
     }
 
     if (dto.decision === FaceSuggestionFeedbackDecision.Accepted) {
-      const person = await this.findOrFail(id);
+      const person = context?.acceptedPerson ?? (await this.findOrFail(id));
       const move = await this.personRepository.reassignFaceWithHistory({
         faceId,
         newPersonId: id,
@@ -354,8 +402,11 @@ export class PersonService extends BaseService {
         source: FaceAssignmentHistorySource.SuggestionAccepted,
       });
 
-      if (move && person.faceAssetId === null) {
+      if (move && person.faceAssetId === null && !context?.featurePhotoQueued) {
         await this.createNewFeaturePhoto([id]);
+        if (context) {
+          context.featurePhotoQueued = true;
+        }
       }
     }
 
@@ -368,6 +419,10 @@ export class PersonService extends BaseService {
     });
 
     return mapFaceSuggestionFeedback(feedback);
+  }
+
+  private getFaceSuggestionFeedbackFailureReason(error: unknown) {
+    return error instanceof Error ? error.message : 'Unknown face suggestion feedback error';
   }
 
   async revertFaceAssignmentHistory(

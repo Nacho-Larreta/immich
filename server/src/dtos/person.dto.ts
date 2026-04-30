@@ -202,12 +202,7 @@ export class PersonFaceSuggestionSearchDto extends createZodDto(PersonFaceSugges
 
 const PersonFaceSuggestionSummarySearchSchema = z
   .object({
-    size: z.coerce
-      .number()
-      .min(1)
-      .max(20)
-      .default(10)
-      .describe('Number of people with suggestions to return'),
+    size: z.coerce.number().min(1).max(20).default(10).describe('Number of people with suggestions to return'),
     peopleLimit: z.coerce
       .number()
       .min(1)
@@ -249,7 +244,9 @@ const PersonFaceSuggestionSummaryItemResponseSchema = z
 
 const PersonFaceSuggestionSummaryResponseSchema = z
   .object({
-    people: z.array(PersonFaceSuggestionSummaryItemResponseSchema).describe('People with at least one pending suggestion'),
+    people: z
+      .array(PersonFaceSuggestionSummaryItemResponseSchema)
+      .describe('People with at least one pending suggestion'),
     pendingPeople: z.int().min(0).describe('Number of scanned people with pending suggestions'),
     scannedPeople: z.int().min(0).describe('Number of people scanned'),
     hasMorePeople: z.boolean().describe('Whether there are more people beyond the scan limit'),
@@ -287,6 +284,35 @@ const PersonFaceSuggestionFeedbackResponseSchema = z
   .meta({ id: 'PersonFaceSuggestionFeedbackResponseDto' });
 
 export class PersonFaceSuggestionFeedbackResponseDto extends createZodDto(PersonFaceSuggestionFeedbackResponseSchema) {}
+
+const PersonFaceSuggestionBatchFeedbackSchema = z
+  .object({
+    faceIds: z.array(z.uuidv4()).min(1).max(200).describe('Face IDs to review'),
+    decision: FaceSuggestionFeedbackDecisionSchema,
+  })
+  .meta({ id: 'PersonFaceSuggestionBatchFeedbackDto' });
+
+export class PersonFaceSuggestionBatchFeedbackDto extends createZodDto(PersonFaceSuggestionBatchFeedbackSchema) {}
+
+const PersonFaceSuggestionBatchFeedbackFailedItemSchema = z
+  .object({
+    faceId: z.uuidv4().describe('Face ID that could not be reviewed'),
+    reason: z.string().describe('Reason why the face review failed'),
+  })
+  .meta({ id: 'PersonFaceSuggestionBatchFeedbackFailedItem' });
+
+const PersonFaceSuggestionBatchFeedbackResponseSchema = z
+  .object({
+    results: z.array(PersonFaceSuggestionFeedbackResponseSchema).describe('Successfully reviewed face suggestions'),
+    failed: z
+      .array(PersonFaceSuggestionBatchFeedbackFailedItemSchema)
+      .describe('Face suggestions that could not be reviewed'),
+  })
+  .meta({ id: 'PersonFaceSuggestionBatchFeedbackResponseDto' });
+
+export class PersonFaceSuggestionBatchFeedbackResponseDto extends createZodDto(
+  PersonFaceSuggestionBatchFeedbackResponseSchema,
+) {}
 
 const AssetFaceUpdateItemSchema = z
   .object({

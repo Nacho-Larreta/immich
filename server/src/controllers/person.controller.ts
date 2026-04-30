@@ -29,6 +29,8 @@ import {
   PersonFaceAssignmentHistorySearchDto,
   PersonFacesResponseDto,
   PersonFacesSearchDto,
+  PersonFaceSuggestionBatchFeedbackDto,
+  PersonFaceSuggestionBatchFeedbackResponseDto,
   PersonFaceSuggestionFeedbackDto,
   PersonFaceSuggestionFeedbackParamDto,
   PersonFaceSuggestionFeedbackResponseDto,
@@ -160,6 +162,22 @@ export class PersonController {
     @Query() dto: PersonFaceSuggestionSearchDto,
   ): Promise<PersonFaceSuggestionPageResponseDto> {
     return this.service.getFaceSuggestions(auth, id, dto);
+  }
+
+  @Post(':id/face-suggestions/feedback')
+  @Authenticated({ permission: Permission.PersonUpdate })
+  @HttpCode(HttpStatus.OK)
+  @Endpoint({
+    summary: 'Respond to multiple person face suggestions',
+    description: 'Accept or reject multiple unassigned face suggestions for a person.',
+    history: new HistoryBuilder().added('v2.8.0').beta('v2.8.0'),
+  })
+  respondToPersonFaceSuggestions(
+    @Auth() auth: AuthDto,
+    @Param() { id }: UUIDParamDto,
+    @Body() dto: PersonFaceSuggestionBatchFeedbackDto,
+  ): Promise<PersonFaceSuggestionBatchFeedbackResponseDto> {
+    return this.service.respondToFaceSuggestions(auth, id, dto);
   }
 
   @Post(':id/face-suggestions/:faceId/feedback')
