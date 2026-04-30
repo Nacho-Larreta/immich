@@ -1,10 +1,11 @@
 <script lang="ts">
+  import noThumbnailUrl from '$lib/assets/no-thumbnail.png';
   import ImageThumbnail from '$lib/components/assets/thumbnail/ImageThumbnail.svelte';
   import PeoplePickerModal from '$lib/modals/PeoplePickerModal.svelte';
-import { Route } from '$lib/route';
-import { getFaceSourceImageUrl, getPeopleThumbnailUrl } from '$lib/utils';
-import { handleError } from '$lib/utils/handle-error';
-import { formatFaceSuggestionMatchScore } from '$lib/utils/people-utils';
+  import { Route } from '$lib/route';
+  import { getFaceSourceImageUrl, getPeopleThumbnailUrl } from '$lib/utils';
+  import { handleError } from '$lib/utils/handle-error';
+  import { formatFaceSuggestionMatchScore } from '$lib/utils/people-utils';
   import {
     FaceAssignmentHistorySource,
     FaceSuggestionFeedbackDecision,
@@ -470,7 +471,7 @@ import { formatFaceSuggestionMatchScore } from '$lib/utils/people-utils';
                 </div>
               {:then preview}
                 <img
-                  src={preview ?? '/src/lib/assets/no-thumbnail.png'}
+                  src={preview ?? noThumbnailUrl}
                   alt={$t('face_suggestion_preview_alt', { values: { name: person.name || $t('person') } })}
                   class="h-full w-full object-cover"
                   draggable="false"
@@ -480,7 +481,9 @@ import { formatFaceSuggestionMatchScore } from '$lib/utils/people-utils';
 
             <div class="flex min-w-0 flex-col justify-between gap-5">
               <div>
-                <p class="text-sm font-semibold uppercase tracking-wide text-immich-primary dark:text-immich-dark-primary">
+                <p
+                  class="text-sm font-semibold uppercase tracking-wide text-immich-primary dark:text-immich-dark-primary"
+                >
                   {$t('face_suggestion_review_mode')}
                 </p>
                 <h3 class="mt-2 text-2xl font-semibold">
@@ -550,7 +553,7 @@ import { formatFaceSuggestionMatchScore } from '$lib/utils/people-utils';
                     </div>
                   {:then preview}
                     <img
-                      src={preview ?? '/src/lib/assets/no-thumbnail.png'}
+                      src={preview ?? noThumbnailUrl}
                       alt={$t('face_suggestion_preview_alt', { values: { name: person.name || $t('person') } })}
                       class="h-full w-full object-cover"
                       draggable="false"
@@ -702,7 +705,7 @@ import { formatFaceSuggestionMatchScore } from '$lib/utils/people-utils';
                 </div>
               {:then preview}
                 <img
-                  src={preview ?? '/src/lib/assets/no-thumbnail.png'}
+                  src={preview ?? noThumbnailUrl}
                   alt={person.name || $t('person')}
                   class="h-full w-full object-cover"
                   draggable="false"

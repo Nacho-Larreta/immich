@@ -1,5 +1,6 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
+  import noThumbnailUrl from '$lib/assets/no-thumbnail.png';
   import DetailPanelDate from '$lib/components/asset-viewer/DetailPanelDate.svelte';
   import DetailPanelDescription from '$lib/components/asset-viewer/DetailPanelDescription.svelte';
   import DetailPanelLocation from '$lib/components/asset-viewer/DetailPanelLocation.svelte';
@@ -283,7 +284,7 @@
                   <ImageThumbnail
                     curve
                     shadow
-                    url="/src/lib/assets/no-thumbnail.png"
+                    url={noThumbnailUrl}
                     altText={$t('face_unassigned')}
                     title={$t('face_unassigned')}
                     widthStyle="90px"
@@ -295,7 +296,7 @@
                   <ImageThumbnail
                     curve
                     shadow
-                    url={data === null ? '/src/lib/assets/no-thumbnail.png' : data}
+                    url={data === null ? noThumbnailUrl : data}
                     altText={$t('face_unassigned')}
                     title={$t('face_unassigned')}
                     widthStyle="90px"

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { shortcut } from '$lib/actions/shortcut';
+  import noThumbnailUrl from '$lib/assets/no-thumbnail.png';
   import OnEvents from '$lib/components/OnEvents.svelte';
   import { timeBeforeShowLoadingSpinner } from '$lib/constants';
   import { assetViewerManager } from '$lib/managers/asset-viewer-manager.svelte';
@@ -552,7 +553,7 @@
                       curve
                       shadow
                       highlighted={isHighlighted}
-                      url="/src/lib/assets/no-thumbnail.png"
+                      url={noThumbnailUrl}
                       altText={personName}
                       title={personName}
                       widthStyle="90px"
@@ -563,7 +564,7 @@
                       curve
                       shadow
                       highlighted={isHighlighted}
-                      url={data === null ? '/src/lib/assets/no-thumbnail.png' : data}
+                      url={data === null ? noThumbnailUrl : data}
                       altText={personName}
                       title={personName}
                       widthStyle="90px"

@@ -3,6 +3,7 @@
   import { page } from '$app/stores';
   import { scrollMemory } from '$lib/actions/scroll-memory';
   import { shortcut } from '$lib/actions/shortcut';
+  import noThumbnailUrl from '$lib/assets/no-thumbnail.png';
   import ManagePeopleVisibility from './ManagePeopleVisibility.svelte';
   import PeopleCard from './PeopleCard.svelte';
   import PeopleInfiniteScroll from './PeopleInfiniteScroll.svelte';
@@ -439,7 +440,7 @@
                         <div class="h-full w-full animate-pulse bg-gray-200 dark:bg-immich-dark-primary/20"></div>
                       {:then preview}
                         <img
-                          src={preview ?? '/src/lib/assets/no-thumbnail.png'}
+                          src={preview ?? noThumbnailUrl}
                           alt=""
                           class="h-full w-full object-cover"
                           draggable="false"

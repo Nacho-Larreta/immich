@@ -1,10 +1,11 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-import ImageThumbnail from '$lib/components/assets/thumbnail/ImageThumbnail.svelte';
-import { Route } from '$lib/route';
-import { getFaceSourceImageUrl, getPeopleThumbnailUrl } from '$lib/utils';
-import { handleError } from '$lib/utils/handle-error';
-import { formatFaceSuggestionMatchScore } from '$lib/utils/people-utils';
+  import noThumbnailUrl from '$lib/assets/no-thumbnail.png';
+  import ImageThumbnail from '$lib/components/assets/thumbnail/ImageThumbnail.svelte';
+  import { Route } from '$lib/route';
+  import { getFaceSourceImageUrl, getPeopleThumbnailUrl } from '$lib/utils';
+  import { handleError } from '$lib/utils/handle-error';
+  import { formatFaceSuggestionMatchScore } from '$lib/utils/people-utils';
   import {
     FaceSuggestionFeedbackDecision,
     getFaceSuggestionSummary,
@@ -223,7 +224,9 @@ import { formatFaceSuggestionMatchScore } from '$lib/utils/people-utils';
 
 <svelte:document onkeydown={handleKeyDown} />
 
-<main class="min-h-dvh bg-gray-50 px-4 pt-(--navbar-height) text-primary dark:bg-black md:px-8 md:pt-(--navbar-height-md)">
+<main
+  class="min-h-dvh bg-gray-50 px-4 pt-(--navbar-height) text-primary dark:bg-black md:px-8 md:pt-(--navbar-height-md)"
+>
   <section class="mx-auto flex max-w-6xl flex-col gap-6 py-8">
     <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
       <div class="flex items-center gap-4">
@@ -257,14 +260,18 @@ import { formatFaceSuggestionMatchScore } from '$lib/utils/people-utils';
     </div>
 
     {#if isLoading}
-      <div class="flex h-96 items-center justify-center rounded-3xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-immich-dark-gray">
+      <div
+        class="flex h-96 items-center justify-center rounded-3xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-immich-dark-gray"
+      >
         <LoadingSpinner />
       </div>
     {:else if !activeItem}
       <div
         class="flex min-h-96 flex-col items-center justify-center rounded-3xl border border-dashed border-gray-300 bg-white p-8 text-center dark:border-gray-700 dark:bg-immich-dark-gray"
       >
-        <div class="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-immich-primary/10 text-primary dark:bg-immich-dark-primary/20 dark:text-immich-dark-primary">
+        <div
+          class="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-immich-primary/10 text-primary dark:bg-immich-dark-primary/20 dark:text-immich-dark-primary"
+        >
           <Icon icon={mdiFaceRecognition} size="36" aria-hidden />
         </div>
         <h2 class="text-xl font-semibold">{$t('face_suggestion_inbox_empty_title')}</h2>
@@ -284,7 +291,7 @@ import { formatFaceSuggestionMatchScore } from '$lib/utils/people-utils';
               </div>
             {:then preview}
               <img
-                src={preview ?? '/src/lib/assets/no-thumbnail.png'}
+                src={preview ?? noThumbnailUrl}
                 alt={$t('face_suggestion_preview_alt', { values: { name: activePersonName } })}
                 class="h-full w-full object-cover"
                 draggable="false"
