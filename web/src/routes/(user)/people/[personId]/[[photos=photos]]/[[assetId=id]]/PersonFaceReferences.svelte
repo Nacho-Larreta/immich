@@ -39,7 +39,7 @@
 
   const pageSize = 48;
   const historyPageSize = 10;
-  const suggestionPageSize = 12;
+  const suggestionPageSizeOptions = [50, 100, 200];
   const facePreviewCache: Record<string, Promise<string | null> | undefined> = {};
 
   type FacePreviewSource = Pick<
@@ -52,6 +52,8 @@
   let suggestions: PersonFaceSuggestionResponseDto[] = $state([]);
   let page = $state(1);
   let suggestionPage = $state(1);
+  let suggestionPageSize = $state(50);
+  let totalSuggestions = $state(0);
   let hasNextPage = $state(false);
   let hasNextSuggestionPage = $state(false);
   let isLoading = $state(true);
@@ -59,6 +61,7 @@
   let isLoadingSuggestions = $state(true);
   let isLoadingMore = $state(false);
   let isLoadingMoreSuggestions = $state(false);
+  let isLoadingAllSuggestions = $state(false);
   let updatingFaceId = $state<string | null>(null);
   let reassigningFaceId = $state<string | null>(null);
   let revertingHistoryId = $state<string | null>(null);
@@ -71,7 +74,11 @@
 
   const isRegeneratingThumbnails = $derived(regeneratingThumbnailAssetIds.length > 0);
   const isUpdating = $derived(
-    !!updatingFaceId || !!reassigningFaceId || !!revertingHistoryId || isRegeneratingThumbnails,
+    !!updatingFaceId ||
+      !!reassigningFaceId ||
+      !!revertingHistoryId ||
+      isRegeneratingThumbnails ||
+      isLoadingAllSuggestions,
   );
   const featureThumbnailUrl = $derived(featureThumbnailUrlOverride ?? getPeopleThumbnailUrl(person));
   const activeSuggestion = $derived(suggestions[0] ?? null);
@@ -80,6 +87,7 @@
   const allVisibleSuggestionsSelected = $derived(
     suggestions.length > 0 && selectedSuggestions.length === suggestions.length,
   );
+  const unloadedSuggestionCount = $derived(Math.max(totalSuggestions - suggestions.length, 0));
   const brokenVisibleFaceCount = $derived(
     [...faces, ...suggestions].filter(({ id }) => brokenPreviewFaceIds.includes(id)).length,
   );
@@ -200,16 +208,47 @@
       const nextPage = reset ? 1 : suggestionPage;
       const response = await getPersonFaceSuggestions({ id: person.id, page: nextPage, size: suggestionPageSize });
       suggestions = reset ? response.suggestions : [...suggestions, ...response.suggestions];
+      totalSuggestions = response.total;
       selectedSuggestionIds = selectedSuggestionIds.filter((id) =>
         suggestions.some((suggestion) => suggestion.id === id),
       );
       hasNextSuggestionPage = response.hasNextPage;
       suggestionPage = nextPage + 1;
+      return true;
     } catch (error) {
       handleError(error, $t('errors.unable_to_load_face_suggestions'));
+      return false;
     } finally {
       isLoadingSuggestions = false;
       isLoadingMoreSuggestions = false;
+    }
+  };
+
+  const setSuggestionPageSize = (size: number) => {
+    if (suggestionPageSize === size || isUpdating || isLoadingSuggestions || isLoadingMoreSuggestions) {
+      return;
+    }
+
+    suggestionPageSize = size;
+    selectedSuggestionIds = [];
+    void loadSuggestions({ reset: true });
+  };
+
+  const loadAllSuggestions = async () => {
+    if (!hasNextSuggestionPage || isLoadingMoreSuggestions || isLoadingAllSuggestions) {
+      return;
+    }
+
+    isLoadingAllSuggestions = true;
+    try {
+      while (hasNextSuggestionPage) {
+        const loaded = await loadSuggestions();
+        if (!loaded) {
+          break;
+        }
+      }
+    } finally {
+      isLoadingAllSuggestions = false;
     }
   };
 
@@ -397,6 +436,7 @@
 
       const failedIds = new Set(response.failed.map(({ faceId }) => faceId));
       const failedSuggestions = optimisticSuggestions.filter(({ id }) => failedIds.has(id));
+      totalSuggestions = Math.max(0, totalSuggestions - response.results.length);
       if (failedSuggestions.length > 0) {
         suggestions = [...failedSuggestions, ...suggestions];
       }
@@ -578,6 +618,13 @@
           <p class="mt-1 text-sm text-gray-600 dark:text-gray-300">
             {$t('face_suggestions_description', { values: { name: person.name || $t('person') } })}
           </p>
+          {#if !isLoadingSuggestions && totalSuggestions > 0}
+            <p class="mt-2 text-xs font-medium text-gray-500 dark:text-gray-400">
+              {$t('face_suggestions_loaded_count', {
+                values: { loaded: suggestions.length, total: totalSuggestions },
+              })}
+            </p>
+          {/if}
         </div>
 
         {#if !isLoadingSuggestions}
@@ -640,7 +687,9 @@
                   {$t('face_suggestion_match_score', {
                     values: { score: formatFaceSuggestionMatchScore(activeSuggestion.distance, $locale) },
                   })} ·
-                  {$t('face_suggestion_review_remaining', { values: { count: suggestions.length } })}
+                  {$t('face_suggestions_loaded_count', {
+                    values: { loaded: suggestions.length, total: totalSuggestions },
+                  })}
                 </p>
               </div>
 
@@ -688,8 +737,26 @@
           class="mb-4 flex flex-col gap-3 rounded-2xl border border-immich-primary/15 bg-white/70 p-3 dark:border-immich-dark-primary/25 dark:bg-black/20"
         >
           <div class="flex flex-wrap items-center gap-2">
+            <div class="mr-2 flex flex-wrap items-center gap-1 text-sm text-gray-600 dark:text-gray-300">
+              <span>{$t('face_suggestions_page_size')}</span>
+              {#each suggestionPageSizeOptions as size}
+                <button
+                  type="button"
+                  class={`rounded-lg border px-2.5 py-1 text-sm font-medium transition ${
+                    suggestionPageSize === size
+                      ? 'border-immich-primary bg-immich-primary text-white dark:border-immich-dark-primary dark:bg-immich-dark-primary dark:text-black'
+                      : 'border-gray-300 bg-white text-gray-700 hover:border-immich-primary dark:border-gray-700 dark:bg-black/20 dark:text-gray-200 dark:hover:border-immich-dark-primary'
+                  } disabled:cursor-not-allowed disabled:opacity-50`}
+                  disabled={isUpdating || isLoadingSuggestions || isLoadingMoreSuggestions}
+                  onclick={() => setSuggestionPageSize(size)}
+                >
+                  {size}
+                </button>
+              {/each}
+            </div>
+
             <Button size="small" color="secondary" variant="outline" onclick={toggleAllVisibleSuggestions}>
-              {allVisibleSuggestionsSelected ? $t('clear_selection') : $t('select_all_visible')}
+              {allVisibleSuggestionsSelected ? $t('clear_selection') : $t('select_loaded_face_suggestions')}
             </Button>
 
             {#if selectedSuggestions.length > 0}
@@ -863,16 +930,27 @@
         </div>
 
         {#if hasNextSuggestionPage}
-          <div class="mt-4 flex justify-center">
+          <div class="mt-4 flex flex-wrap justify-center gap-2">
             <Button
               size="small"
               color="secondary"
               variant="outline"
               loading={isLoadingMoreSuggestions}
-              disabled={isLoadingMoreSuggestions}
+              disabled={isLoadingMoreSuggestions || isLoadingAllSuggestions}
               onclick={() => loadSuggestions()}
             >
               {$t('load_more_face_suggestions')}
+            </Button>
+
+            <Button
+              size="small"
+              color="secondary"
+              variant="outline"
+              loading={isLoadingAllSuggestions}
+              disabled={isLoadingMoreSuggestions || isLoadingAllSuggestions}
+              onclick={loadAllSuggestions}
+            >
+              {$t('load_all_face_suggestions_count', { values: { count: unloadedSuggestionCount } })}
             </Button>
           </div>
         {/if}

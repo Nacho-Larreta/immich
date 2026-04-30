@@ -74,6 +74,10 @@ export interface FaceSuggestionCandidate extends Selectable<AssetFaceTable> {
   distance: number;
 }
 
+export interface FaceSuggestionCandidateWithTotal extends FaceSuggestionCandidate {
+  total: number;
+}
+
 export interface FaceSuggestionOptions {
   maxDistance: number;
   referenceFaceLimit: number;
@@ -529,6 +533,7 @@ export class PersonRepository {
       .selectFrom('asset_face')
       .selectAll('asset_face')
       .select(distance.as('distance'))
+      .select(sql<number>`(count(*) over())::int`.as('total'))
       .innerJoin('asset', (join) =>
         join
           .onRef('asset.id', '=', 'asset_face.assetId')
@@ -558,7 +563,7 @@ export class PersonRepository {
       .limit(pagination.take + 1)
       .execute();
 
-    return paginationHelper(items as FaceSuggestionCandidate[], pagination.take);
+    return paginationHelper(items as FaceSuggestionCandidateWithTotal[], pagination.take);
   }
 
   async getFaceForSuggestionFeedback(ownerId: string, faceId: string): Promise<FaceForSuggestionFeedback | undefined> {

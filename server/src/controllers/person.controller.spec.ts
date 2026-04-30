@@ -215,4 +215,21 @@ describe(PersonController.name, () => {
       expect(ctx.authenticate).toHaveBeenCalled();
     });
   });
+
+  describe('POST /people/:id/face-suggestions/feedback', () => {
+    it('should accept more than 200 face ids', async () => {
+      const id = factory.uuid();
+      const faceIds = Array.from({ length: 201 }, () => factory.uuid());
+
+      service.respondToFaceSuggestions.mockResolvedValue({ results: [], failed: [] });
+
+      const { status } = await request(ctx.getHttpServer())
+        .post(`/people/${id}/face-suggestions/feedback`)
+        .set('Authorization', `Bearer token`)
+        .send({ faceIds, decision: 'accepted' });
+
+      expect(status).toBe(200);
+      expect(service.respondToFaceSuggestions).toHaveBeenCalledWith(undefined, id, { faceIds, decision: 'accepted' });
+    });
+  });
 });

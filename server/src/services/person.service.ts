@@ -259,6 +259,7 @@ export class PersonService extends BaseService {
     return {
       suggestions: items.map((item) => mapFaceSuggestion(item)),
       hasNextPage,
+      total: items[0]?.total ?? 0,
     };
   }
 

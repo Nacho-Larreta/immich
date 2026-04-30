@@ -580,11 +580,15 @@ describe(PersonService.name, () => {
       const suggestion = { ...AssetFaceFactory.create(), distance: 0.22 };
 
       mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set([person.id]));
-      mocks.person.getFaceSuggestionsForPerson.mockResolvedValue({ items: [suggestion], hasNextPage: false });
+      mocks.person.getFaceSuggestionsForPerson.mockResolvedValue({
+        items: [{ ...suggestion, total: 1 }],
+        hasNextPage: false,
+      });
 
       await expect(sut.getFaceSuggestions(auth, person.id, { page: 2, size: 5 })).resolves.toEqual({
         suggestions: [mapFaceSuggestion(suggestion)],
         hasNextPage: false,
+        total: 1,
       });
 
       expect(mocks.person.getFaceSuggestionsForPerson).toHaveBeenCalledWith(
@@ -613,7 +617,9 @@ describe(PersonService.name, () => {
       mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set([person.id]));
       mocks.person.getFaceSuggestionsForPerson.mockResolvedValue({ items: [], hasNextPage: false });
 
-      await sut.getFaceSuggestions(auth, person.id, { page: 1, size: 5 });
+      await expect(sut.getFaceSuggestions(auth, person.id, { page: 1, size: 5 })).resolves.toMatchObject({
+        total: 0,
+      });
 
       expect(mocks.person.getFaceSuggestionsForPerson).toHaveBeenCalledWith(
         { take: 5, skip: 0 },
@@ -663,9 +669,9 @@ describe(PersonService.name, () => {
       });
       mocks.person.getAllForUser.mockResolvedValue({ items: [person1, person2, person3], hasNextPage: true });
       mocks.person.getFaceSuggestionsForPerson
-        .mockResolvedValueOnce({ items: [suggestion1], hasNextPage: false })
+        .mockResolvedValueOnce({ items: [{ ...suggestion1, total: 1 }], hasNextPage: false })
         .mockResolvedValueOnce({ items: [], hasNextPage: false })
-        .mockResolvedValueOnce({ items: [suggestion3], hasNextPage: false });
+        .mockResolvedValueOnce({ items: [{ ...suggestion3, total: 1 }], hasNextPage: false });
 
       await expect(sut.getFaceSuggestionSummary(auth, { size: 1, peopleLimit: 50 })).resolves.toEqual({
         people: [

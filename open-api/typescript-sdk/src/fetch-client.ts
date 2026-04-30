@@ -1572,6 +1572,8 @@ export type PersonFaceSuggestionPageResponseDto = {
     hasNextPage: boolean;
     /** Suggested face candidates */
     suggestions: PersonFaceSuggestionResponseDto[];
+    /** Total pending suggestions for this person */
+    total: number;
 };
 export type PersonFaceSuggestionBatchFeedbackDto = {
     decision: FaceSuggestionFeedbackDecision;

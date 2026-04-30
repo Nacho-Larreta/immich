@@ -188,7 +188,7 @@ export class PersonFaceAssignmentHistoryPageResponseDto extends createZodDto(
 const PersonFaceSuggestionSearchSchema = z
   .object({
     page: z.coerce.number().min(1).default(1).describe('Page number for pagination'),
-    size: z.coerce.number().min(1).max(50).default(10).describe('Number of suggestions per page'),
+    size: z.coerce.number().min(1).max(200).default(10).describe('Number of suggestions per page'),
     maxDistance: z.coerce
       .number()
       .min(0)
@@ -230,6 +230,7 @@ const PersonFaceSuggestionPageResponseSchema = z
   .object({
     suggestions: z.array(PersonFaceSuggestionResponseSchema).describe('Suggested face candidates'),
     hasNextPage: z.boolean().describe('Whether there are more suggestions'),
+    total: z.int().min(0).describe('Total pending suggestions for this person'),
   })
   .meta({ id: 'PersonFaceSuggestionPageResponseDto' });
 
@@ -287,7 +288,7 @@ export class PersonFaceSuggestionFeedbackResponseDto extends createZodDto(Person
 
 const PersonFaceSuggestionBatchFeedbackSchema = z
   .object({
-    faceIds: z.array(z.uuidv4()).min(1).max(200).describe('Face IDs to review'),
+    faceIds: z.array(z.uuidv4()).min(1).describe('Face IDs to review'),
     decision: FaceSuggestionFeedbackDecisionSchema,
   })
   .meta({ id: 'PersonFaceSuggestionBatchFeedbackDto' });
