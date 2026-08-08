@@ -6,15 +6,15 @@ enum EndpointSchemePolicy { httpsOnly, approvedLocalHttp }
 final class EndpointProbeRequest {
   EndpointProbeRequest({
     required this.candidateOrigin,
+    required this.candidateApiEndpoint,
     required this.expectedUserId,
     required this.sessionEpoch,
     required this.probeGeneration,
     required this.schemePolicy,
   }) {
     validateHttpOrigin(candidateOrigin, 'candidateOrigin');
-    if (candidateOrigin.scheme == 'http' && schemePolicy != EndpointSchemePolicy.approvedLocalHttp) {
-      throw ArgumentError.value(candidateOrigin, 'candidateOrigin', 'HTTP requires an approved local exception');
-    }
+    _validateApiEndpoint(candidateApiEndpoint, candidateOrigin, 'candidateApiEndpoint');
+    _validateSchemePolicy(candidateOrigin, schemePolicy);
     if (expectedUserId.isEmpty) {
       throw ArgumentError.value(expectedUserId, 'expectedUserId', 'Must not be empty');
     }
@@ -23,6 +23,7 @@ final class EndpointProbeRequest {
   }
 
   final Uri candidateOrigin;
+  final Uri candidateApiEndpoint;
   final String expectedUserId;
   final int sessionEpoch;
   final int probeGeneration;
@@ -49,7 +50,7 @@ final class ValidatedEndpointProbeResult extends EndpointProbeResult {
     required this.schemePolicy,
   }) {
     validateHttpOrigin(canonicalOrigin, 'canonicalOrigin');
-    _validateApiEndpoint(apiEndpoint, canonicalOrigin);
+    _validateApiEndpoint(apiEndpoint, canonicalOrigin, 'apiEndpoint');
     _validateSchemePolicy(canonicalOrigin, schemePolicy);
     if (userId.isEmpty) {
       throw ArgumentError.value(userId, 'userId', 'Must not be empty');
@@ -122,13 +123,13 @@ void _validateSchemePolicy(Uri origin, EndpointSchemePolicy schemePolicy) {
   }
 }
 
-void _validateApiEndpoint(Uri apiEndpoint, Uri canonicalOrigin) {
-  validateHttpEndpoint(apiEndpoint, 'apiEndpoint');
+void _validateApiEndpoint(Uri apiEndpoint, Uri canonicalOrigin, String argumentName) {
+  validateHttpEndpoint(apiEndpoint, argumentName);
   if (apiEndpoint.origin != canonicalOrigin.origin) {
-    throw ArgumentError.value(apiEndpoint, 'apiEndpoint', 'Must belong to canonicalOrigin');
+    throw ArgumentError.value(apiEndpoint, argumentName, 'Must belong to the candidate origin');
   }
   final pathSegments = apiEndpoint.pathSegments.where((segment) => segment.isNotEmpty);
   if (pathSegments.isEmpty || pathSegments.last != 'api') {
-    throw ArgumentError.value(apiEndpoint, 'apiEndpoint', 'Must end in /api');
+    throw ArgumentError.value(apiEndpoint, argumentName, 'Must end in /api');
   }
 }

@@ -101,6 +101,7 @@ final class ControllableURLProtocol: URLProtocol {
   private final class Registry {
     let lock = NSLock()
     var handler: RequestHandler?
+    var stopHandler: (() -> Void)?
     var requests: [ControlledURLRequest] = []
   }
 
@@ -119,9 +120,16 @@ final class ControllableURLProtocol: URLProtocol {
     return registry.requests
   }
 
+  static func setStopHandler(_ handler: @escaping () -> Void) {
+    registry.lock.lock()
+    registry.stopHandler = handler
+    registry.lock.unlock()
+  }
+
   static func reset() {
     registry.lock.lock()
     registry.handler = nil
+    registry.stopHandler = nil
     registry.requests.removeAll()
     registry.lock.unlock()
   }
@@ -152,6 +160,10 @@ final class ControllableURLProtocol: URLProtocol {
 
   override func stopLoading() {
     controlledRequest?.stop()
+    Self.registry.lock.lock()
+    let stopHandler = Self.registry.stopHandler
+    Self.registry.lock.unlock()
+    stopHandler?()
   }
 }
 

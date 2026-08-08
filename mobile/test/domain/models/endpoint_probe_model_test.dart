@@ -7,6 +7,7 @@ void main() {
     test('carries the epoch and generation needed to reject stale completions', () {
       final request = EndpointProbeRequest(
         candidateOrigin: Uri.parse('https://photos.example.test'),
+        candidateApiEndpoint: Uri.parse('https://photos.example.test/immich/api'),
         expectedUserId: 'user-1',
         sessionEpoch: 4,
         probeGeneration: 9,
@@ -16,12 +17,14 @@ void main() {
       expect(request.sessionEpoch, 4);
       expect(request.probeGeneration, 9);
       expect(request.candidateOrigin.path, '');
+      expect(request.candidateApiEndpoint.path, '/immich/api');
     });
 
     test('rejects a candidate that is not an origin', () {
       expect(
         () => EndpointProbeRequest(
           candidateOrigin: Uri.parse('https://photos.example.test/api'),
+          candidateApiEndpoint: Uri.parse('https://photos.example.test/api'),
           expectedUserId: 'user-1',
           sessionEpoch: 0,
           probeGeneration: 0,
@@ -37,6 +40,7 @@ void main() {
       expect(
         () => EndpointProbeRequest(
           candidateOrigin: httpOrigin,
+          candidateApiEndpoint: Uri.parse('http://192.168.1.10/api'),
           expectedUserId: 'user-1',
           sessionEpoch: 0,
           probeGeneration: 0,
@@ -47,6 +51,7 @@ void main() {
       expect(
         EndpointProbeRequest(
           candidateOrigin: httpOrigin,
+          candidateApiEndpoint: Uri.parse('http://192.168.1.10/api'),
           expectedUserId: 'user-1',
           sessionEpoch: 0,
           probeGeneration: 0,
@@ -60,10 +65,39 @@ void main() {
       expect(
         () => EndpointProbeRequest(
           candidateOrigin: Uri.parse('ftp://photos.example.test'),
+          candidateApiEndpoint: Uri.parse('ftp://photos.example.test/api'),
           expectedUserId: 'user-1',
           sessionEpoch: 0,
           probeGeneration: 0,
           schemePolicy: EndpointSchemePolicy.approvedLocalHttp,
+        ),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test('rejects an API endpoint from another security origin', () {
+      expect(
+        () => EndpointProbeRequest(
+          candidateOrigin: Uri.parse('https://photos.example.test'),
+          candidateApiEndpoint: Uri.parse('https://other.example.test/api'),
+          expectedUserId: 'user-1',
+          sessionEpoch: 0,
+          probeGeneration: 0,
+          schemePolicy: EndpointSchemePolicy.httpsOnly,
+        ),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test('rejects a candidate endpoint whose path does not end in api', () {
+      expect(
+        () => EndpointProbeRequest(
+          candidateOrigin: Uri.parse('https://photos.example.test'),
+          candidateApiEndpoint: Uri.parse('https://photos.example.test/immich'),
+          expectedUserId: 'user-1',
+          sessionEpoch: 0,
+          probeGeneration: 0,
+          schemePolicy: EndpointSchemePolicy.httpsOnly,
         ),
         throwsA(isA<ArgumentError>()),
       );
