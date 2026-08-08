@@ -7,6 +7,7 @@ import 'package:flutter_hooks/flutter_hooks.dart' hide Store;
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/services/log.service.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
+import 'package:immich_mobile/platform/remote_image_api.g.dart' as remote_api;
 import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/readonly_mode.provider.dart';
 import 'package:immich_mobile/repositories/local_files_manager.repository.dart';
@@ -23,6 +24,8 @@ import 'package:logging/logging.dart';
 
 class AdvancedSettings extends HookConsumerWidget {
   const AdvancedSettings({super.key});
+
+  static int _nextCacheClearRequestId = 0;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -134,10 +137,7 @@ class AdvancedSettings extends HookConsumerWidget {
         title: Text("advanced_settings_clear_image_cache".tr(), style: const TextStyle(fontWeight: FontWeight.w500)),
         leading: const Icon(Icons.playlist_remove_rounded),
         onTap: () async {
-          final int clearedBytes;
-          try {
-            clearedBytes = await remoteImageApi.clearCache();
-          } catch (e) {
+          void showCacheClearError() {
             context.scaffoldMessenger.showSnackBar(
               SnackBar(
                 duration: const Duration(seconds: 2),
@@ -147,6 +147,21 @@ class AdvancedSettings extends HookConsumerWidget {
                 ),
               ),
             );
+          }
+
+          final int clearedBytes;
+          try {
+            final result = await remoteImageApi.clearCache(
+              remote_api.RemoteImageCacheClearRequest(requestId: _nextCacheClearRequestId++),
+            );
+            final resultBytes = result.clearedBytes;
+            if (result.error != null || resultBytes == null) {
+              showCacheClearError();
+              return;
+            }
+            clearedBytes = resultBytes;
+          } catch (e) {
+            showCacheClearError();
             return;
           }
 

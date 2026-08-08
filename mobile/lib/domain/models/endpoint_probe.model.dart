@@ -34,6 +34,7 @@ sealed class EndpointProbeResult {
 
   factory EndpointProbeResult.validated({
     required Uri canonicalOrigin,
+    required Uri apiEndpoint,
     required String userId,
     required EndpointSchemePolicy schemePolicy,
   }) = ValidatedEndpointProbeResult;
@@ -41,8 +42,14 @@ sealed class EndpointProbeResult {
 }
 
 final class ValidatedEndpointProbeResult extends EndpointProbeResult {
-  ValidatedEndpointProbeResult({required this.canonicalOrigin, required this.userId, required this.schemePolicy}) {
+  ValidatedEndpointProbeResult({
+    required this.canonicalOrigin,
+    required this.apiEndpoint,
+    required this.userId,
+    required this.schemePolicy,
+  }) {
     validateHttpOrigin(canonicalOrigin, 'canonicalOrigin');
+    _validateApiEndpoint(apiEndpoint, canonicalOrigin);
     _validateSchemePolicy(canonicalOrigin, schemePolicy);
     if (userId.isEmpty) {
       throw ArgumentError.value(userId, 'userId', 'Must not be empty');
@@ -50,6 +57,7 @@ final class ValidatedEndpointProbeResult extends EndpointProbeResult {
   }
 
   final Uri canonicalOrigin;
+  final Uri apiEndpoint;
   final String userId;
   final EndpointSchemePolicy schemePolicy;
 
@@ -57,12 +65,13 @@ final class ValidatedEndpointProbeResult extends EndpointProbeResult {
   bool operator ==(Object other) {
     return other is ValidatedEndpointProbeResult &&
         other.canonicalOrigin == canonicalOrigin &&
+        other.apiEndpoint == apiEndpoint &&
         other.userId == userId &&
         other.schemePolicy == schemePolicy;
   }
 
   @override
-  int get hashCode => Object.hash(canonicalOrigin, userId, schemePolicy);
+  int get hashCode => Object.hash(canonicalOrigin, apiEndpoint, userId, schemePolicy);
 }
 
 final class RejectedEndpointProbeResult extends EndpointProbeResult {
@@ -96,7 +105,8 @@ final class EndpointActivationReceipt {
   final ValidatedEndpointProbeResult endpoint;
   final int sessionEpoch;
 
-  Uri get confirmedEndpoint => endpoint.canonicalOrigin;
+  Uri get canonicalOrigin => endpoint.canonicalOrigin;
+  Uri get confirmedEndpoint => endpoint.apiEndpoint;
   EndpointSchemePolicy get schemePolicy => endpoint.schemePolicy;
 }
 
@@ -109,5 +119,16 @@ void _validateGeneration(int value, String argumentName) {
 void _validateSchemePolicy(Uri origin, EndpointSchemePolicy schemePolicy) {
   if (origin.scheme == 'http' && schemePolicy != EndpointSchemePolicy.approvedLocalHttp) {
     throw ArgumentError.value(origin, 'canonicalOrigin', 'HTTP requires an approved local exception');
+  }
+}
+
+void _validateApiEndpoint(Uri apiEndpoint, Uri canonicalOrigin) {
+  validateHttpEndpoint(apiEndpoint, 'apiEndpoint');
+  if (apiEndpoint.origin != canonicalOrigin.origin) {
+    throw ArgumentError.value(apiEndpoint, 'apiEndpoint', 'Must belong to canonicalOrigin');
+  }
+  final pathSegments = apiEndpoint.pathSegments.where((segment) => segment.isNotEmpty);
+  if (pathSegments.isEmpty || pathSegments.last != 'api') {
+    throw ArgumentError.value(apiEndpoint, 'apiEndpoint', 'Must end in /api');
   }
 }

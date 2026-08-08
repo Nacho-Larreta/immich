@@ -115,4 +115,30 @@ void main() {
       verifyNever(() => localAssetRepository.delete(any()));
     });
   });
+
+  group('ActionService.unStack', () {
+    const stackIds = ['stack-a', 'stack-b'];
+
+    test('does not mutate local state when the API request fails', () async {
+      when(() => assetApiRepository.unStack(stackIds)).thenAnswer((_) async => throw StateError('offline'));
+      when(() => remoteAssetRepository.unStack(stackIds)).thenAnswer((_) async {});
+
+      await expectLater(sut.unStack(stackIds), throwsA(isA<StateError>()));
+
+      verify(() => assetApiRepository.unStack(stackIds)).called(1);
+      verifyNever(() => remoteAssetRepository.unStack(any()));
+    });
+
+    test('updates the API before mutating local state', () async {
+      final calls = <String>[];
+      when(() => assetApiRepository.unStack(stackIds)).thenAnswer((_) async => calls.add('api'));
+      when(() => remoteAssetRepository.unStack(stackIds)).thenAnswer((_) async => calls.add('local'));
+
+      await sut.unStack(stackIds);
+
+      expect(calls, ['api', 'local']);
+      verify(() => assetApiRepository.unStack(stackIds)).called(1);
+      verify(() => remoteAssetRepository.unStack(stackIds)).called(1);
+    });
+  });
 }

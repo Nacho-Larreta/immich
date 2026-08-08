@@ -8,6 +8,7 @@ import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/models/auth/auth_state.model.dart';
 import 'package:immich_mobile/models/auth/login_response.model.dart';
 import 'package:immich_mobile/providers/api.provider.dart';
+import 'package:immich_mobile/providers/cached_session.dart';
 import 'package:immich_mobile/providers/infrastructure/user.provider.dart';
 import 'package:immich_mobile/services/api.service.dart';
 import 'package:immich_mobile/services/auth.service.dart';
@@ -21,13 +22,15 @@ import 'package:logging/logging.dart';
 import 'package:openapi/api.dart';
 
 final authProvider = StateNotifierProvider<AuthNotifier, AuthState>((ref) {
+  final userService = ref.watch(userServiceProvider);
   return AuthNotifier(
     ref.watch(authServiceProvider),
     ref.watch(apiServiceProvider),
-    ref.watch(userServiceProvider),
+    userService,
     ref.watch(secureStorageServiceProvider),
     ref.watch(widgetServiceProvider),
     ref,
+    cachedSessionReader: StoreCachedSessionReader(Store, userService),
   );
 });
 
@@ -39,6 +42,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
   final SecureStorageService _secureStorageService;
   final WidgetService _widgetService;
   final Ref _ref;
+  final CachedSessionReader _cachedSessionReader;
   final _log = Logger("AuthenticationNotifier");
 
   static const Duration _timeoutDuration = Duration(seconds: 7);
@@ -50,18 +54,38 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
     this._secureStorageService,
     this._widgetService,
-    this._ref,
-  ) : super(
-        const AuthState(
-          deviceId: "",
-          userId: "",
-          userEmail: "",
-          name: '',
-          profileImagePath: '',
-          isAdmin: false,
-          isAuthenticated: false,
-        ),
-      );
+    this._ref, {
+    required CachedSessionReader cachedSessionReader,
+  }) : _cachedSessionReader = cachedSessionReader,
+       super(
+         const AuthState(
+           deviceId: "",
+           userId: "",
+           userEmail: "",
+           name: '',
+           profileImagePath: '',
+           isAdmin: false,
+           isAuthenticated: false,
+         ),
+       );
+
+  bool hydrateCachedSession() {
+    final session = _cachedSessionReader.read();
+    if (session == null) {
+      return false;
+    }
+
+    final user = session.user;
+    state = state.copyWith(
+      deviceId: session.deviceId ?? '',
+      userId: user.id,
+      userEmail: user.email,
+      isAuthenticated: true,
+      name: user.name,
+      isAdmin: user.isAdmin,
+    );
+    return true;
+  }
 
   Future<String> validateServerUrl(String url) {
     return _authService.validateServerUrl(url);

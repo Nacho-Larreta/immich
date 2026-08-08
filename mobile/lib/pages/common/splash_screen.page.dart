@@ -8,21 +8,15 @@ import 'package:flutter/services.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/constants/colors.dart';
 import 'package:immich_mobile/constants/locales.dart';
-import 'package:immich_mobile/domain/models/store.model.dart';
-import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/generated/codegen_loader.g.dart';
 import 'package:immich_mobile/generated/translations.g.dart';
+import 'package:immich_mobile/pages/common/splash_session.dart';
 import 'package:immich_mobile/providers/auth.provider.dart';
-import 'package:immich_mobile/providers/background_sync.provider.dart';
-import 'package:immich_mobile/providers/backup/drift_backup.provider.dart';
-import 'package:immich_mobile/providers/server_info.provider.dart';
-import 'package:immich_mobile/providers/websocket.provider.dart';
 import 'package:immich_mobile/routing/router.dart';
 import 'package:immich_mobile/theme/color_scheme.dart';
 import 'package:immich_mobile/theme/theme_data.dart';
 import 'package:immich_mobile/widgets/common/immich_logo.dart';
 import 'package:immich_mobile/widgets/common/immich_title_text.dart';
-import 'package:logging/logging.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart' show launchUrl, LaunchMode;
@@ -283,100 +277,29 @@ class SplashScreenPage extends StatefulHookConsumerWidget {
 }
 
 class SplashScreenPageState extends ConsumerState<SplashScreenPage> {
-  final log = Logger("SplashScreenPage");
-
   @override
   void initState() {
     super.initState();
-    ref
-        .read(authProvider.notifier)
-        .setOpenApiServiceEndpoint()
-        .then(logConnectionInfo)
-        .whenComplete(() => resumeSession());
+    unawaited(_resumeSession());
   }
 
-  void logConnectionInfo(String? endpoint) {
-    if (endpoint == null) {
-      return;
-    }
-
-    log.info("Resuming session at $endpoint");
-  }
-
-  void resumeSession() async {
-    final serverUrl = Store.tryGet(StoreKey.serverUrl);
-    final endpoint = Store.tryGet(StoreKey.serverEndpoint);
-    final accessToken = Store.tryGet(StoreKey.accessToken);
-
-    if (accessToken != null && serverUrl != null && endpoint != null) {
-      final infoProvider = ref.read(serverInfoProvider.notifier);
-      final wsProvider = ref.read(websocketProvider.notifier);
-      final backgroundManager = ref.read(backgroundSyncProvider);
-      final backupProvider = ref.read(driftBackupProvider.notifier);
-
-      unawaited(
-        ref.read(authProvider.notifier).saveAuthInfo(accessToken: accessToken).then(
-          (_) async {
-            try {
-              wsProvider.connect();
-              unawaited(infoProvider.getServerInfo());
-
-              bool syncSuccess = false;
-              await Future.wait([
-                backgroundManager.syncLocal(full: true),
-                backgroundManager.syncRemote().then((success) => syncSuccess = success),
-              ]);
-
-              if (syncSuccess) {
-                await Future.wait([
-                  backgroundManager.hashAssets().then((_) {
-                    _resumeBackup(backupProvider);
-                  }),
-                  _resumeBackup(backupProvider),
-                  // TODO: Bring back when the soft freeze issue is addressed
-                  // backgroundManager.syncCloudIds(),
-                ]);
-              } else {
-                await backgroundManager.hashAssets();
-              }
-
-              if (Store.get(StoreKey.syncAlbums, false)) {
-                await backgroundManager.syncLinkedAlbum();
-              }
-            } catch (e) {
-              log.severe('Failed establishing connection to the server: $e');
-            }
-          },
-          onError: (exception) => {
-            log.severe('Failed to update auth info with access token: $accessToken'),
-            ref.read(authProvider.notifier).logout(),
-            context.replaceRoute(const LoginRoute()),
-          },
-        ),
-      );
-    } else {
-      log.severe('Missing crucial offline login info - Logging out completely');
-      unawaited(ref.read(authProvider.notifier).logout());
-      unawaited(context.replaceRoute(const LoginRoute()));
-      return;
-    }
-
-    // clean install - change the default of the flag
-    // current install not using beta timeline
-    if (context.router.current.name == SplashScreenRoute.name) {
-      unawaited(context.replaceRoute(const TabShellRoute()));
-    }
-  }
-
-  Future<void> _resumeBackup(DriftBackupNotifier notifier) async {
-    final isEnableBackup = Store.get(StoreKey.enableBackup, false);
-
-    if (isEnableBackup) {
-      final currentUser = Store.tryGet(StoreKey.currentUser);
-      if (currentUser != null) {
-        unawaited(notifier.startForegroundBackup(currentUser.id));
-      }
-    }
+  Future<void> _resumeSession() async {
+    final auth = ref.read(authProvider.notifier);
+    await SplashSessionBootstrap(
+      hydrateCachedSession: auth.hydrateCachedSession,
+      navigate: (destination) async {
+        if (!mounted) {
+          return;
+        }
+        switch (destination) {
+          case SplashDestination.timeline:
+            await context.replaceRoute(const TabShellRoute());
+            return;
+          case SplashDestination.login:
+            await context.replaceRoute(const LoginRoute());
+        }
+      },
+    ).run();
   }
 
   @override

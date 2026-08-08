@@ -228,8 +228,8 @@ class ActionService {
   }
 
   Future<void> unStack(List<String> stackIds) async {
-    await _remoteAssetRepository.unStack(stackIds);
     await _assetApiRepository.unStack(stackIds);
+    await _remoteAssetRepository.unStack(stackIds);
   }
 
   Future<int> shareAssets(List<BaseAsset> assets, BuildContext context, {Completer<void>? cancelCompleter}) {

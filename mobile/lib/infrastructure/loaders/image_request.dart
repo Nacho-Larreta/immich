@@ -6,6 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:ffi/ffi.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/platform/local_image_api.g.dart' as local_api;
+import 'package:immich_mobile/platform/remote_image_api.g.dart' as remote_api;
 import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
 
 part 'local_image_request.dart';
@@ -139,5 +141,11 @@ abstract class ImageRequest {
     }
 
     return frame;
+  }
+
+  void _releaseNativeBuffer(int address) {
+    if (address > 0) {
+      malloc.free(Pointer<Uint8>.fromAddress(address));
+    }
   }
 }

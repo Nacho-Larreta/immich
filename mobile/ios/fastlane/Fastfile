@@ -31,6 +31,12 @@ platform :ios do
       in_house: false
     )
   end
+
+  def required_env(name)
+    value = ENV[name]&.strip
+    UI.user_error!("#{name} must be set explicitly") if value.nil? || value.empty?
+    value
+  end
   
   # Helper method to get version from pubspec.yaml
 def get_version_from_pubspec
@@ -219,22 +225,26 @@ end
 
   desc "Upload the already configured Nacho Fotos release build to TestFlight"
   lane :nacho_upload_current_prod do
-    api_key = get_api_key
-
-    expected_version = ENV["EXPECTED_VERSION"] || "2.7.5"
-    expected_build = ENV["EXPECTED_BUILD_NUMBER"] || "241"
-    expected_previous_build = ENV["EXPECTED_PREVIOUS_BUILD_NUMBER"] || "240"
+    expected_version = required_env("EXPECTED_VERSION")
+    expected_previous_build = required_env("EXPECTED_PREVIOUS_BUILD_NUMBER")
+    expected_build = required_env("EXPECTED_BUILD_NUMBER")
 
     current_version = get_version_number(xcodeproj: "./Runner.xcodeproj", target: "Runner")
     current_build = get_build_number(xcodeproj: "./Runner.xcodeproj")
-    latest_build = latest_testflight_build_number(
-      api_key: api_key,
-      app_identifier: BASE_BUNDLE_ID
-    ).to_s
 
     UI.user_error!("Expected version #{expected_version}, got #{current_version}") unless current_version == expected_version
     UI.user_error!("Expected build #{expected_build}, got #{current_build}") unless current_build == expected_build
-    UI.user_error!("Expected latest TestFlight build #{expected_previous_build}, got #{latest_build}") unless latest_build == expected_previous_build
+
+    api_key = get_api_key
+    remote_latest_build = latest_testflight_build_number(
+      api_key: api_key,
+      app_identifier: BASE_BUNDLE_ID,
+      version: expected_version
+    ).to_s
+
+    unless remote_latest_build == expected_previous_build
+      UI.user_error!("Expected latest TestFlight build #{expected_previous_build}, got #{remote_latest_build}")
+    end
 
     cert(
       api_key: api_key,
@@ -334,7 +344,7 @@ end
     sigh(api_key: api_key, app_identifier: "#{BASE_BUNDLE_ID}.development.ShareExtension", force: true)
     share_profile_name = lane_context[SharedValues::SIGH_NAME]
     
-    sigh(api_key: api_key, app_identifier: "#{BASE_BUNDLE_ID}.development.Widget", force: true)
+    sigh(api_key: api_key, app_identifier: "#{BASE_BUNDLE_ID}.development.WidgetExtension", force: true)
     widget_profile_name = lane_context[SharedValues::SIGH_NAME]
     
     # Configure code signing for dev bundle IDs
@@ -357,7 +367,7 @@ end
         provisioningProfiles: {
           "#{BASE_BUNDLE_ID}.development" => main_profile_name,
           "#{BASE_BUNDLE_ID}.development.ShareExtension" => share_profile_name,
-          "#{BASE_BUNDLE_ID}.development.Widget" => widget_profile_name
+          "#{BASE_BUNDLE_ID}.development.WidgetExtension" => widget_profile_name
         },
         signingStyle: "manual",
         signingCertificate: CODE_SIGN_IDENTITY

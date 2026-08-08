@@ -761,6 +761,7 @@
 /* Begin XCBuildConfiguration section */
 		A11000000000000000000005 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 2E3441B73560D0F6FD25E04F /* Pods-Runner.debug.xcconfig */;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CLANG_ENABLE_MODULES = YES;
@@ -789,6 +790,7 @@
 		};
 		A11000000000000000000006 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = E0E99CDC17B3EB7FA8BA2332 /* Pods-Runner.release.xcconfig */;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CLANG_ENABLE_MODULES = YES;
@@ -816,6 +818,7 @@
 		};
 		A11000000000000000000007 /* Profile */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = F7101BB0391A314774615E89 /* Pods-Runner.profile.xcconfig */;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CLANG_ENABLE_MODULES = YES;
