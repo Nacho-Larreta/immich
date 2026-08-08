@@ -225,6 +225,26 @@ object HttpClientManager {
     return clientGlobalRef
   }
 
+  fun createProbeClient(timeoutMilliseconds: Long): OkHttpClient {
+    require(timeoutMilliseconds > 0) { "Probe timeout must be positive" }
+    return client.newBuilder()
+      .apply {
+        interceptors().clear()
+        networkInterceptors().clear()
+      }
+      .cookieJar(CookieJar.NO_COOKIES)
+      .cache(null)
+      .followRedirects(false)
+      .followSslRedirects(false)
+      .callTimeout(timeoutMilliseconds, TimeUnit.MILLISECONDS)
+      .addInterceptor { chain ->
+        val request = chain.request()
+        val builder = request.newBuilder().header("User-Agent", USER_AGENT)
+        chain.proceed(builder.build())
+      }
+      .build()
+  }
+
   fun addClientChangedListener(listener: () -> Unit) {
     synchronized(this) { clientChangedListeners.add(listener) }
   }

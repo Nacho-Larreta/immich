@@ -24,7 +24,9 @@ import native_video_player
     AppDelegate.registerPlugins(with: engineBridge.pluginRegistry, messenger: messenger)
   }
 
-  public static func registerPlugins(with registry: FlutterPluginRegistry, messenger: FlutterBinaryMessenger) {
+  public static func registerPlugins(
+    with registry: FlutterPluginRegistry, messenger: FlutterBinaryMessenger
+  ) {
     NativeSyncApiImpl.register(with: registry.registrar(forPlugin: NativeSyncApiImpl.name)!)
     let localImageFlutterApi = LocalImageFlutterApi(binaryMessenger: messenger)
     LocalImageApiSetup.setUp(
@@ -32,6 +34,7 @@ import native_video_player
       api: LocalImageApiImpl(flutterApi: localImageFlutterApi)
     )
     RemoteImageApiSetup.setUp(binaryMessenger: messenger, api: RemoteImageApiImpl())
+    ProbeHttpApiSetup.setUp(binaryMessenger: messenger, api: ProbeHttpApiImpl())
     BackgroundWorkerFgHostApiSetup.setUp(binaryMessenger: messenger, api: BackgroundWorkerApiImpl())
     let connectivityFlutterApi = ConnectivityFlutterApi(binaryMessenger: messenger)
     ConnectivityApiSetup.setUp(
@@ -42,6 +45,7 @@ import native_video_player
   }
 
   public static func cancelPlugins(with engine: FlutterEngine) {
-    (engine.valuePublished(byPlugin: NativeSyncApiImpl.name) as? NativeSyncApiImpl)?.detachFromEngine()
+    (engine.valuePublished(byPlugin: NativeSyncApiImpl.name) as? NativeSyncApiImpl)?
+      .detachFromEngine()
   }
 }

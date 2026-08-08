@@ -37,6 +37,7 @@ depends = [
   "pigeon:connectivity",
   "pigeon:local-image",
   "pigeon:remote-image",
+  "pigeon:probe-http",
 ]
 
 [tasks."codegen:translation"]
@@ -180,6 +181,20 @@ outputs = [
 run = [
   "dart run pigeon --input pigeon/remote_image_api.dart",
   "dart format lib/platform/remote_image_api.g.dart",
+]
+
+[tasks."pigeon:probe-http"]
+description = "Generate native probe HTTP API pigeon code"
+hide = true
+sources = ["pigeon/probe_http_api.dart"]
+outputs = [
+  "lib/platform/probe_http_api.g.dart",
+  "ios/Runner/Core/ProbeHttp.g.swift",
+  "android/app/src/main/kotlin/app/alextran/immich/core/ProbeHttp.g.kt",
+]
+run = [
+  "dart run pigeon --input pigeon/probe_http_api.dart",
+  "dart format lib/platform/probe_http_api.g.dart",
 ]
 
 [tasks."i18n:loader"]

@@ -13,6 +13,8 @@ import app.alextran.immich.connectivity.ConnectivityFlutterApi
 import app.alextran.immich.core.HttpClientManager
 import app.alextran.immich.core.ImmichPlugin
 import app.alextran.immich.core.NetworkApiPlugin
+import app.alextran.immich.core.ProbeHttpApi
+import app.alextran.immich.core.ProbeHttpApiImpl
 import me.albemala.native_video_player.NativeVideoPlayerPlugin
 import app.alextran.immich.images.LocalImageApi
 import app.alextran.immich.images.LocalImagesImpl
@@ -49,6 +51,7 @@ class MainActivity : FlutterFragmentActivity() {
       NativeSyncApi.setUp(messenger, nativeSyncApiImpl)
       LocalImageApi.setUp(messenger, LocalImagesImpl(ctx, LocalImageFlutterApi(messenger)))
       RemoteImageApi.setUp(messenger, RemoteImagesImpl(ctx))
+      ProbeHttpApi.setUp(messenger, ProbeHttpApiImpl())
 
       BackgroundWorkerFgHostApi.setUp(messenger, BackgroundWorkerApiImpl(ctx))
       ConnectivityApi.setUp(messenger, ConnectivityApiImpl(ctx, ConnectivityFlutterApi(messenger)))
