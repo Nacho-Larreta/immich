@@ -1,11 +1,11 @@
 import Foundation
 
-class ImageRequest: @unchecked Sendable {
+class ImageRequest<Value>: @unchecked Sendable {
   private struct State: Sendable {
     var isCancelled = false
   }
 
-  let completion: @Sendable (Result<[String: Int64]?, any Error>) -> Void
+  let completion: @Sendable (Result<Value, any Error>) -> Void
   private let state: Mutex<State>
 
   var isCancelled: Bool {
@@ -17,7 +17,7 @@ class ImageRequest: @unchecked Sendable {
     }
   }
 
-  init(completion: @escaping @Sendable (Result<[String: Int64]?, any Error>) -> Void) {
+  init(completion: @escaping @Sendable (Result<Value, any Error>) -> Void) {
     self.state = Mutex(State())
     self.completion = completion
   }
@@ -37,5 +37,13 @@ struct RequestRegistry<T: AnyObject & Sendable>: ~Copyable, Sendable {
   @discardableResult
   func remove(requestId: Int64) -> T? {
     requests.withLock { $0.removeValue(forKey: requestId) }
+  }
+
+  func removeAll() -> [T] {
+    requests.withLock {
+      let removed = Array($0.values)
+      $0.removeAll()
+      return removed
+    }
   }
 }

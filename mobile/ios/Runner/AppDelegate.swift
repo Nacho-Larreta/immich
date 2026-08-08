@@ -26,10 +26,18 @@ import native_video_player
 
   public static func registerPlugins(with registry: FlutterPluginRegistry, messenger: FlutterBinaryMessenger) {
     NativeSyncApiImpl.register(with: registry.registrar(forPlugin: NativeSyncApiImpl.name)!)
-    LocalImageApiSetup.setUp(binaryMessenger: messenger, api: LocalImageApiImpl())
+    let localImageFlutterApi = LocalImageFlutterApi(binaryMessenger: messenger)
+    LocalImageApiSetup.setUp(
+      binaryMessenger: messenger,
+      api: LocalImageApiImpl(flutterApi: localImageFlutterApi)
+    )
     RemoteImageApiSetup.setUp(binaryMessenger: messenger, api: RemoteImageApiImpl())
     BackgroundWorkerFgHostApiSetup.setUp(binaryMessenger: messenger, api: BackgroundWorkerApiImpl())
-    ConnectivityApiSetup.setUp(binaryMessenger: messenger, api: ConnectivityApiImpl())
+    let connectivityFlutterApi = ConnectivityFlutterApi(binaryMessenger: messenger)
+    ConnectivityApiSetup.setUp(
+      binaryMessenger: messenger,
+      api: ConnectivityApiImpl(flutterApi: connectivityFlutterApi)
+    )
     NetworkApiSetup.setUp(binaryMessenger: messenger, api: NetworkApiImpl())
   }
 

@@ -35,6 +35,8 @@ depends = [
   "pigeon:background-worker",
   "pigeon:background-worker-lock",
   "pigeon:connectivity",
+  "pigeon:local-image",
+  "pigeon:remote-image",
 ]
 
 [tasks."codegen:translation"]
@@ -150,6 +152,34 @@ outputs = [
 run = [
   "dart run pigeon --input pigeon/connectivity_api.dart",
   "dart format lib/platform/connectivity_api.g.dart",
+]
+
+[tasks."pigeon:local-image"]
+description = "Generate local image API pigeon code"
+hide = true
+sources = ["pigeon/local_image_api.dart"]
+outputs = [
+  "lib/platform/local_image_api.g.dart",
+  "ios/Runner/Images/LocalImages.g.swift",
+  "android/app/src/main/kotlin/app/alextran/immich/images/LocalImages.g.kt",
+]
+run = [
+  "dart run pigeon --input pigeon/local_image_api.dart",
+  "dart format lib/platform/local_image_api.g.dart",
+]
+
+[tasks."pigeon:remote-image"]
+description = "Generate remote image API pigeon code"
+hide = true
+sources = ["pigeon/remote_image_api.dart"]
+outputs = [
+  "lib/platform/remote_image_api.g.dart",
+  "ios/Runner/Images/RemoteImages.g.swift",
+  "android/app/src/main/kotlin/app/alextran/immich/images/RemoteImages.g.kt",
+]
+run = [
+  "dart run pigeon --input pigeon/remote_image_api.dart",
+  "dart format lib/platform/remote_image_api.g.dart",
 ]
 
 [tasks."i18n:loader"]

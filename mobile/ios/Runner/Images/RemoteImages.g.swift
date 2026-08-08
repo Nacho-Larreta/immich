@@ -46,11 +46,414 @@ private func nilOrValue<T>(_ value: Any?) -> T? {
   return value as! T?
 }
 
+private func doubleEqualsRemoteImages(_ lhs: Double, _ rhs: Double) -> Bool {
+  return (lhs.isNaN && rhs.isNaN) || lhs == rhs
+}
+
+private func doubleHashRemoteImages(_ value: Double, _ hasher: inout Hasher) {
+  if value.isNaN {
+    hasher.combine(0x7FF8000000000000)
+  } else {
+    // Normalize -0.0 to 0.0
+    hasher.combine(value == 0 ? 0 : value)
+  }
+}
+
+func deepEqualsRemoteImages(_ lhs: Any?, _ rhs: Any?) -> Bool {
+  let cleanLhs = nilOrValue(lhs) as Any?
+  let cleanRhs = nilOrValue(rhs) as Any?
+  switch (cleanLhs, cleanRhs) {
+  case (nil, nil):
+    return true
+
+  case (nil, _), (_, nil):
+    return false
+
+  case (let lhs as AnyObject, let rhs as AnyObject) where lhs === rhs:
+    return true
+
+  case is (Void, Void):
+    return true
+
+  case (let lhsArray, let rhsArray) as ([Any?], [Any?]):
+    guard lhsArray.count == rhsArray.count else { return false }
+    for (index, element) in lhsArray.enumerated() {
+      if !deepEqualsRemoteImages(element, rhsArray[index]) {
+        return false
+      }
+    }
+    return true
+
+  case (let lhsArray, let rhsArray) as ([Double], [Double]):
+    guard lhsArray.count == rhsArray.count else { return false }
+    for (index, element) in lhsArray.enumerated() {
+      if !doubleEqualsRemoteImages(element, rhsArray[index]) {
+        return false
+      }
+    }
+    return true
+
+  case (let lhsDictionary, let rhsDictionary) as ([AnyHashable: Any?], [AnyHashable: Any?]):
+    guard lhsDictionary.count == rhsDictionary.count else { return false }
+    for (lhsKey, lhsValue) in lhsDictionary {
+      var found = false
+      for (rhsKey, rhsValue) in rhsDictionary {
+        if deepEqualsRemoteImages(lhsKey, rhsKey) {
+          if deepEqualsRemoteImages(lhsValue, rhsValue) {
+            found = true
+            break
+          } else {
+            return false
+          }
+        }
+      }
+      if !found { return false }
+    }
+    return true
+
+  case (let lhs as Double, let rhs as Double):
+    return doubleEqualsRemoteImages(lhs, rhs)
+
+  case (let lhsHashable, let rhsHashable) as (AnyHashable, AnyHashable):
+    return lhsHashable == rhsHashable
+
+  default:
+    return false
+  }
+}
+
+func deepHashRemoteImages(value: Any?, hasher: inout Hasher) {
+  let cleanValue = nilOrValue(value) as Any?
+  if let cleanValue = cleanValue {
+    if let doubleValue = cleanValue as? Double {
+      doubleHashRemoteImages(doubleValue, &hasher)
+    } else if let valueList = cleanValue as? [Any?] {
+      for item in valueList {
+        deepHashRemoteImages(value: item, hasher: &hasher)
+      }
+    } else if let valueList = cleanValue as? [Double] {
+      for item in valueList {
+        doubleHashRemoteImages(item, &hasher)
+      }
+    } else if let valueDict = cleanValue as? [AnyHashable: Any?] {
+      var result = 0
+      for (key, value) in valueDict {
+        var entryKeyHasher = Hasher()
+        deepHashRemoteImages(value: key, hasher: &entryKeyHasher)
+        var entryValueHasher = Hasher()
+        deepHashRemoteImages(value: value, hasher: &entryValueHasher)
+        result = result &+ ((entryKeyHasher.finalize() &* 31) ^ entryValueHasher.finalize())
+      }
+      hasher.combine(result)
+    } else if let hashableValue = cleanValue as? AnyHashable {
+      hasher.combine(hashableValue)
+    } else {
+      hasher.combine(String(describing: cleanValue))
+    }
+  } else {
+    hasher.combine(0)
+  }
+}
+
+
+enum RemoteImagePolicy: Int {
+  case cacheOnly = 0
+  case cacheThenNetwork = 1
+}
+
+enum RemoteImageRequestKind: Int {
+  case thumbnail = 0
+  case original = 1
+}
+
+enum RemoteImageErrorCode: Int {
+  case cacheMiss = 0
+  case mediaNotLocal = 1
+  case iCloudUnavailable = 2
+  case cancelled = 3
+  case timeout = 4
+  case serverUnavailable = 5
+  case wrongServer = 6
+  case unauthorized = 7
+}
+
+/// Generated class from Pigeon that represents data sent in messages.
+struct RemoteImageRequest: Hashable {
+  var url: String
+  var origin: String
+  var requestId: Int64
+  var preferEncoded: Bool
+  var policy: RemoteImagePolicy
+  var kind: RemoteImageRequestKind
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> RemoteImageRequest? {
+    let url = pigeonVar_list[0] as! String
+    let origin = pigeonVar_list[1] as! String
+    let requestId = pigeonVar_list[2] as! Int64
+    let preferEncoded = pigeonVar_list[3] as! Bool
+    let policy = pigeonVar_list[4] as! RemoteImagePolicy
+    let kind = pigeonVar_list[5] as! RemoteImageRequestKind
+
+    return RemoteImageRequest(
+      url: url,
+      origin: origin,
+      requestId: requestId,
+      preferEncoded: preferEncoded,
+      policy: policy,
+      kind: kind
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      url,
+      origin,
+      requestId,
+      preferEncoded,
+      policy,
+      kind,
+    ]
+  }
+  static func == (lhs: RemoteImageRequest, rhs: RemoteImageRequest) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return deepEqualsRemoteImages(lhs.url, rhs.url) && deepEqualsRemoteImages(lhs.origin, rhs.origin) && deepEqualsRemoteImages(lhs.requestId, rhs.requestId) && deepEqualsRemoteImages(lhs.preferEncoded, rhs.preferEncoded) && deepEqualsRemoteImages(lhs.policy, rhs.policy) && deepEqualsRemoteImages(lhs.kind, rhs.kind)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("RemoteImageRequest")
+    deepHashRemoteImages(value: url, hasher: &hasher)
+    deepHashRemoteImages(value: origin, hasher: &hasher)
+    deepHashRemoteImages(value: requestId, hasher: &hasher)
+    deepHashRemoteImages(value: preferEncoded, hasher: &hasher)
+    deepHashRemoteImages(value: policy, hasher: &hasher)
+    deepHashRemoteImages(value: kind, hasher: &hasher)
+  }
+}
+
+/// Generated class from Pigeon that represents data sent in messages.
+struct RemoteImagePayload: Hashable {
+  var pointer: Int64
+  var length: Int64? = nil
+  var width: Int64? = nil
+  var height: Int64? = nil
+  var rowBytes: Int64? = nil
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> RemoteImagePayload? {
+    let pointer = pigeonVar_list[0] as! Int64
+    let length: Int64? = nilOrValue(pigeonVar_list[1])
+    let width: Int64? = nilOrValue(pigeonVar_list[2])
+    let height: Int64? = nilOrValue(pigeonVar_list[3])
+    let rowBytes: Int64? = nilOrValue(pigeonVar_list[4])
+
+    return RemoteImagePayload(
+      pointer: pointer,
+      length: length,
+      width: width,
+      height: height,
+      rowBytes: rowBytes
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      pointer,
+      length,
+      width,
+      height,
+      rowBytes,
+    ]
+  }
+  static func == (lhs: RemoteImagePayload, rhs: RemoteImagePayload) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return deepEqualsRemoteImages(lhs.pointer, rhs.pointer) && deepEqualsRemoteImages(lhs.length, rhs.length) && deepEqualsRemoteImages(lhs.width, rhs.width) && deepEqualsRemoteImages(lhs.height, rhs.height) && deepEqualsRemoteImages(lhs.rowBytes, rhs.rowBytes)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("RemoteImagePayload")
+    deepHashRemoteImages(value: pointer, hasher: &hasher)
+    deepHashRemoteImages(value: length, hasher: &hasher)
+    deepHashRemoteImages(value: width, hasher: &hasher)
+    deepHashRemoteImages(value: height, hasher: &hasher)
+    deepHashRemoteImages(value: rowBytes, hasher: &hasher)
+  }
+}
+
+/// Generated class from Pigeon that represents data sent in messages.
+struct RemoteImageResult: Hashable {
+  var payload: RemoteImagePayload? = nil
+  var error: RemoteImageErrorCode? = nil
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> RemoteImageResult? {
+    let payload: RemoteImagePayload? = nilOrValue(pigeonVar_list[0])
+    let error: RemoteImageErrorCode? = nilOrValue(pigeonVar_list[1])
+
+    return RemoteImageResult(
+      payload: payload,
+      error: error
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      payload,
+      error,
+    ]
+  }
+  static func == (lhs: RemoteImageResult, rhs: RemoteImageResult) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return deepEqualsRemoteImages(lhs.payload, rhs.payload) && deepEqualsRemoteImages(lhs.error, rhs.error)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("RemoteImageResult")
+    deepHashRemoteImages(value: payload, hasher: &hasher)
+    deepHashRemoteImages(value: error, hasher: &hasher)
+  }
+}
+
+/// Generated class from Pigeon that represents data sent in messages.
+struct RemoteImageCacheClearRequest: Hashable {
+  var requestId: Int64
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> RemoteImageCacheClearRequest? {
+    let requestId = pigeonVar_list[0] as! Int64
+
+    return RemoteImageCacheClearRequest(
+      requestId: requestId
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      requestId
+    ]
+  }
+  static func == (lhs: RemoteImageCacheClearRequest, rhs: RemoteImageCacheClearRequest) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return deepEqualsRemoteImages(lhs.requestId, rhs.requestId)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("RemoteImageCacheClearRequest")
+    deepHashRemoteImages(value: requestId, hasher: &hasher)
+  }
+}
+
+/// Generated class from Pigeon that represents data sent in messages.
+struct RemoteImageCacheClearResult: Hashable {
+  var clearedBytes: Int64? = nil
+  var error: RemoteImageErrorCode? = nil
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> RemoteImageCacheClearResult? {
+    let clearedBytes: Int64? = nilOrValue(pigeonVar_list[0])
+    let error: RemoteImageErrorCode? = nilOrValue(pigeonVar_list[1])
+
+    return RemoteImageCacheClearResult(
+      clearedBytes: clearedBytes,
+      error: error
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      clearedBytes,
+      error,
+    ]
+  }
+  static func == (lhs: RemoteImageCacheClearResult, rhs: RemoteImageCacheClearResult) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return deepEqualsRemoteImages(lhs.clearedBytes, rhs.clearedBytes) && deepEqualsRemoteImages(lhs.error, rhs.error)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("RemoteImageCacheClearResult")
+    deepHashRemoteImages(value: clearedBytes, hasher: &hasher)
+    deepHashRemoteImages(value: error, hasher: &hasher)
+  }
+}
 
 private class RemoteImagesPigeonCodecReader: FlutterStandardReader {
+  override func readValue(ofType type: UInt8) -> Any? {
+    switch type {
+    case 129:
+      let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
+      if let enumResultAsInt = enumResultAsInt {
+        return RemoteImagePolicy(rawValue: enumResultAsInt)
+      }
+      return nil
+    case 130:
+      let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
+      if let enumResultAsInt = enumResultAsInt {
+        return RemoteImageRequestKind(rawValue: enumResultAsInt)
+      }
+      return nil
+    case 131:
+      let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
+      if let enumResultAsInt = enumResultAsInt {
+        return RemoteImageErrorCode(rawValue: enumResultAsInt)
+      }
+      return nil
+    case 132:
+      return RemoteImageRequest.fromList(self.readValue() as! [Any?])
+    case 133:
+      return RemoteImagePayload.fromList(self.readValue() as! [Any?])
+    case 134:
+      return RemoteImageResult.fromList(self.readValue() as! [Any?])
+    case 135:
+      return RemoteImageCacheClearRequest.fromList(self.readValue() as! [Any?])
+    case 136:
+      return RemoteImageCacheClearResult.fromList(self.readValue() as! [Any?])
+    default:
+      return super.readValue(ofType: type)
+    }
+  }
 }
 
 private class RemoteImagesPigeonCodecWriter: FlutterStandardWriter {
+  override func writeValue(_ value: Any) {
+    if let value = value as? RemoteImagePolicy {
+      super.writeByte(129)
+      super.writeValue(value.rawValue)
+    } else if let value = value as? RemoteImageRequestKind {
+      super.writeByte(130)
+      super.writeValue(value.rawValue)
+    } else if let value = value as? RemoteImageErrorCode {
+      super.writeByte(131)
+      super.writeValue(value.rawValue)
+    } else if let value = value as? RemoteImageRequest {
+      super.writeByte(132)
+      super.writeValue(value.toList())
+    } else if let value = value as? RemoteImagePayload {
+      super.writeByte(133)
+      super.writeValue(value.toList())
+    } else if let value = value as? RemoteImageResult {
+      super.writeByte(134)
+      super.writeValue(value.toList())
+    } else if let value = value as? RemoteImageCacheClearRequest {
+      super.writeByte(135)
+      super.writeValue(value.toList())
+    } else if let value = value as? RemoteImageCacheClearResult {
+      super.writeByte(136)
+      super.writeValue(value.toList())
+    } else {
+      super.writeValue(value)
+    }
+  }
 }
 
 private class RemoteImagesPigeonCodecReaderWriter: FlutterStandardReaderWriter {
@@ -70,9 +473,11 @@ class RemoteImagesPigeonCodec: FlutterStandardMessageCodec, @unchecked Sendable 
 
 /// Generated protocol from Pigeon that represents a handler of messages from Flutter.
 protocol RemoteImageApi {
-  func requestImage(url: String, requestId: Int64, preferEncoded: Bool, completion: @escaping (Result<[String: Int64]?, Error>) -> Void)
+  func requestImage(request: RemoteImageRequest, completion: @escaping (Result<RemoteImageResult, Error>) -> Void)
   func cancelRequest(requestId: Int64) throws
-  func clearCache(completion: @escaping (Result<Int64, Error>) -> Void)
+  func cancelAll() throws
+  func dispose() throws
+  func clearCache(request: RemoteImageCacheClearRequest, completion: @escaping (Result<RemoteImageCacheClearResult, Error>) -> Void)
 }
 
 /// Generated setup class from Pigeon to handle messages through the `binaryMessenger`.
@@ -85,10 +490,8 @@ class RemoteImageApiSetup {
     if let api = api {
       requestImageChannel.setMessageHandler { message, reply in
         let args = message as! [Any?]
-        let urlArg = args[0] as! String
-        let requestIdArg = args[1] as! Int64
-        let preferEncodedArg = args[2] as! Bool
-        api.requestImage(url: urlArg, requestId: requestIdArg, preferEncoded: preferEncodedArg) { result in
+        let requestArg = args[0] as! RemoteImageRequest
+        api.requestImage(request: requestArg) { result in
           switch result {
           case .success(let res):
             reply(wrapResult(res))
@@ -115,10 +518,38 @@ class RemoteImageApiSetup {
     } else {
       cancelRequestChannel.setMessageHandler(nil)
     }
+    let cancelAllChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.immich_mobile.RemoteImageApi.cancelAll\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      cancelAllChannel.setMessageHandler { _, reply in
+        do {
+          try api.cancelAll()
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      cancelAllChannel.setMessageHandler(nil)
+    }
+    let disposeChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.immich_mobile.RemoteImageApi.dispose\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      disposeChannel.setMessageHandler { _, reply in
+        do {
+          try api.dispose()
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      disposeChannel.setMessageHandler(nil)
+    }
     let clearCacheChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.immich_mobile.RemoteImageApi.clearCache\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {
-      clearCacheChannel.setMessageHandler { _, reply in
-        api.clearCache { result in
+      clearCacheChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let requestArg = args[0] as! RemoteImageCacheClearRequest
+        api.clearCache(request: requestArg) { result in
           switch result {
           case .success(let res):
             reply(wrapResult(res))

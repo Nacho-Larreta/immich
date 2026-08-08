@@ -11,13 +11,80 @@ import 'package:pigeon/pigeon.dart';
     dartPackageName: 'immich_mobile',
   ),
 )
+enum RemoteImagePolicy { cacheOnly, cacheThenNetwork }
+
+enum RemoteImageRequestKind { thumbnail, original }
+
+enum RemoteImageErrorCode {
+  cacheMiss,
+  mediaNotLocal,
+  iCloudUnavailable,
+  cancelled,
+  timeout,
+  serverUnavailable,
+  wrongServer,
+  unauthorized,
+}
+
+class RemoteImageRequest {
+  RemoteImageRequest({
+    required this.url,
+    required this.origin,
+    required this.requestId,
+    required this.preferEncoded,
+    required this.policy,
+    required this.kind,
+  });
+
+  String url;
+  String origin;
+  int requestId;
+  bool preferEncoded;
+  RemoteImagePolicy policy;
+  RemoteImageRequestKind kind;
+}
+
+class RemoteImagePayload {
+  RemoteImagePayload({required this.pointer, this.length, this.width, this.height, this.rowBytes});
+
+  int pointer;
+  int? length;
+  int? width;
+  int? height;
+  int? rowBytes;
+}
+
+class RemoteImageResult {
+  RemoteImageResult({this.payload, this.error});
+
+  RemoteImagePayload? payload;
+  RemoteImageErrorCode? error;
+}
+
+class RemoteImageCacheClearRequest {
+  RemoteImageCacheClearRequest({required this.requestId});
+
+  int requestId;
+}
+
+class RemoteImageCacheClearResult {
+  RemoteImageCacheClearResult({this.clearedBytes, this.error});
+
+  int? clearedBytes;
+  RemoteImageErrorCode? error;
+}
+
 @HostApi()
 abstract class RemoteImageApi {
   @async
-  Map<String, int>? requestImage(String url, {required int requestId, required bool preferEncoded});
+  RemoteImageResult requestImage(RemoteImageRequest request);
 
   void cancelRequest(int requestId);
 
+  void cancelAll();
+
+  void dispose();
+
   @async
-  int clearCache();
+  RemoteImageCacheClearResult clearCache(RemoteImageCacheClearRequest request);
 }

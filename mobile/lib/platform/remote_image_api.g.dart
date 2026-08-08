@@ -26,6 +26,307 @@ Object? _extractReplyValueOrThrow(List<Object?>? replyList, String channelName, 
   return replyList.firstOrNull;
 }
 
+bool _deepEquals(Object? a, Object? b) {
+  if (identical(a, b)) {
+    return true;
+  }
+  if (a is double && b is double) {
+    if (a.isNaN && b.isNaN) {
+      return true;
+    }
+    return a == b;
+  }
+  if (a is List && b is List) {
+    return a.length == b.length && a.indexed.every(((int, dynamic) item) => _deepEquals(item.$2, b[item.$1]));
+  }
+  if (a is Map && b is Map) {
+    if (a.length != b.length) {
+      return false;
+    }
+    for (final MapEntry<Object?, Object?> entryA in a.entries) {
+      bool found = false;
+      for (final MapEntry<Object?, Object?> entryB in b.entries) {
+        if (_deepEquals(entryA.key, entryB.key)) {
+          if (_deepEquals(entryA.value, entryB.value)) {
+            found = true;
+            break;
+          } else {
+            return false;
+          }
+        }
+      }
+      if (!found) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return a == b;
+}
+
+int _deepHash(Object? value) {
+  if (value is List) {
+    return Object.hashAll(value.map(_deepHash));
+  }
+  if (value is Map) {
+    int result = 0;
+    for (final MapEntry<Object?, Object?> entry in value.entries) {
+      result += (_deepHash(entry.key) * 31) ^ _deepHash(entry.value);
+    }
+    return result;
+  }
+  if (value is double && value.isNaN) {
+    // Normalize NaN to a consistent hash.
+    return 0x7FF8000000000000.hashCode;
+  }
+  if (value is double && value == 0.0) {
+    // Normalize -0.0 to 0.0 so they have the same hash code.
+    return 0.0.hashCode;
+  }
+  return value.hashCode;
+}
+
+enum RemoteImagePolicy { cacheOnly, cacheThenNetwork }
+
+enum RemoteImageRequestKind { thumbnail, original }
+
+enum RemoteImageErrorCode {
+  cacheMiss,
+  mediaNotLocal,
+  iCloudUnavailable,
+  cancelled,
+  timeout,
+  serverUnavailable,
+  wrongServer,
+  unauthorized,
+}
+
+class RemoteImageRequest {
+  RemoteImageRequest({
+    required this.url,
+    required this.origin,
+    required this.requestId,
+    required this.preferEncoded,
+    required this.policy,
+    required this.kind,
+  });
+
+  String url;
+
+  String origin;
+
+  int requestId;
+
+  bool preferEncoded;
+
+  RemoteImagePolicy policy;
+
+  RemoteImageRequestKind kind;
+
+  List<Object?> _toList() {
+    return <Object?>[url, origin, requestId, preferEncoded, policy, kind];
+  }
+
+  Object encode() {
+    return _toList();
+  }
+
+  static RemoteImageRequest decode(Object result) {
+    result as List<Object?>;
+    return RemoteImageRequest(
+      url: result[0]! as String,
+      origin: result[1]! as String,
+      requestId: result[2]! as int,
+      preferEncoded: result[3]! as bool,
+      policy: result[4]! as RemoteImagePolicy,
+      kind: result[5]! as RemoteImageRequestKind,
+    );
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! RemoteImageRequest || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(url, other.url) &&
+        _deepEquals(origin, other.origin) &&
+        _deepEquals(requestId, other.requestId) &&
+        _deepEquals(preferEncoded, other.preferEncoded) &&
+        _deepEquals(policy, other.policy) &&
+        _deepEquals(kind, other.kind);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+}
+
+class RemoteImagePayload {
+  RemoteImagePayload({required this.pointer, this.length, this.width, this.height, this.rowBytes});
+
+  int pointer;
+
+  int? length;
+
+  int? width;
+
+  int? height;
+
+  int? rowBytes;
+
+  List<Object?> _toList() {
+    return <Object?>[pointer, length, width, height, rowBytes];
+  }
+
+  Object encode() {
+    return _toList();
+  }
+
+  static RemoteImagePayload decode(Object result) {
+    result as List<Object?>;
+    return RemoteImagePayload(
+      pointer: result[0]! as int,
+      length: result[1] as int?,
+      width: result[2] as int?,
+      height: result[3] as int?,
+      rowBytes: result[4] as int?,
+    );
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! RemoteImagePayload || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(pointer, other.pointer) &&
+        _deepEquals(length, other.length) &&
+        _deepEquals(width, other.width) &&
+        _deepEquals(height, other.height) &&
+        _deepEquals(rowBytes, other.rowBytes);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+}
+
+class RemoteImageResult {
+  RemoteImageResult({this.payload, this.error});
+
+  RemoteImagePayload? payload;
+
+  RemoteImageErrorCode? error;
+
+  List<Object?> _toList() {
+    return <Object?>[payload, error];
+  }
+
+  Object encode() {
+    return _toList();
+  }
+
+  static RemoteImageResult decode(Object result) {
+    result as List<Object?>;
+    return RemoteImageResult(payload: result[0] as RemoteImagePayload?, error: result[1] as RemoteImageErrorCode?);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! RemoteImageResult || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(payload, other.payload) && _deepEquals(error, other.error);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+}
+
+class RemoteImageCacheClearRequest {
+  RemoteImageCacheClearRequest({required this.requestId});
+
+  int requestId;
+
+  List<Object?> _toList() {
+    return <Object?>[requestId];
+  }
+
+  Object encode() {
+    return _toList();
+  }
+
+  static RemoteImageCacheClearRequest decode(Object result) {
+    result as List<Object?>;
+    return RemoteImageCacheClearRequest(requestId: result[0]! as int);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! RemoteImageCacheClearRequest || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(requestId, other.requestId);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+}
+
+class RemoteImageCacheClearResult {
+  RemoteImageCacheClearResult({this.clearedBytes, this.error});
+
+  int? clearedBytes;
+
+  RemoteImageErrorCode? error;
+
+  List<Object?> _toList() {
+    return <Object?>[clearedBytes, error];
+  }
+
+  Object encode() {
+    return _toList();
+  }
+
+  static RemoteImageCacheClearResult decode(Object result) {
+    result as List<Object?>;
+    return RemoteImageCacheClearResult(clearedBytes: result[0] as int?, error: result[1] as RemoteImageErrorCode?);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! RemoteImageCacheClearResult || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(clearedBytes, other.clearedBytes) && _deepEquals(error, other.error);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+}
+
 class _PigeonCodec extends StandardMessageCodec {
   const _PigeonCodec();
   @override
@@ -33,6 +334,30 @@ class _PigeonCodec extends StandardMessageCodec {
     if (value is int) {
       buffer.putUint8(4);
       buffer.putInt64(value);
+    } else if (value is RemoteImagePolicy) {
+      buffer.putUint8(129);
+      writeValue(buffer, value.index);
+    } else if (value is RemoteImageRequestKind) {
+      buffer.putUint8(130);
+      writeValue(buffer, value.index);
+    } else if (value is RemoteImageErrorCode) {
+      buffer.putUint8(131);
+      writeValue(buffer, value.index);
+    } else if (value is RemoteImageRequest) {
+      buffer.putUint8(132);
+      writeValue(buffer, value.encode());
+    } else if (value is RemoteImagePayload) {
+      buffer.putUint8(133);
+      writeValue(buffer, value.encode());
+    } else if (value is RemoteImageResult) {
+      buffer.putUint8(134);
+      writeValue(buffer, value.encode());
+    } else if (value is RemoteImageCacheClearRequest) {
+      buffer.putUint8(135);
+      writeValue(buffer, value.encode());
+    } else if (value is RemoteImageCacheClearResult) {
+      buffer.putUint8(136);
+      writeValue(buffer, value.encode());
     } else {
       super.writeValue(buffer, value);
     }
@@ -41,6 +366,25 @@ class _PigeonCodec extends StandardMessageCodec {
   @override
   Object? readValueOfType(int type, ReadBuffer buffer) {
     switch (type) {
+      case 129:
+        final value = readValue(buffer) as int?;
+        return value == null ? null : RemoteImagePolicy.values[value];
+      case 130:
+        final value = readValue(buffer) as int?;
+        return value == null ? null : RemoteImageRequestKind.values[value];
+      case 131:
+        final value = readValue(buffer) as int?;
+        return value == null ? null : RemoteImageErrorCode.values[value];
+      case 132:
+        return RemoteImageRequest.decode(readValue(buffer)!);
+      case 133:
+        return RemoteImagePayload.decode(readValue(buffer)!);
+      case 134:
+        return RemoteImageResult.decode(readValue(buffer)!);
+      case 135:
+        return RemoteImageCacheClearRequest.decode(readValue(buffer)!);
+      case 136:
+        return RemoteImageCacheClearResult.decode(readValue(buffer)!);
       default:
         return super.readValueOfType(type, buffer);
     }
@@ -60,7 +404,7 @@ class RemoteImageApi {
 
   final String pigeonVar_messageChannelSuffix;
 
-  Future<Map<String, int>?> requestImage(String url, {required int requestId, required bool preferEncoded}) async {
+  Future<RemoteImageResult> requestImage(RemoteImageRequest request) async {
     final pigeonVar_channelName =
         'dev.flutter.pigeon.immich_mobile.RemoteImageApi.requestImage$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
@@ -68,15 +412,15 @@ class RemoteImageApi {
       pigeonChannelCodec,
       binaryMessenger: pigeonVar_binaryMessenger,
     );
-    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[url, requestId, preferEncoded]);
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[request]);
     final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
 
     final Object? pigeonVar_replyValue = _extractReplyValueOrThrow(
       pigeonVar_replyList,
       pigeonVar_channelName,
-      isNullValid: true,
+      isNullValid: false,
     );
-    return (pigeonVar_replyValue as Map<Object?, Object?>?)?.cast<String, int>();
+    return pigeonVar_replyValue! as RemoteImageResult;
   }
 
   Future<void> cancelRequest(int requestId) async {
@@ -93,9 +437,9 @@ class RemoteImageApi {
     _extractReplyValueOrThrow(pigeonVar_replyList, pigeonVar_channelName, isNullValid: true);
   }
 
-  Future<int> clearCache() async {
+  Future<void> cancelAll() async {
     final pigeonVar_channelName =
-        'dev.flutter.pigeon.immich_mobile.RemoteImageApi.clearCache$pigeonVar_messageChannelSuffix';
+        'dev.flutter.pigeon.immich_mobile.RemoteImageApi.cancelAll$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
@@ -104,11 +448,39 @@ class RemoteImageApi {
     final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(null);
     final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
 
+    _extractReplyValueOrThrow(pigeonVar_replyList, pigeonVar_channelName, isNullValid: true);
+  }
+
+  Future<void> dispose() async {
+    final pigeonVar_channelName =
+        'dev.flutter.pigeon.immich_mobile.RemoteImageApi.dispose$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(null);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    _extractReplyValueOrThrow(pigeonVar_replyList, pigeonVar_channelName, isNullValid: true);
+  }
+
+  Future<RemoteImageCacheClearResult> clearCache(RemoteImageCacheClearRequest request) async {
+    final pigeonVar_channelName =
+        'dev.flutter.pigeon.immich_mobile.RemoteImageApi.clearCache$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[request]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
     final Object? pigeonVar_replyValue = _extractReplyValueOrThrow(
       pigeonVar_replyList,
       pigeonVar_channelName,
       isNullValid: false,
     );
-    return pigeonVar_replyValue! as int;
+    return pigeonVar_replyValue! as RemoteImageCacheClearResult;
   }
 }

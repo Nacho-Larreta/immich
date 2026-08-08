@@ -1,60 +1,100 @@
+import Foundation
 import Network
 
-class ConnectivityApiImpl: ConnectivityApi {
-  private let monitor = NWPathMonitor()
+final class ConnectivityApiImpl: ConnectivityApi {
+  private let flutterApi: ConnectivityFlutterApi
   private let queue = DispatchQueue(label: "ConnectivityMonitor")
+  private let lock = NSLock()
+  private var monitor: NWPathMonitor?
   private var currentPath: NWPath?
-  
-  init() {
-    monitor.pathUpdateHandler = { [weak self] path in
-      self?.currentPath = path
-    }
-    monitor.start(queue: queue)
-    // Get initial state synchronously
-    currentPath = monitor.currentPath
+
+  init(flutterApi: ConnectivityFlutterApi) {
+    self.flutterApi = flutterApi
   }
-  
+
   deinit {
-    monitor.cancel()
+    stop()
   }
-  
-  func getCapabilities() throws -> [NetworkCapability] {
-    guard let path = currentPath else {
-      return []
+
+  func getSnapshot() -> ConnectivityTransportSnapshot {
+    lock.lock()
+    let path = currentPath
+    lock.unlock()
+    return Self.snapshot(for: path)
+  }
+
+  func start() {
+    lock.lock()
+    guard monitor == nil else {
+      lock.unlock()
+      return
     }
-    
-    guard path.status == .satisfied else {
-      return []
+
+    let monitor = NWPathMonitor()
+    monitor.pathUpdateHandler = { [weak self] path in
+      self?.receive(path)
     }
-    
-    var capabilities: [NetworkCapability] = []
-    
-    if path.usesInterfaceType(.wifi) {
-      capabilities.append(.wifi)
+    self.monitor = monitor
+    lock.unlock()
+    monitor.start(queue: queue)
+  }
+
+  func stop() {
+    lock.lock()
+    let monitor = monitor
+    self.monitor = nil
+    currentPath = nil
+    lock.unlock()
+    monitor?.cancel()
+  }
+
+  func dispose() {
+    stop()
+  }
+
+  private func receive(_ path: NWPath) {
+    lock.lock()
+    guard monitor != nil else {
+      lock.unlock()
+      return
     }
-    
-    if path.usesInterfaceType(.cellular) {
+    currentPath = path
+    lock.unlock()
+
+    flutterApi.onTransportChanged(snapshot: Self.snapshot(for: path)) { _ in }
+  }
+
+  private static func snapshot(for path: NWPath?) -> ConnectivityTransportSnapshot {
+    guard let path, path.status == .satisfied else {
+      return ConnectivityTransportSnapshot(
+        availability: .unavailable,
+        capabilities: []
+      )
+    }
+
+    return ConnectivityTransportSnapshot(
+      availability: .available,
+      capabilities: capabilities(for: path)
+    )
+  }
+
+  private static func capabilities(for path: NWPath) -> [ConnectivityNetworkCapability] {
+    var capabilities: [ConnectivityNetworkCapability] = []
+    let isOnWifi = path.usesInterfaceType(.wifi)
+    let isOnCellular = path.usesInterfaceType(.cellular)
+
+    if isOnCellular {
       capabilities.append(.cellular)
     }
-    
-    // Check for VPN - iOS reports VPN as .other interface type in many cases
-    // or through the path's expensive property when on cellular with VPN
+    if isOnWifi {
+      capabilities.append(.wifi)
+    }
     if path.usesInterfaceType(.other) {
       capabilities.append(.vpn)
     }
-    
-    // Determine if connection is unmetered:
-    // - Must be on WiFi (not cellular)
-    // - Must not be expensive (rules out personal hotspot)
-    // - Must not be constrained (Low Data Mode)
-    // Note: VPN over cellular should still be considered metered
-    let isOnCellular = path.usesInterfaceType(.cellular)
-    let isOnWifi = path.usesInterfaceType(.wifi)
-    
     if isOnWifi && !isOnCellular && !path.isExpensive && !path.isConstrained {
       capabilities.append(.unmetered)
     }
-    
     return capabilities
   }
 }

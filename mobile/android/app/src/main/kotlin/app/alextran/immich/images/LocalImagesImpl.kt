@@ -28,7 +28,7 @@ import java.util.concurrent.Future
 data class Request(
   val taskFuture: Future<*>,
   val cancellationSignal: CancellationSignal,
-  val callback: (Result<Map<String, Long>?>) -> Unit
+  val callback: (Result<LocalImageResult>) -> Unit
 )
 
 @RequiresApi(Build.VERSION_CODES.Q)
@@ -43,17 +43,17 @@ inline fun ImageDecoder.Source.decodeBitmap(target: Size = Size(0, 0)): Bitmap {
   }
 }
 
-fun Bitmap.toNativeBuffer(): Map<String, Long>  {
+fun Bitmap.toNativeBuffer(): LocalImagePayload {
   val size = width * height * 4
   val pointer = NativeBuffer.allocate(size)
   try {
     val buffer = NativeBuffer.wrap(pointer, size)
     copyPixelsToBuffer(buffer)
-    return mapOf(
-      "pointer" to pointer,
-      "width" to width.toLong(),
-      "height" to height.toLong(),
-      "rowBytes" to (width * 4).toLong()
+    return LocalImagePayload(
+      pointer = pointer,
+      width = width.toLong(),
+      height = height.toLong(),
+      rowBytes = (width * 4).toLong(),
     )
   } catch (e: Exception) {
     NativeBuffer.free(pointer)
@@ -63,7 +63,10 @@ fun Bitmap.toNativeBuffer(): Map<String, Long>  {
   }
 }
 
-class LocalImagesImpl(context: Context) : LocalImageApi {
+class LocalImagesImpl(
+  context: Context,
+  private val flutterApi: LocalImageFlutterApi,
+) : LocalImageApi {
   private val ctx: Context = context.applicationContext
   private val resolver: ContentResolver = ctx.contentResolver
   private val requestThread = Executors.newSingleThreadExecutor()
@@ -72,57 +75,63 @@ class LocalImagesImpl(context: Context) : LocalImageApi {
   private val requestMap = ConcurrentHashMap<Long, Request>()
 
   companion object {
-    val CANCELLED = Result.success<Map<String, Long>?>(null)
+    val CANCELLED = Result.success(LocalImageResult(error = LocalImageErrorCode.CANCELLED))
     val OPTIONS = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 }
   }
 
-  override fun getThumbhash(thumbhash: String, callback: (Result<Map<String, Long>>) -> Unit) {
+  override fun getThumbhash(
+    request: LocalImageThumbhashRequest,
+    callback: (Result<LocalImageResult>) -> Unit,
+  ) {
     threadPool.execute {
       try {
-        val bytes = Base64.getDecoder().decode(thumbhash)
+        val bytes = Base64.getDecoder().decode(request.thumbhash)
         val image = ThumbHash.thumbHashToRGBA(bytes)
-        val res = mapOf(
-          "pointer" to image.pointer,
-          "width" to image.width.toLong(),
-          "height" to image.height.toLong(),
-          "rowBytes" to (image.width * 4).toLong()
+        val payload = LocalImagePayload(
+          pointer = image.pointer,
+          width = image.width.toLong(),
+          height = image.height.toLong(),
+          rowBytes = (image.width * 4).toLong(),
         )
-        callback(Result.success(res))
+        callback(Result.success(LocalImageResult(payload = payload)))
       } catch (e: Exception) {
-        callback(Result.failure(e))
+        callback(Result.success(LocalImageResult(error = LocalImageErrorCode.MEDIA_NOT_LOCAL)))
       }
     }
   }
 
   override fun requestImage(
-    assetId: String,
-    requestId: Long,
-    width: Long,
-    height: Long,
-    isVideo: Boolean,
-    preferEncoded: Boolean,
-    callback: (Result<Map<String, Long>?>) -> Unit
+    request: LocalImageRequest,
+    callback: (Result<LocalImageResult>) -> Unit,
   ) {
     val signal = CancellationSignal()
     val task = threadPool.submit {
       try {
-        if (preferEncoded) {
-          getEncodedImageInternal(assetId, callback, signal)
+        if (request.preferEncoded) {
+          getEncodedImageInternal(request.assetId, callback, signal)
         } else {
-          getThumbnailBufferInternal(assetId, width, height, isVideo, callback, signal)
+          getThumbnailBufferInternal(
+            request.assetId,
+            request.width,
+            request.height,
+            request.isVideo,
+            callback,
+            signal,
+          )
         }
       } catch (e: Exception) {
         when (e) {
           is OperationCanceledException -> callback(CANCELLED)
           is CancellationException -> callback(CANCELLED)
-          else -> callback(Result.failure(e))
+          else -> callback(
+            Result.success(LocalImageResult(error = LocalImageErrorCode.MEDIA_NOT_LOCAL)),
+          )
         }
       } finally {
-        requestMap.remove(requestId)
+        requestMap.remove(request.requestId)
       }
     }
-    val request = Request(task, signal, callback)
-    requestMap[requestId] = request
+    requestMap[request.requestId] = Request(task, signal, callback)
   }
 
   override fun cancelRequest(requestId: Long) {
@@ -139,9 +148,19 @@ class LocalImagesImpl(context: Context) : LocalImageApi {
     }
   }
 
+  override fun cancelAll() {
+    requestMap.keys.toList().forEach(::cancelRequest)
+  }
+
+  override fun dispose() {
+    cancelAll()
+    requestThread.shutdownNow()
+    threadPool.shutdownNow()
+  }
+
   private fun getEncodedImageInternal(
     assetId: String,
-    callback: (Result<Map<String, Long>?>) -> Unit,
+    callback: (Result<LocalImageResult>) -> Unit,
     signal: CancellationSignal
   ) {
     signal.throwIfCanceled()
@@ -158,10 +177,16 @@ class LocalImagesImpl(context: Context) : LocalImageApi {
       val buffer = NativeBuffer.wrap(pointer, bytes.size)
       buffer.put(bytes)
       signal.throwIfCanceled()
-      callback(Result.success(mapOf(
-        "pointer" to pointer,
-        "length" to bytes.size.toLong()
-      )))
+      callback(
+        Result.success(
+          LocalImageResult(
+            payload = LocalImagePayload(
+              pointer = pointer,
+              length = bytes.size.toLong(),
+            ),
+          ),
+        ),
+      )
     } catch (e: Exception) {
       NativeBuffer.free(pointer)
       throw e
@@ -173,7 +198,7 @@ class LocalImagesImpl(context: Context) : LocalImageApi {
     width: Long,
     height: Long,
     isVideo: Boolean,
-    callback: (Result<Map<String, Long>?>) -> Unit,
+    callback: (Result<LocalImageResult>) -> Unit,
     signal: CancellationSignal
   ) {
     signal.throwIfCanceled()
@@ -189,11 +214,17 @@ class LocalImagesImpl(context: Context) : LocalImageApi {
 
     try {
       signal.throwIfCanceled()
-      val res = bitmap.toNativeBuffer()
+      val payload = bitmap.toNativeBuffer()
       signal.throwIfCanceled()
-      callback(Result.success(res))
+      callback(Result.success(LocalImageResult(payload = payload)))
     } catch (e: Exception) {
-      callback(if (e is OperationCanceledException) CANCELLED else Result.failure(e))
+      callback(
+        if (e is OperationCanceledException) {
+          CANCELLED
+        } else {
+          Result.success(LocalImageResult(error = LocalImageErrorCode.MEDIA_NOT_LOCAL))
+        },
+      )
     }
   }
 

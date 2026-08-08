@@ -11,10 +11,30 @@ import 'package:pigeon/pigeon.dart';
     dartPackageName: 'immich_mobile',
   ),
 )
-enum NetworkCapability { cellular, wifi, vpn, unmetered }
+enum ConnectivityTransportAvailability { unavailable, available }
+
+enum ConnectivityNetworkCapability { cellular, wifi, vpn, unmetered }
+
+class ConnectivityTransportSnapshot {
+  ConnectivityTransportSnapshot({required this.availability, required this.capabilities});
+
+  ConnectivityTransportAvailability availability;
+  List<ConnectivityNetworkCapability> capabilities;
+}
 
 @HostApi()
 abstract class ConnectivityApi {
   @TaskQueue(type: TaskQueueType.serialBackgroundThread)
-  List<NetworkCapability> getCapabilities();
+  ConnectivityTransportSnapshot getSnapshot();
+
+  void start();
+
+  void stop();
+
+  void dispose();
+}
+
+@FlutterApi()
+abstract class ConnectivityFlutterApi {
+  void onTransportChanged(ConnectivityTransportSnapshot snapshot);
 }

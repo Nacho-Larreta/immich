@@ -1,0 +1,16 @@
+#!/bin/sh
+
+set -eu
+
+blocked_paths='(^|/)([^/]*\.(mobileprovision|provisionprofile|p8|key)|[^/]*private[^/]*\.pem)$'
+
+if git diff --cached --name-only --diff-filter=ACMR | rg -qi "$blocked_paths"; then
+  echo "Commit blocked: Apple signing material or private-key files are staged." >&2
+  echo "Keep provisioning profiles and private keys outside the repository." >&2
+  exit 1
+fi
+
+if git diff --cached --no-ext-diff -U0 | rg -q '^\+.*BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY'; then
+  echo "Commit blocked: staged content contains a private-key marker." >&2
+  exit 1
+fi

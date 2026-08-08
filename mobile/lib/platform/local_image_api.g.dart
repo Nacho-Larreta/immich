@@ -26,6 +26,329 @@ Object? _extractReplyValueOrThrow(List<Object?>? replyList, String channelName, 
   return replyList.firstOrNull;
 }
 
+List<Object?> wrapResponse({Object? result, PlatformException? error, bool empty = false}) {
+  if (empty) {
+    return <Object?>[];
+  }
+  if (error == null) {
+    return <Object?>[result];
+  }
+  return <Object?>[error.code, error.message, error.details];
+}
+
+bool _deepEquals(Object? a, Object? b) {
+  if (identical(a, b)) {
+    return true;
+  }
+  if (a is double && b is double) {
+    if (a.isNaN && b.isNaN) {
+      return true;
+    }
+    return a == b;
+  }
+  if (a is List && b is List) {
+    return a.length == b.length && a.indexed.every(((int, dynamic) item) => _deepEquals(item.$2, b[item.$1]));
+  }
+  if (a is Map && b is Map) {
+    if (a.length != b.length) {
+      return false;
+    }
+    for (final MapEntry<Object?, Object?> entryA in a.entries) {
+      bool found = false;
+      for (final MapEntry<Object?, Object?> entryB in b.entries) {
+        if (_deepEquals(entryA.key, entryB.key)) {
+          if (_deepEquals(entryA.value, entryB.value)) {
+            found = true;
+            break;
+          } else {
+            return false;
+          }
+        }
+      }
+      if (!found) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return a == b;
+}
+
+int _deepHash(Object? value) {
+  if (value is List) {
+    return Object.hashAll(value.map(_deepHash));
+  }
+  if (value is Map) {
+    int result = 0;
+    for (final MapEntry<Object?, Object?> entry in value.entries) {
+      result += (_deepHash(entry.key) * 31) ^ _deepHash(entry.value);
+    }
+    return result;
+  }
+  if (value is double && value.isNaN) {
+    // Normalize NaN to a consistent hash.
+    return 0x7FF8000000000000.hashCode;
+  }
+  if (value is double && value == 0.0) {
+    // Normalize -0.0 to 0.0 so they have the same hash code.
+    return 0.0.hashCode;
+  }
+  return value.hashCode;
+}
+
+enum LocalImagePolicy { localOnly, allowICloud }
+
+enum LocalImageRequestKind { thumbnail, original }
+
+enum LocalImageErrorCode {
+  cacheMiss,
+  mediaNotLocal,
+  iCloudUnavailable,
+  cancelled,
+  timeout,
+  serverUnavailable,
+  wrongServer,
+  unauthorized,
+}
+
+class LocalImageRequest {
+  LocalImageRequest({
+    required this.assetId,
+    required this.requestId,
+    required this.width,
+    required this.height,
+    required this.isVideo,
+    required this.preferEncoded,
+    required this.policy,
+    required this.kind,
+  });
+
+  String assetId;
+
+  int requestId;
+
+  int width;
+
+  int height;
+
+  bool isVideo;
+
+  bool preferEncoded;
+
+  LocalImagePolicy policy;
+
+  LocalImageRequestKind kind;
+
+  List<Object?> _toList() {
+    return <Object?>[assetId, requestId, width, height, isVideo, preferEncoded, policy, kind];
+  }
+
+  Object encode() {
+    return _toList();
+  }
+
+  static LocalImageRequest decode(Object result) {
+    result as List<Object?>;
+    return LocalImageRequest(
+      assetId: result[0]! as String,
+      requestId: result[1]! as int,
+      width: result[2]! as int,
+      height: result[3]! as int,
+      isVideo: result[4]! as bool,
+      preferEncoded: result[5]! as bool,
+      policy: result[6]! as LocalImagePolicy,
+      kind: result[7]! as LocalImageRequestKind,
+    );
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! LocalImageRequest || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(assetId, other.assetId) &&
+        _deepEquals(requestId, other.requestId) &&
+        _deepEquals(width, other.width) &&
+        _deepEquals(height, other.height) &&
+        _deepEquals(isVideo, other.isVideo) &&
+        _deepEquals(preferEncoded, other.preferEncoded) &&
+        _deepEquals(policy, other.policy) &&
+        _deepEquals(kind, other.kind);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+}
+
+class LocalImageThumbhashRequest {
+  LocalImageThumbhashRequest({required this.thumbhash, required this.requestId});
+
+  String thumbhash;
+
+  int requestId;
+
+  List<Object?> _toList() {
+    return <Object?>[thumbhash, requestId];
+  }
+
+  Object encode() {
+    return _toList();
+  }
+
+  static LocalImageThumbhashRequest decode(Object result) {
+    result as List<Object?>;
+    return LocalImageThumbhashRequest(thumbhash: result[0]! as String, requestId: result[1]! as int);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! LocalImageThumbhashRequest || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(thumbhash, other.thumbhash) && _deepEquals(requestId, other.requestId);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+}
+
+class LocalImagePayload {
+  LocalImagePayload({required this.pointer, this.length, this.width, this.height, this.rowBytes});
+
+  int pointer;
+
+  int? length;
+
+  int? width;
+
+  int? height;
+
+  int? rowBytes;
+
+  List<Object?> _toList() {
+    return <Object?>[pointer, length, width, height, rowBytes];
+  }
+
+  Object encode() {
+    return _toList();
+  }
+
+  static LocalImagePayload decode(Object result) {
+    result as List<Object?>;
+    return LocalImagePayload(
+      pointer: result[0]! as int,
+      length: result[1] as int?,
+      width: result[2] as int?,
+      height: result[3] as int?,
+      rowBytes: result[4] as int?,
+    );
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! LocalImagePayload || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(pointer, other.pointer) &&
+        _deepEquals(length, other.length) &&
+        _deepEquals(width, other.width) &&
+        _deepEquals(height, other.height) &&
+        _deepEquals(rowBytes, other.rowBytes);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+}
+
+class LocalImageResult {
+  LocalImageResult({this.payload, this.error});
+
+  LocalImagePayload? payload;
+
+  LocalImageErrorCode? error;
+
+  List<Object?> _toList() {
+    return <Object?>[payload, error];
+  }
+
+  Object encode() {
+    return _toList();
+  }
+
+  static LocalImageResult decode(Object result) {
+    result as List<Object?>;
+    return LocalImageResult(payload: result[0] as LocalImagePayload?, error: result[1] as LocalImageErrorCode?);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! LocalImageResult || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(payload, other.payload) && _deepEquals(error, other.error);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+}
+
+class LocalImageProgress {
+  LocalImageProgress({required this.requestId, required this.fraction});
+
+  int requestId;
+
+  double fraction;
+
+  List<Object?> _toList() {
+    return <Object?>[requestId, fraction];
+  }
+
+  Object encode() {
+    return _toList();
+  }
+
+  static LocalImageProgress decode(Object result) {
+    result as List<Object?>;
+    return LocalImageProgress(requestId: result[0]! as int, fraction: result[1]! as double);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! LocalImageProgress || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(requestId, other.requestId) && _deepEquals(fraction, other.fraction);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+}
+
 class _PigeonCodec extends StandardMessageCodec {
   const _PigeonCodec();
   @override
@@ -33,6 +356,30 @@ class _PigeonCodec extends StandardMessageCodec {
     if (value is int) {
       buffer.putUint8(4);
       buffer.putInt64(value);
+    } else if (value is LocalImagePolicy) {
+      buffer.putUint8(129);
+      writeValue(buffer, value.index);
+    } else if (value is LocalImageRequestKind) {
+      buffer.putUint8(130);
+      writeValue(buffer, value.index);
+    } else if (value is LocalImageErrorCode) {
+      buffer.putUint8(131);
+      writeValue(buffer, value.index);
+    } else if (value is LocalImageRequest) {
+      buffer.putUint8(132);
+      writeValue(buffer, value.encode());
+    } else if (value is LocalImageThumbhashRequest) {
+      buffer.putUint8(133);
+      writeValue(buffer, value.encode());
+    } else if (value is LocalImagePayload) {
+      buffer.putUint8(134);
+      writeValue(buffer, value.encode());
+    } else if (value is LocalImageResult) {
+      buffer.putUint8(135);
+      writeValue(buffer, value.encode());
+    } else if (value is LocalImageProgress) {
+      buffer.putUint8(136);
+      writeValue(buffer, value.encode());
     } else {
       super.writeValue(buffer, value);
     }
@@ -41,6 +388,25 @@ class _PigeonCodec extends StandardMessageCodec {
   @override
   Object? readValueOfType(int type, ReadBuffer buffer) {
     switch (type) {
+      case 129:
+        final value = readValue(buffer) as int?;
+        return value == null ? null : LocalImagePolicy.values[value];
+      case 130:
+        final value = readValue(buffer) as int?;
+        return value == null ? null : LocalImageRequestKind.values[value];
+      case 131:
+        final value = readValue(buffer) as int?;
+        return value == null ? null : LocalImageErrorCode.values[value];
+      case 132:
+        return LocalImageRequest.decode(readValue(buffer)!);
+      case 133:
+        return LocalImageThumbhashRequest.decode(readValue(buffer)!);
+      case 134:
+        return LocalImagePayload.decode(readValue(buffer)!);
+      case 135:
+        return LocalImageResult.decode(readValue(buffer)!);
+      case 136:
+        return LocalImageProgress.decode(readValue(buffer)!);
       default:
         return super.readValueOfType(type, buffer);
     }
@@ -60,14 +426,7 @@ class LocalImageApi {
 
   final String pigeonVar_messageChannelSuffix;
 
-  Future<Map<String, int>?> requestImage(
-    String assetId, {
-    required int requestId,
-    required int width,
-    required int height,
-    required bool isVideo,
-    required bool preferEncoded,
-  }) async {
+  Future<LocalImageResult> requestImage(LocalImageRequest request) async {
     final pigeonVar_channelName =
         'dev.flutter.pigeon.immich_mobile.LocalImageApi.requestImage$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
@@ -75,22 +434,15 @@ class LocalImageApi {
       pigeonChannelCodec,
       binaryMessenger: pigeonVar_binaryMessenger,
     );
-    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[
-      assetId,
-      requestId,
-      width,
-      height,
-      isVideo,
-      preferEncoded,
-    ]);
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[request]);
     final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
 
     final Object? pigeonVar_replyValue = _extractReplyValueOrThrow(
       pigeonVar_replyList,
       pigeonVar_channelName,
-      isNullValid: true,
+      isNullValid: false,
     );
-    return (pigeonVar_replyValue as Map<Object?, Object?>?)?.cast<String, int>();
+    return pigeonVar_replyValue! as LocalImageResult;
   }
 
   Future<void> cancelRequest(int requestId) async {
@@ -107,7 +459,35 @@ class LocalImageApi {
     _extractReplyValueOrThrow(pigeonVar_replyList, pigeonVar_channelName, isNullValid: true);
   }
 
-  Future<Map<String, int>> getThumbhash(String thumbhash) async {
+  Future<void> cancelAll() async {
+    final pigeonVar_channelName =
+        'dev.flutter.pigeon.immich_mobile.LocalImageApi.cancelAll$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(null);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    _extractReplyValueOrThrow(pigeonVar_replyList, pigeonVar_channelName, isNullValid: true);
+  }
+
+  Future<void> dispose() async {
+    final pigeonVar_channelName =
+        'dev.flutter.pigeon.immich_mobile.LocalImageApi.dispose$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(null);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    _extractReplyValueOrThrow(pigeonVar_replyList, pigeonVar_channelName, isNullValid: true);
+  }
+
+  Future<LocalImageResult> getThumbhash(LocalImageThumbhashRequest request) async {
     final pigeonVar_channelName =
         'dev.flutter.pigeon.immich_mobile.LocalImageApi.getThumbhash$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
@@ -115,7 +495,7 @@ class LocalImageApi {
       pigeonChannelCodec,
       binaryMessenger: pigeonVar_binaryMessenger,
     );
-    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[thumbhash]);
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[request]);
     final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
 
     final Object? pigeonVar_replyValue = _extractReplyValueOrThrow(
@@ -123,6 +503,41 @@ class LocalImageApi {
       pigeonVar_channelName,
       isNullValid: false,
     );
-    return (pigeonVar_replyValue! as Map<Object?, Object?>).cast<String, int>();
+    return pigeonVar_replyValue! as LocalImageResult;
+  }
+}
+
+abstract class LocalImageFlutterApi {
+  static const MessageCodec<Object?> pigeonChannelCodec = _PigeonCodec();
+
+  void onProgress(LocalImageProgress progress);
+
+  static void setUp(LocalImageFlutterApi? api, {BinaryMessenger? binaryMessenger, String messageChannelSuffix = ''}) {
+    messageChannelSuffix = messageChannelSuffix.isNotEmpty ? '.$messageChannelSuffix' : '';
+    {
+      final pigeonVar_channel = BasicMessageChannel<Object?>(
+        'dev.flutter.pigeon.immich_mobile.LocalImageFlutterApi.onProgress$messageChannelSuffix',
+        pigeonChannelCodec,
+        binaryMessenger: binaryMessenger,
+      );
+      if (api == null) {
+        pigeonVar_channel.setMessageHandler(null);
+      } else {
+        pigeonVar_channel.setMessageHandler((Object? message) async {
+          final List<Object?> args = message! as List<Object?>;
+          final LocalImageProgress arg_progress = args[0]! as LocalImageProgress;
+          try {
+            api.onProgress(arg_progress);
+            return wrapResponse(empty: true);
+          } on PlatformException catch (e) {
+            return wrapResponse(error: e);
+          } catch (e) {
+            return wrapResponse(
+              error: PlatformException(code: 'error', message: e.toString()),
+            );
+          }
+        });
+      }
+    }
   }
 }

@@ -19,6 +19,15 @@ mobile/openapi/test
 mobile/openapi/doc
 mobile/openapi/.openapi-generator/FILES
 mobile/ios/build
+mobile/ios/.bundle/
+mobile/ios/vendor/
+
+# Local Apple signing material (never version)
+**/*.mobileprovision
+**/*.provisionprofile
+**/*.p8
+**/*.key
+**/*private*.pem
 
 open-api/typescript-sdk/build
 mobile/android/fastlane/report.xml

@@ -9,12 +9,14 @@ import app.alextran.immich.background.BackgroundWorkerFgHostApi
 import app.alextran.immich.background.BackgroundWorkerLockApi
 import app.alextran.immich.connectivity.ConnectivityApi
 import app.alextran.immich.connectivity.ConnectivityApiImpl
+import app.alextran.immich.connectivity.ConnectivityFlutterApi
 import app.alextran.immich.core.HttpClientManager
 import app.alextran.immich.core.ImmichPlugin
 import app.alextran.immich.core.NetworkApiPlugin
 import me.albemala.native_video_player.NativeVideoPlayerPlugin
 import app.alextran.immich.images.LocalImageApi
 import app.alextran.immich.images.LocalImagesImpl
+import app.alextran.immich.images.LocalImageFlutterApi
 import app.alextran.immich.images.RemoteImageApi
 import app.alextran.immich.images.RemoteImagesImpl
 import app.alextran.immich.sync.NativeSyncApi
@@ -45,11 +47,11 @@ class MainActivity : FlutterFragmentActivity() {
           NativeSyncApiImpl30(ctx)
         }
       NativeSyncApi.setUp(messenger, nativeSyncApiImpl)
-      LocalImageApi.setUp(messenger, LocalImagesImpl(ctx))
+      LocalImageApi.setUp(messenger, LocalImagesImpl(ctx, LocalImageFlutterApi(messenger)))
       RemoteImageApi.setUp(messenger, RemoteImagesImpl(ctx))
 
       BackgroundWorkerFgHostApi.setUp(messenger, BackgroundWorkerApiImpl(ctx))
-      ConnectivityApi.setUp(messenger, ConnectivityApiImpl(ctx))
+      ConnectivityApi.setUp(messenger, ConnectivityApiImpl(ctx, ConnectivityFlutterApi(messenger)))
 
       flutterEngine.plugins.add(backgroundEngineLockImpl)
       flutterEngine.plugins.add(nativeSyncApiImpl)

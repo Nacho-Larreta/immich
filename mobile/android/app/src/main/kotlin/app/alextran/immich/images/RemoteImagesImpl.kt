@@ -33,23 +33,21 @@ class RemoteImagesImpl(context: Context) : RemoteImageApi {
   }
 
   companion object {
-    val CANCELLED = Result.success<Map<String, Long>?>(null)
+    val CANCELLED = Result.success(RemoteImageResult(error = RemoteImageErrorCode.CANCELLED))
   }
 
   override fun requestImage(
-    url: String,
-    requestId: Long,
-    @Suppress("UNUSED_PARAMETER") preferEncoded: Boolean, // always returns encoded; setting has no effect on Android
-    callback: (Result<Map<String, Long>?>) -> Unit
+    request: RemoteImageRequest,
+    callback: (Result<RemoteImageResult>) -> Unit,
   ) {
     val signal = CancellationSignal()
-    requestMap[requestId] = RemoteRequest(signal)
+    requestMap[request.requestId] = RemoteRequest(signal)
 
     ImageFetcherManager.fetch(
-      url,
+      request.url,
       signal,
       onSuccess = { buffer ->
-        requestMap.remove(requestId)
+        requestMap.remove(request.requestId)
         if (signal.isCanceled) {
           NativeBuffer.free(buffer.pointer)
           return@fetch callback(CANCELLED)
@@ -57,18 +55,24 @@ class RemoteImagesImpl(context: Context) : RemoteImageApi {
 
         callback(
           Result.success(
-            mapOf(
-              "pointer" to buffer.pointer,
-              "length" to buffer.offset.toLong()
-            )
-          )
+            RemoteImageResult(
+              payload = RemoteImagePayload(
+                pointer = buffer.pointer,
+                length = buffer.offset.toLong(),
+              ),
+            ),
+          ),
         )
       },
       onFailure = { e ->
-        requestMap.remove(requestId)
-        val result = if (signal.isCanceled) CANCELLED else Result.failure(e)
+        requestMap.remove(request.requestId)
+        val result = if (signal.isCanceled) {
+          CANCELLED
+        } else {
+          Result.success(RemoteImageResult(error = RemoteImageErrorCode.SERVER_UNAVAILABLE))
+        }
         callback(result)
-      }
+      },
     )
   }
 
@@ -76,12 +80,36 @@ class RemoteImagesImpl(context: Context) : RemoteImageApi {
     requestMap.remove(requestId)?.cancellationSignal?.cancel()
   }
 
-  override fun clearCache(callback: (Result<Long>) -> Unit) {
+  override fun cancelAll() {
+    requestMap.keys.toList().forEach(::cancelRequest)
+  }
+
+  override fun dispose() = cancelAll()
+
+  override fun clearCache(
+    request: RemoteImageCacheClearRequest,
+    callback: (Result<RemoteImageCacheClearResult>) -> Unit,
+  ) {
     CoroutineScope(Dispatchers.IO).launch {
       try {
-        ImageFetcherManager.clearCache(callback)
+        ImageFetcherManager.clearCache { result ->
+          callback(
+            Result.success(
+              result.fold(
+                onSuccess = { RemoteImageCacheClearResult(clearedBytes = it) },
+                onFailure = {
+                  RemoteImageCacheClearResult(error = RemoteImageErrorCode.SERVER_UNAVAILABLE)
+                },
+              ),
+            ),
+          )
+        }
       } catch (e: Exception) {
-        callback(Result.failure(e))
+        callback(
+          Result.success(
+            RemoteImageCacheClearResult(error = RemoteImageErrorCode.SERVER_UNAVAILABLE),
+          ),
+        )
       }
     }
   }

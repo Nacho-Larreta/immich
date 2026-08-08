@@ -37,6 +37,10 @@ private func wrapError(_ error: Any) -> [Any?] {
   ]
 }
 
+private func createConnectionError(withChannelName channelName: String) -> PigeonError {
+  return PigeonError(code: "channel-error", message: "Unable to establish connection on channel: '\(channelName)'.", details: "")
+}
+
 private func isNullish(_ value: Any?) -> Bool {
   return value is NSNull || value == nil
 }
@@ -46,11 +50,429 @@ private func nilOrValue<T>(_ value: Any?) -> T? {
   return value as! T?
 }
 
+private func doubleEqualsLocalImages(_ lhs: Double, _ rhs: Double) -> Bool {
+  return (lhs.isNaN && rhs.isNaN) || lhs == rhs
+}
+
+private func doubleHashLocalImages(_ value: Double, _ hasher: inout Hasher) {
+  if value.isNaN {
+    hasher.combine(0x7FF8000000000000)
+  } else {
+    // Normalize -0.0 to 0.0
+    hasher.combine(value == 0 ? 0 : value)
+  }
+}
+
+func deepEqualsLocalImages(_ lhs: Any?, _ rhs: Any?) -> Bool {
+  let cleanLhs = nilOrValue(lhs) as Any?
+  let cleanRhs = nilOrValue(rhs) as Any?
+  switch (cleanLhs, cleanRhs) {
+  case (nil, nil):
+    return true
+
+  case (nil, _), (_, nil):
+    return false
+
+  case (let lhs as AnyObject, let rhs as AnyObject) where lhs === rhs:
+    return true
+
+  case is (Void, Void):
+    return true
+
+  case (let lhsArray, let rhsArray) as ([Any?], [Any?]):
+    guard lhsArray.count == rhsArray.count else { return false }
+    for (index, element) in lhsArray.enumerated() {
+      if !deepEqualsLocalImages(element, rhsArray[index]) {
+        return false
+      }
+    }
+    return true
+
+  case (let lhsArray, let rhsArray) as ([Double], [Double]):
+    guard lhsArray.count == rhsArray.count else { return false }
+    for (index, element) in lhsArray.enumerated() {
+      if !doubleEqualsLocalImages(element, rhsArray[index]) {
+        return false
+      }
+    }
+    return true
+
+  case (let lhsDictionary, let rhsDictionary) as ([AnyHashable: Any?], [AnyHashable: Any?]):
+    guard lhsDictionary.count == rhsDictionary.count else { return false }
+    for (lhsKey, lhsValue) in lhsDictionary {
+      var found = false
+      for (rhsKey, rhsValue) in rhsDictionary {
+        if deepEqualsLocalImages(lhsKey, rhsKey) {
+          if deepEqualsLocalImages(lhsValue, rhsValue) {
+            found = true
+            break
+          } else {
+            return false
+          }
+        }
+      }
+      if !found { return false }
+    }
+    return true
+
+  case (let lhs as Double, let rhs as Double):
+    return doubleEqualsLocalImages(lhs, rhs)
+
+  case (let lhsHashable, let rhsHashable) as (AnyHashable, AnyHashable):
+    return lhsHashable == rhsHashable
+
+  default:
+    return false
+  }
+}
+
+func deepHashLocalImages(value: Any?, hasher: inout Hasher) {
+  let cleanValue = nilOrValue(value) as Any?
+  if let cleanValue = cleanValue {
+    if let doubleValue = cleanValue as? Double {
+      doubleHashLocalImages(doubleValue, &hasher)
+    } else if let valueList = cleanValue as? [Any?] {
+      for item in valueList {
+        deepHashLocalImages(value: item, hasher: &hasher)
+      }
+    } else if let valueList = cleanValue as? [Double] {
+      for item in valueList {
+        doubleHashLocalImages(item, &hasher)
+      }
+    } else if let valueDict = cleanValue as? [AnyHashable: Any?] {
+      var result = 0
+      for (key, value) in valueDict {
+        var entryKeyHasher = Hasher()
+        deepHashLocalImages(value: key, hasher: &entryKeyHasher)
+        var entryValueHasher = Hasher()
+        deepHashLocalImages(value: value, hasher: &entryValueHasher)
+        result = result &+ ((entryKeyHasher.finalize() &* 31) ^ entryValueHasher.finalize())
+      }
+      hasher.combine(result)
+    } else if let hashableValue = cleanValue as? AnyHashable {
+      hasher.combine(hashableValue)
+    } else {
+      hasher.combine(String(describing: cleanValue))
+    }
+  } else {
+    hasher.combine(0)
+  }
+}
+
+
+enum LocalImagePolicy: Int {
+  case localOnly = 0
+  case allowICloud = 1
+}
+
+enum LocalImageRequestKind: Int {
+  case thumbnail = 0
+  case original = 1
+}
+
+enum LocalImageErrorCode: Int {
+  case cacheMiss = 0
+  case mediaNotLocal = 1
+  case iCloudUnavailable = 2
+  case cancelled = 3
+  case timeout = 4
+  case serverUnavailable = 5
+  case wrongServer = 6
+  case unauthorized = 7
+}
+
+/// Generated class from Pigeon that represents data sent in messages.
+struct LocalImageRequest: Hashable {
+  var assetId: String
+  var requestId: Int64
+  var width: Int64
+  var height: Int64
+  var isVideo: Bool
+  var preferEncoded: Bool
+  var policy: LocalImagePolicy
+  var kind: LocalImageRequestKind
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> LocalImageRequest? {
+    let assetId = pigeonVar_list[0] as! String
+    let requestId = pigeonVar_list[1] as! Int64
+    let width = pigeonVar_list[2] as! Int64
+    let height = pigeonVar_list[3] as! Int64
+    let isVideo = pigeonVar_list[4] as! Bool
+    let preferEncoded = pigeonVar_list[5] as! Bool
+    let policy = pigeonVar_list[6] as! LocalImagePolicy
+    let kind = pigeonVar_list[7] as! LocalImageRequestKind
+
+    return LocalImageRequest(
+      assetId: assetId,
+      requestId: requestId,
+      width: width,
+      height: height,
+      isVideo: isVideo,
+      preferEncoded: preferEncoded,
+      policy: policy,
+      kind: kind
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      assetId,
+      requestId,
+      width,
+      height,
+      isVideo,
+      preferEncoded,
+      policy,
+      kind,
+    ]
+  }
+  static func == (lhs: LocalImageRequest, rhs: LocalImageRequest) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return deepEqualsLocalImages(lhs.assetId, rhs.assetId) && deepEqualsLocalImages(lhs.requestId, rhs.requestId) && deepEqualsLocalImages(lhs.width, rhs.width) && deepEqualsLocalImages(lhs.height, rhs.height) && deepEqualsLocalImages(lhs.isVideo, rhs.isVideo) && deepEqualsLocalImages(lhs.preferEncoded, rhs.preferEncoded) && deepEqualsLocalImages(lhs.policy, rhs.policy) && deepEqualsLocalImages(lhs.kind, rhs.kind)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("LocalImageRequest")
+    deepHashLocalImages(value: assetId, hasher: &hasher)
+    deepHashLocalImages(value: requestId, hasher: &hasher)
+    deepHashLocalImages(value: width, hasher: &hasher)
+    deepHashLocalImages(value: height, hasher: &hasher)
+    deepHashLocalImages(value: isVideo, hasher: &hasher)
+    deepHashLocalImages(value: preferEncoded, hasher: &hasher)
+    deepHashLocalImages(value: policy, hasher: &hasher)
+    deepHashLocalImages(value: kind, hasher: &hasher)
+  }
+}
+
+/// Generated class from Pigeon that represents data sent in messages.
+struct LocalImageThumbhashRequest: Hashable {
+  var thumbhash: String
+  var requestId: Int64
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> LocalImageThumbhashRequest? {
+    let thumbhash = pigeonVar_list[0] as! String
+    let requestId = pigeonVar_list[1] as! Int64
+
+    return LocalImageThumbhashRequest(
+      thumbhash: thumbhash,
+      requestId: requestId
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      thumbhash,
+      requestId,
+    ]
+  }
+  static func == (lhs: LocalImageThumbhashRequest, rhs: LocalImageThumbhashRequest) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return deepEqualsLocalImages(lhs.thumbhash, rhs.thumbhash) && deepEqualsLocalImages(lhs.requestId, rhs.requestId)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("LocalImageThumbhashRequest")
+    deepHashLocalImages(value: thumbhash, hasher: &hasher)
+    deepHashLocalImages(value: requestId, hasher: &hasher)
+  }
+}
+
+/// Generated class from Pigeon that represents data sent in messages.
+struct LocalImagePayload: Hashable {
+  var pointer: Int64
+  var length: Int64? = nil
+  var width: Int64? = nil
+  var height: Int64? = nil
+  var rowBytes: Int64? = nil
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> LocalImagePayload? {
+    let pointer = pigeonVar_list[0] as! Int64
+    let length: Int64? = nilOrValue(pigeonVar_list[1])
+    let width: Int64? = nilOrValue(pigeonVar_list[2])
+    let height: Int64? = nilOrValue(pigeonVar_list[3])
+    let rowBytes: Int64? = nilOrValue(pigeonVar_list[4])
+
+    return LocalImagePayload(
+      pointer: pointer,
+      length: length,
+      width: width,
+      height: height,
+      rowBytes: rowBytes
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      pointer,
+      length,
+      width,
+      height,
+      rowBytes,
+    ]
+  }
+  static func == (lhs: LocalImagePayload, rhs: LocalImagePayload) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return deepEqualsLocalImages(lhs.pointer, rhs.pointer) && deepEqualsLocalImages(lhs.length, rhs.length) && deepEqualsLocalImages(lhs.width, rhs.width) && deepEqualsLocalImages(lhs.height, rhs.height) && deepEqualsLocalImages(lhs.rowBytes, rhs.rowBytes)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("LocalImagePayload")
+    deepHashLocalImages(value: pointer, hasher: &hasher)
+    deepHashLocalImages(value: length, hasher: &hasher)
+    deepHashLocalImages(value: width, hasher: &hasher)
+    deepHashLocalImages(value: height, hasher: &hasher)
+    deepHashLocalImages(value: rowBytes, hasher: &hasher)
+  }
+}
+
+/// Generated class from Pigeon that represents data sent in messages.
+struct LocalImageResult: Hashable {
+  var payload: LocalImagePayload? = nil
+  var error: LocalImageErrorCode? = nil
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> LocalImageResult? {
+    let payload: LocalImagePayload? = nilOrValue(pigeonVar_list[0])
+    let error: LocalImageErrorCode? = nilOrValue(pigeonVar_list[1])
+
+    return LocalImageResult(
+      payload: payload,
+      error: error
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      payload,
+      error,
+    ]
+  }
+  static func == (lhs: LocalImageResult, rhs: LocalImageResult) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return deepEqualsLocalImages(lhs.payload, rhs.payload) && deepEqualsLocalImages(lhs.error, rhs.error)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("LocalImageResult")
+    deepHashLocalImages(value: payload, hasher: &hasher)
+    deepHashLocalImages(value: error, hasher: &hasher)
+  }
+}
+
+/// Generated class from Pigeon that represents data sent in messages.
+struct LocalImageProgress: Hashable {
+  var requestId: Int64
+  var fraction: Double
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> LocalImageProgress? {
+    let requestId = pigeonVar_list[0] as! Int64
+    let fraction = pigeonVar_list[1] as! Double
+
+    return LocalImageProgress(
+      requestId: requestId,
+      fraction: fraction
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      requestId,
+      fraction,
+    ]
+  }
+  static func == (lhs: LocalImageProgress, rhs: LocalImageProgress) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return deepEqualsLocalImages(lhs.requestId, rhs.requestId) && deepEqualsLocalImages(lhs.fraction, rhs.fraction)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("LocalImageProgress")
+    deepHashLocalImages(value: requestId, hasher: &hasher)
+    deepHashLocalImages(value: fraction, hasher: &hasher)
+  }
+}
 
 private class LocalImagesPigeonCodecReader: FlutterStandardReader {
+  override func readValue(ofType type: UInt8) -> Any? {
+    switch type {
+    case 129:
+      let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
+      if let enumResultAsInt = enumResultAsInt {
+        return LocalImagePolicy(rawValue: enumResultAsInt)
+      }
+      return nil
+    case 130:
+      let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
+      if let enumResultAsInt = enumResultAsInt {
+        return LocalImageRequestKind(rawValue: enumResultAsInt)
+      }
+      return nil
+    case 131:
+      let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
+      if let enumResultAsInt = enumResultAsInt {
+        return LocalImageErrorCode(rawValue: enumResultAsInt)
+      }
+      return nil
+    case 132:
+      return LocalImageRequest.fromList(self.readValue() as! [Any?])
+    case 133:
+      return LocalImageThumbhashRequest.fromList(self.readValue() as! [Any?])
+    case 134:
+      return LocalImagePayload.fromList(self.readValue() as! [Any?])
+    case 135:
+      return LocalImageResult.fromList(self.readValue() as! [Any?])
+    case 136:
+      return LocalImageProgress.fromList(self.readValue() as! [Any?])
+    default:
+      return super.readValue(ofType: type)
+    }
+  }
 }
 
 private class LocalImagesPigeonCodecWriter: FlutterStandardWriter {
+  override func writeValue(_ value: Any) {
+    if let value = value as? LocalImagePolicy {
+      super.writeByte(129)
+      super.writeValue(value.rawValue)
+    } else if let value = value as? LocalImageRequestKind {
+      super.writeByte(130)
+      super.writeValue(value.rawValue)
+    } else if let value = value as? LocalImageErrorCode {
+      super.writeByte(131)
+      super.writeValue(value.rawValue)
+    } else if let value = value as? LocalImageRequest {
+      super.writeByte(132)
+      super.writeValue(value.toList())
+    } else if let value = value as? LocalImageThumbhashRequest {
+      super.writeByte(133)
+      super.writeValue(value.toList())
+    } else if let value = value as? LocalImagePayload {
+      super.writeByte(134)
+      super.writeValue(value.toList())
+    } else if let value = value as? LocalImageResult {
+      super.writeByte(135)
+      super.writeValue(value.toList())
+    } else if let value = value as? LocalImageProgress {
+      super.writeByte(136)
+      super.writeValue(value.toList())
+    } else {
+      super.writeValue(value)
+    }
+  }
 }
 
 private class LocalImagesPigeonCodecReaderWriter: FlutterStandardReaderWriter {
@@ -70,9 +492,11 @@ class LocalImagesPigeonCodec: FlutterStandardMessageCodec, @unchecked Sendable {
 
 /// Generated protocol from Pigeon that represents a handler of messages from Flutter.
 protocol LocalImageApi {
-  func requestImage(assetId: String, requestId: Int64, width: Int64, height: Int64, isVideo: Bool, preferEncoded: Bool, completion: @escaping (Result<[String: Int64]?, Error>) -> Void)
+  func requestImage(request: LocalImageRequest, completion: @escaping (Result<LocalImageResult, Error>) -> Void)
   func cancelRequest(requestId: Int64) throws
-  func getThumbhash(thumbhash: String, completion: @escaping (Result<[String: Int64], Error>) -> Void)
+  func cancelAll() throws
+  func dispose() throws
+  func getThumbhash(request: LocalImageThumbhashRequest, completion: @escaping (Result<LocalImageResult, Error>) -> Void)
 }
 
 /// Generated setup class from Pigeon to handle messages through the `binaryMessenger`.
@@ -85,13 +509,8 @@ class LocalImageApiSetup {
     if let api = api {
       requestImageChannel.setMessageHandler { message, reply in
         let args = message as! [Any?]
-        let assetIdArg = args[0] as! String
-        let requestIdArg = args[1] as! Int64
-        let widthArg = args[2] as! Int64
-        let heightArg = args[3] as! Int64
-        let isVideoArg = args[4] as! Bool
-        let preferEncodedArg = args[5] as! Bool
-        api.requestImage(assetId: assetIdArg, requestId: requestIdArg, width: widthArg, height: heightArg, isVideo: isVideoArg, preferEncoded: preferEncodedArg) { result in
+        let requestArg = args[0] as! LocalImageRequest
+        api.requestImage(request: requestArg) { result in
           switch result {
           case .success(let res):
             reply(wrapResult(res))
@@ -118,12 +537,38 @@ class LocalImageApiSetup {
     } else {
       cancelRequestChannel.setMessageHandler(nil)
     }
+    let cancelAllChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.immich_mobile.LocalImageApi.cancelAll\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      cancelAllChannel.setMessageHandler { _, reply in
+        do {
+          try api.cancelAll()
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      cancelAllChannel.setMessageHandler(nil)
+    }
+    let disposeChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.immich_mobile.LocalImageApi.dispose\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      disposeChannel.setMessageHandler { _, reply in
+        do {
+          try api.dispose()
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      disposeChannel.setMessageHandler(nil)
+    }
     let getThumbhashChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.immich_mobile.LocalImageApi.getThumbhash\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {
       getThumbhashChannel.setMessageHandler { message, reply in
         let args = message as! [Any?]
-        let thumbhashArg = args[0] as! String
-        api.getThumbhash(thumbhash: thumbhashArg) { result in
+        let requestArg = args[0] as! LocalImageThumbhashRequest
+        api.getThumbhash(request: requestArg) { result in
           switch result {
           case .success(let res):
             reply(wrapResult(res))
@@ -134,6 +579,39 @@ class LocalImageApiSetup {
       }
     } else {
       getThumbhashChannel.setMessageHandler(nil)
+    }
+  }
+}
+/// Generated protocol from Pigeon that represents Flutter messages that can be called from Swift.
+protocol LocalImageFlutterApiProtocol {
+  func onProgress(progress progressArg: LocalImageProgress, completion: @escaping (Result<Void, PigeonError>) -> Void)
+}
+class LocalImageFlutterApi: LocalImageFlutterApiProtocol {
+  private let binaryMessenger: FlutterBinaryMessenger
+  private let messageChannelSuffix: String
+  init(binaryMessenger: FlutterBinaryMessenger, messageChannelSuffix: String = "") {
+    self.binaryMessenger = binaryMessenger
+    self.messageChannelSuffix = messageChannelSuffix.count > 0 ? ".\(messageChannelSuffix)" : ""
+  }
+  var codec: LocalImagesPigeonCodec {
+    return LocalImagesPigeonCodec.shared
+  }
+  func onProgress(progress progressArg: LocalImageProgress, completion: @escaping (Result<Void, PigeonError>) -> Void) {
+    let channelName: String = "dev.flutter.pigeon.immich_mobile.LocalImageFlutterApi.onProgress\(messageChannelSuffix)"
+    let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
+    channel.sendMessage([progressArg] as [Any?]) { response in
+      guard let listResponse = response as? [Any?] else {
+        completion(.failure(createConnectionError(withChannelName: channelName)))
+        return
+      }
+      if listResponse.count > 1 {
+        let code: String = listResponse[0] as! String
+        let message: String? = nilOrValue(listResponse[1])
+        let details: String? = nilOrValue(listResponse[2])
+        completion(.failure(PigeonError(code: code, message: message, details: details)))
+      } else {
+        completion(.success(()))
+      }
     }
   }
 }

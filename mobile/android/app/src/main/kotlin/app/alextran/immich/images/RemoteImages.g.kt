@@ -34,22 +34,497 @@ private object RemoteImagesPigeonUtils {
       )
     }
   }
+  fun doubleEquals(a: Double, b: Double): Boolean {
+    // Normalize -0.0 to 0.0 and handle NaN equality.
+    return (if (a == 0.0) 0.0 else a) == (if (b == 0.0) 0.0 else b) || (a.isNaN() && b.isNaN())
+  }
+
+  fun floatEquals(a: Float, b: Float): Boolean {
+    // Normalize -0.0 to 0.0 and handle NaN equality.
+    return (if (a == 0.0f) 0.0f else a) == (if (b == 0.0f) 0.0f else b) || (a.isNaN() && b.isNaN())
+  }
+
+  fun doubleHash(d: Double): Int {
+    // Normalize -0.0 to 0.0 and handle NaN to ensure consistent hash codes.
+    val normalized = if (d == 0.0) 0.0 else d
+    val bits = java.lang.Double.doubleToLongBits(normalized)
+    return (bits xor (bits ushr 32)).toInt()
+  }
+
+  fun floatHash(f: Float): Int {
+    // Normalize -0.0 to 0.0 and handle NaN to ensure consistent hash codes.
+    val normalized = if (f == 0.0f) 0.0f else f
+    return java.lang.Float.floatToIntBits(normalized)
+  }
+
+  fun deepEquals(a: Any?, b: Any?): Boolean {
+    if (a === b) {
+      return true
+    }
+    if (a == null || b == null) {
+      return false
+    }
+    if (a is ByteArray && b is ByteArray) {
+      return a.contentEquals(b)
+    }
+    if (a is IntArray && b is IntArray) {
+      return a.contentEquals(b)
+    }
+    if (a is LongArray && b is LongArray) {
+      return a.contentEquals(b)
+    }
+    if (a is DoubleArray && b is DoubleArray) {
+      if (a.size != b.size) return false
+      for (i in a.indices) {
+        if (!doubleEquals(a[i], b[i])) return false
+      }
+      return true
+    }
+    if (a is FloatArray && b is FloatArray) {
+      if (a.size != b.size) return false
+      for (i in a.indices) {
+        if (!floatEquals(a[i], b[i])) return false
+      }
+      return true
+    }
+    if (a is Array<*> && b is Array<*>) {
+      if (a.size != b.size) return false
+      for (i in a.indices) {
+        if (!deepEquals(a[i], b[i])) return false
+      }
+      return true
+    }
+    if (a is List<*> && b is List<*>) {
+      if (a.size != b.size) return false
+      val iterA = a.iterator()
+      val iterB = b.iterator()
+      while (iterA.hasNext() && iterB.hasNext()) {
+        if (!deepEquals(iterA.next(), iterB.next())) return false
+      }
+      return true
+    }
+    if (a is Map<*, *> && b is Map<*, *>) {
+      if (a.size != b.size) return false
+      for (entry in a) {
+        val key = entry.key
+        var found = false
+        for (bEntry in b) {
+          if (deepEquals(key, bEntry.key)) {
+            if (deepEquals(entry.value, bEntry.value)) {
+              found = true
+              break
+            } else {
+              return false
+            }
+          }
+        }
+        if (!found) return false
+      }
+      return true
+    }
+    if (a is Double && b is Double) {
+      return doubleEquals(a, b)
+    }
+    if (a is Float && b is Float) {
+      return floatEquals(a, b)
+    }
+    return a == b
+  }
+
+  fun deepHash(value: Any?): Int {
+    return when (value) {
+      null -> 0
+      is ByteArray -> value.contentHashCode()
+      is IntArray -> value.contentHashCode()
+      is LongArray -> value.contentHashCode()
+      is DoubleArray -> {
+        var result = 1
+        for (item in value) {
+          result = 31 * result + doubleHash(item)
+        }
+        result
+      }
+      is FloatArray -> {
+        var result = 1
+        for (item in value) {
+          result = 31 * result + floatHash(item)
+        }
+        result
+      }
+      is Array<*> -> {
+        var result = 1
+        for (item in value) {
+          result = 31 * result + deepHash(item)
+        }
+        result
+      }
+      is List<*> -> {
+        var result = 1
+        for (item in value) {
+          result = 31 * result + deepHash(item)
+        }
+        result
+      }
+      is Map<*, *> -> {
+        var result = 0
+        for (entry in value) {
+          result += ((deepHash(entry.key) * 31) xor deepHash(entry.value))
+        }
+        result
+      }
+      is Double -> doubleHash(value)
+      is Float -> floatHash(value)
+      else -> value.hashCode()
+    }
+  }
+
+}
+
+enum class RemoteImagePolicy(val raw: Int) {
+  CACHE_ONLY(0),
+  CACHE_THEN_NETWORK(1);
+
+  companion object {
+    fun ofRaw(raw: Int): RemoteImagePolicy? {
+      return values().firstOrNull { it.raw == raw }
+    }
+  }
+}
+
+enum class RemoteImageRequestKind(val raw: Int) {
+  THUMBNAIL(0),
+  ORIGINAL(1);
+
+  companion object {
+    fun ofRaw(raw: Int): RemoteImageRequestKind? {
+      return values().firstOrNull { it.raw == raw }
+    }
+  }
+}
+
+enum class RemoteImageErrorCode(val raw: Int) {
+  CACHE_MISS(0),
+  MEDIA_NOT_LOCAL(1),
+  I_CLOUD_UNAVAILABLE(2),
+  CANCELLED(3),
+  TIMEOUT(4),
+  SERVER_UNAVAILABLE(5),
+  WRONG_SERVER(6),
+  UNAUTHORIZED(7);
+
+  companion object {
+    fun ofRaw(raw: Int): RemoteImageErrorCode? {
+      return values().firstOrNull { it.raw == raw }
+    }
+  }
+}
+
+/** Generated class from Pigeon that represents data sent in messages. */
+data class RemoteImageRequest (
+  val url: String,
+  val origin: String,
+  val requestId: Long,
+  val preferEncoded: Boolean,
+  val policy: RemoteImagePolicy,
+  val kind: RemoteImageRequestKind
+)
+ {
+  companion object {
+    fun fromList(pigeonVar_list: List<Any?>): RemoteImageRequest {
+      val url = pigeonVar_list[0] as String
+      val origin = pigeonVar_list[1] as String
+      val requestId = pigeonVar_list[2] as Long
+      val preferEncoded = pigeonVar_list[3] as Boolean
+      val policy = pigeonVar_list[4] as RemoteImagePolicy
+      val kind = pigeonVar_list[5] as RemoteImageRequestKind
+      return RemoteImageRequest(url, origin, requestId, preferEncoded, policy, kind)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf(
+      url,
+      origin,
+      requestId,
+      preferEncoded,
+      policy,
+      kind,
+    )
+  }
+  override fun equals(other: Any?): Boolean {
+    if (other == null || other.javaClass != javaClass) {
+      return false
+    }
+    if (this === other) {
+      return true
+    }
+    val other = other as RemoteImageRequest
+    return RemoteImagesPigeonUtils.deepEquals(this.url, other.url) && RemoteImagesPigeonUtils.deepEquals(this.origin, other.origin) && RemoteImagesPigeonUtils.deepEquals(this.requestId, other.requestId) && RemoteImagesPigeonUtils.deepEquals(this.preferEncoded, other.preferEncoded) && RemoteImagesPigeonUtils.deepEquals(this.policy, other.policy) && RemoteImagesPigeonUtils.deepEquals(this.kind, other.kind)
+  }
+
+  override fun hashCode(): Int {
+    var result = javaClass.hashCode()
+    result = 31 * result + RemoteImagesPigeonUtils.deepHash(this.url)
+    result = 31 * result + RemoteImagesPigeonUtils.deepHash(this.origin)
+    result = 31 * result + RemoteImagesPigeonUtils.deepHash(this.requestId)
+    result = 31 * result + RemoteImagesPigeonUtils.deepHash(this.preferEncoded)
+    result = 31 * result + RemoteImagesPigeonUtils.deepHash(this.policy)
+    result = 31 * result + RemoteImagesPigeonUtils.deepHash(this.kind)
+    return result
+  }
+}
+
+/** Generated class from Pigeon that represents data sent in messages. */
+data class RemoteImagePayload (
+  val pointer: Long,
+  val length: Long? = null,
+  val width: Long? = null,
+  val height: Long? = null,
+  val rowBytes: Long? = null
+)
+ {
+  companion object {
+    fun fromList(pigeonVar_list: List<Any?>): RemoteImagePayload {
+      val pointer = pigeonVar_list[0] as Long
+      val length = pigeonVar_list[1] as Long?
+      val width = pigeonVar_list[2] as Long?
+      val height = pigeonVar_list[3] as Long?
+      val rowBytes = pigeonVar_list[4] as Long?
+      return RemoteImagePayload(pointer, length, width, height, rowBytes)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf(
+      pointer,
+      length,
+      width,
+      height,
+      rowBytes,
+    )
+  }
+  override fun equals(other: Any?): Boolean {
+    if (other == null || other.javaClass != javaClass) {
+      return false
+    }
+    if (this === other) {
+      return true
+    }
+    val other = other as RemoteImagePayload
+    return RemoteImagesPigeonUtils.deepEquals(this.pointer, other.pointer) && RemoteImagesPigeonUtils.deepEquals(this.length, other.length) && RemoteImagesPigeonUtils.deepEquals(this.width, other.width) && RemoteImagesPigeonUtils.deepEquals(this.height, other.height) && RemoteImagesPigeonUtils.deepEquals(this.rowBytes, other.rowBytes)
+  }
+
+  override fun hashCode(): Int {
+    var result = javaClass.hashCode()
+    result = 31 * result + RemoteImagesPigeonUtils.deepHash(this.pointer)
+    result = 31 * result + RemoteImagesPigeonUtils.deepHash(this.length)
+    result = 31 * result + RemoteImagesPigeonUtils.deepHash(this.width)
+    result = 31 * result + RemoteImagesPigeonUtils.deepHash(this.height)
+    result = 31 * result + RemoteImagesPigeonUtils.deepHash(this.rowBytes)
+    return result
+  }
+}
+
+/** Generated class from Pigeon that represents data sent in messages. */
+data class RemoteImageResult (
+  val payload: RemoteImagePayload? = null,
+  val error: RemoteImageErrorCode? = null
+)
+ {
+  companion object {
+    fun fromList(pigeonVar_list: List<Any?>): RemoteImageResult {
+      val payload = pigeonVar_list[0] as RemoteImagePayload?
+      val error = pigeonVar_list[1] as RemoteImageErrorCode?
+      return RemoteImageResult(payload, error)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf(
+      payload,
+      error,
+    )
+  }
+  override fun equals(other: Any?): Boolean {
+    if (other == null || other.javaClass != javaClass) {
+      return false
+    }
+    if (this === other) {
+      return true
+    }
+    val other = other as RemoteImageResult
+    return RemoteImagesPigeonUtils.deepEquals(this.payload, other.payload) && RemoteImagesPigeonUtils.deepEquals(this.error, other.error)
+  }
+
+  override fun hashCode(): Int {
+    var result = javaClass.hashCode()
+    result = 31 * result + RemoteImagesPigeonUtils.deepHash(this.payload)
+    result = 31 * result + RemoteImagesPigeonUtils.deepHash(this.error)
+    return result
+  }
+}
+
+/** Generated class from Pigeon that represents data sent in messages. */
+data class RemoteImageCacheClearRequest (
+  val requestId: Long
+)
+ {
+  companion object {
+    fun fromList(pigeonVar_list: List<Any?>): RemoteImageCacheClearRequest {
+      val requestId = pigeonVar_list[0] as Long
+      return RemoteImageCacheClearRequest(requestId)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf(
+      requestId,
+    )
+  }
+  override fun equals(other: Any?): Boolean {
+    if (other == null || other.javaClass != javaClass) {
+      return false
+    }
+    if (this === other) {
+      return true
+    }
+    val other = other as RemoteImageCacheClearRequest
+    return RemoteImagesPigeonUtils.deepEquals(this.requestId, other.requestId)
+  }
+
+  override fun hashCode(): Int {
+    var result = javaClass.hashCode()
+    result = 31 * result + RemoteImagesPigeonUtils.deepHash(this.requestId)
+    return result
+  }
+}
+
+/** Generated class from Pigeon that represents data sent in messages. */
+data class RemoteImageCacheClearResult (
+  val clearedBytes: Long? = null,
+  val error: RemoteImageErrorCode? = null
+)
+ {
+  companion object {
+    fun fromList(pigeonVar_list: List<Any?>): RemoteImageCacheClearResult {
+      val clearedBytes = pigeonVar_list[0] as Long?
+      val error = pigeonVar_list[1] as RemoteImageErrorCode?
+      return RemoteImageCacheClearResult(clearedBytes, error)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf(
+      clearedBytes,
+      error,
+    )
+  }
+  override fun equals(other: Any?): Boolean {
+    if (other == null || other.javaClass != javaClass) {
+      return false
+    }
+    if (this === other) {
+      return true
+    }
+    val other = other as RemoteImageCacheClearResult
+    return RemoteImagesPigeonUtils.deepEquals(this.clearedBytes, other.clearedBytes) && RemoteImagesPigeonUtils.deepEquals(this.error, other.error)
+  }
+
+  override fun hashCode(): Int {
+    var result = javaClass.hashCode()
+    result = 31 * result + RemoteImagesPigeonUtils.deepHash(this.clearedBytes)
+    result = 31 * result + RemoteImagesPigeonUtils.deepHash(this.error)
+    return result
+  }
 }
 private open class RemoteImagesPigeonCodec : StandardMessageCodec() {
   override fun readValueOfType(type: Byte, buffer: ByteBuffer): Any? {
-    return     super.readValueOfType(type, buffer)
+    return when (type) {
+      129.toByte() -> {
+        return (readValue(buffer) as Long?)?.let {
+          RemoteImagePolicy.ofRaw(it.toInt())
+        }
+      }
+      130.toByte() -> {
+        return (readValue(buffer) as Long?)?.let {
+          RemoteImageRequestKind.ofRaw(it.toInt())
+        }
+      }
+      131.toByte() -> {
+        return (readValue(buffer) as Long?)?.let {
+          RemoteImageErrorCode.ofRaw(it.toInt())
+        }
+      }
+      132.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          RemoteImageRequest.fromList(it)
+        }
+      }
+      133.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          RemoteImagePayload.fromList(it)
+        }
+      }
+      134.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          RemoteImageResult.fromList(it)
+        }
+      }
+      135.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          RemoteImageCacheClearRequest.fromList(it)
+        }
+      }
+      136.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          RemoteImageCacheClearResult.fromList(it)
+        }
+      }
+      else -> super.readValueOfType(type, buffer)
+    }
   }
   override fun writeValue(stream: ByteArrayOutputStream, value: Any?)   {
-    super.writeValue(stream, value)
+    when (value) {
+      is RemoteImagePolicy -> {
+        stream.write(129)
+        writeValue(stream, value.raw.toLong())
+      }
+      is RemoteImageRequestKind -> {
+        stream.write(130)
+        writeValue(stream, value.raw.toLong())
+      }
+      is RemoteImageErrorCode -> {
+        stream.write(131)
+        writeValue(stream, value.raw.toLong())
+      }
+      is RemoteImageRequest -> {
+        stream.write(132)
+        writeValue(stream, value.toList())
+      }
+      is RemoteImagePayload -> {
+        stream.write(133)
+        writeValue(stream, value.toList())
+      }
+      is RemoteImageResult -> {
+        stream.write(134)
+        writeValue(stream, value.toList())
+      }
+      is RemoteImageCacheClearRequest -> {
+        stream.write(135)
+        writeValue(stream, value.toList())
+      }
+      is RemoteImageCacheClearResult -> {
+        stream.write(136)
+        writeValue(stream, value.toList())
+      }
+      else -> super.writeValue(stream, value)
+    }
   }
 }
 
 
 /** Generated interface from Pigeon that represents a handler of messages from Flutter. */
 interface RemoteImageApi {
-  fun requestImage(url: String, requestId: Long, preferEncoded: Boolean, callback: (Result<Map<String, Long>?>) -> Unit)
+  fun requestImage(request: RemoteImageRequest, callback: (Result<RemoteImageResult>) -> Unit)
   fun cancelRequest(requestId: Long)
-  fun clearCache(callback: (Result<Long>) -> Unit)
+  fun cancelAll()
+  fun dispose()
+  fun clearCache(request: RemoteImageCacheClearRequest, callback: (Result<RemoteImageCacheClearResult>) -> Unit)
 
   companion object {
     /** The codec used by RemoteImageApi. */
@@ -65,10 +540,8 @@ interface RemoteImageApi {
         if (api != null) {
           channel.setMessageHandler { message, reply ->
             val args = message as List<Any?>
-            val urlArg = args[0] as String
-            val requestIdArg = args[1] as Long
-            val preferEncodedArg = args[2] as Boolean
-            api.requestImage(urlArg, requestIdArg, preferEncodedArg) { result: Result<Map<String, Long>?> ->
+            val requestArg = args[0] as RemoteImageRequest
+            api.requestImage(requestArg) { result: Result<RemoteImageResult> ->
               val error = result.exceptionOrNull()
               if (error != null) {
                 reply.reply(RemoteImagesPigeonUtils.wrapError(error))
@@ -101,10 +574,44 @@ interface RemoteImageApi {
         }
       }
       run {
-        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.immich_mobile.RemoteImageApi.clearCache$separatedMessageChannelSuffix", codec)
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.immich_mobile.RemoteImageApi.cancelAll$separatedMessageChannelSuffix", codec)
         if (api != null) {
           channel.setMessageHandler { _, reply ->
-            api.clearCache{ result: Result<Long> ->
+            val wrapped: List<Any?> = try {
+              api.cancelAll()
+              listOf(null)
+            } catch (exception: Throwable) {
+              RemoteImagesPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.immich_mobile.RemoteImageApi.dispose$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { _, reply ->
+            val wrapped: List<Any?> = try {
+              api.dispose()
+              listOf(null)
+            } catch (exception: Throwable) {
+              RemoteImagesPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.immich_mobile.RemoteImageApi.clearCache$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val requestArg = args[0] as RemoteImageCacheClearRequest
+            api.clearCache(requestArg) { result: Result<RemoteImageCacheClearResult> ->
               val error = result.exceptionOrNull()
               if (error != null) {
                 reply.reply(RemoteImagesPigeonUtils.wrapError(error))
