@@ -127,8 +127,9 @@ private final class ProbeHttpRequestOperation: @unchecked Sendable {
     }
   }
 
-  func allowRedirect(to url: URL) -> Bool {
+  func prepareRedirect(from taskIdentifier: Int, to url: URL) -> Bool? {
     state.withLock { state in
+      guard state.task?.taskIdentifier == taskIdentifier else { return nil }
       guard
         ProbeHttpOrigin(url: url) == origin,
         state.redirectChain.count < probeMaximumRedirects
@@ -137,6 +138,8 @@ private final class ProbeHttpRequestOperation: @unchecked Sendable {
         return false
       }
       state.redirectChain.append(url)
+      state.response = nil
+      state.data.removeAll(keepingCapacity: true)
       return true
     }
   }
@@ -283,6 +286,10 @@ private final class ProbeHttpSession: NSObject, URLSessionDataDelegate, @uncheck
       completionHandler(.cancel)
       return
     }
+    if handleRedirect(response: response, task: dataTask) {
+      completionHandler(.cancel)
+      return
+    }
     operation.receive(response: response)
     completionHandler(.allow)
   }
@@ -301,15 +308,46 @@ private final class ProbeHttpSession: NSObject, URLSessionDataDelegate, @uncheck
     newRequest request: URLRequest,
     completionHandler: @escaping (URLRequest?) -> Void
   ) {
+    _ = handleRedirect(response: response, task: task, proposedURL: request.url)
+    completionHandler(nil)
+  }
+
+  private func handleRedirect(
+    response: HTTPURLResponse,
+    task: URLSessionTask,
+    proposedURL: URL? = nil
+  ) -> Bool {
+    guard (300..<400).contains(response.statusCode) else { return false }
     guard
       let operation = operationsByTask.withLock({ $0[task.taskIdentifier] }),
-      let redirectURL = request.url,
-      operation.allowRedirect(to: redirectURL)
+      let redirectURL = proposedURL ?? redirectURL(from: response, task: task),
+      let shouldFollow = operation.prepareRedirect(
+        from: task.taskIdentifier,
+        to: redirectURL
+      )
     else {
-      completionHandler(nil)
-      return
+      return false
     }
-    completionHandler(ProbeHttpHeaderPolicy.sanitize(request))
+    guard shouldFollow else { return true }
+
+    operationsByTask.withLock { $0.removeValue(forKey: task.taskIdentifier) }
+    var redirectedRequest =
+      task.currentRequest ?? task.originalRequest ?? URLRequest(url: redirectURL)
+    redirectedRequest.url = redirectURL
+    redirectedRequest.cachePolicy = .reloadIgnoringLocalCacheData
+    let sanitizedRequest = ProbeHttpHeaderPolicy.sanitize(redirectedRequest)
+    let redirectedTask = session.dataTask(with: sanitizedRequest)
+    operationsByTask.withLock { $0[redirectedTask.taskIdentifier] = operation }
+    operation.start(redirectedTask)
+    return true
+  }
+
+  private func redirectURL(from response: HTTPURLResponse, task: URLSessionTask) -> URL? {
+    guard
+      let location = response.value(forHTTPHeaderField: "Location"),
+      let baseURL = response.url ?? task.currentRequest?.url ?? task.originalRequest?.url
+    else { return nil }
+    return URL(string: location, relativeTo: baseURL)?.absoluteURL
   }
 
   func urlSession(
