@@ -4,6 +4,7 @@
   import SearchBar from '$lib/elements/SearchBar.svelte';
   import { getPeopleThumbnailUrl } from '$lib/utils';
   import { handleError } from '$lib/utils/handle-error';
+  import { orderPeopleByPreference, rememberPersonSelection } from '$lib/utils/person-preferences';
   import { getAllPeople, type PersonResponseDto } from '@immich/sdk';
   import { Button, LoadingSpinner, Text } from '@immich/ui';
   import { mdiArrowRight, mdiClose } from '@mdi/js';
@@ -23,16 +24,13 @@
   let numberOfPeople = $state(1);
 
   function orderBySelectedPeopleFirst(people: PersonResponseDto[]) {
-    return [
-      ...people.filter((p) => selectedPeople.has(p.id)), //
-      ...people.filter((p) => !selectedPeople.has(p.id)),
-    ];
+    return orderPeopleByPreference(people, { selectedIds: selectedPeople, selectedFirst: true });
   }
 
   async function getPeople() {
     try {
       const res = await getAllPeople({ withHidden: false });
-      return orderBySelectedPeopleFirst(res.people);
+      return res.people;
     } catch (error) {
       handleError(error, $t('errors.failed_to_get_people'));
     }
@@ -43,6 +41,7 @@
       selectedPeople.delete(id);
     } else {
       selectedPeople.add(id);
+      rememberPersonSelection(id);
     }
   }
 
@@ -68,9 +67,10 @@
   </div>
 {:then people}
   {#if people && people.length > 0}
+    {@const orderedPeople = orderBySelectedPeopleFirst(people)}
     {@const peopleList = showAllPeople
-      ? filterPeople(people, name)
-      : filterPeople(people, name).slice(0, numberOfPeople)}
+      ? filterPeople(orderedPeople, name)
+      : filterPeople(orderedPeople, name).slice(0, numberOfPeople)}
 
     <div id="people-selection" class="max-h-60 -mb-4 overflow-y-auto immich-scrollbar">
       <div class="flex items-center w-full justify-between gap-6">

@@ -30,7 +30,7 @@ const int kTimelineAssetLoadBatchSize = 1024;
 const int kTimelineAssetLoadOppositeSize = 64;
 
 // Widget keys
-const String appShareGroupId = "group.app.immich.share";
+const String appShareGroupId = "group.com.nacholarreta.nachofotos.share";
 const String kWidgetAuthToken = "widget_auth_token";
 const String kWidgetServerEndpoint = "widget_server_url";
 const String kWidgetCustomHeaders = "widget_custom_headers";
@@ -45,7 +45,7 @@ const List<(String, String)> kWidgetNames = [
 
 const int kMinMonthsToEnableScrubberSnap = 12;
 
-const String kImmichAppStoreLink = "https://apps.apple.com/app/immich/id1613945652";
+const String kImmichAppStoreLink = "https://apps.apple.com/app/id6766126877";
 const String kImmichPlayStoreLink = "https://play.google.com/store/apps/details?id=app.alextran.immich";
 const String kImmichLatestRelease = "https://github.com/immich-app/immich/releases/latest";
 

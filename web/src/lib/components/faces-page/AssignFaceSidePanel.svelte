@@ -4,6 +4,7 @@
   import { assetViewerManager } from '$lib/managers/asset-viewer-manager.svelte';
   import { getPeopleThumbnailUrl, handlePromiseError } from '$lib/utils';
   import { handleError } from '$lib/utils/handle-error';
+  import { orderPeopleByPreference, rememberPersonSelection } from '$lib/utils/person-preferences';
   import { zoomImageToBase64 } from '$lib/utils/people-utils';
   import { getPersonNameWithHiddenValue } from '$lib/utils/person';
   import { AssetTypeEnum, getAllPeople, type AssetFaceResponseDto, type PersonResponseDto } from '@immich/sdk';
@@ -55,7 +56,9 @@
   let searchFaces = $state(false);
   let searchName = $state('');
 
-  let showPeople = $derived(searchName ? searchedPeople : allPeople.filter((person) => !person.isHidden));
+  let showPeople = $derived(
+    orderPeopleByPreference(searchName ? searchedPeople : allPeople.filter((person) => !person.isHidden)),
+  );
   let trimmedNewPersonName = $derived(newPersonName.trim());
 
   onMount(() => {
@@ -91,6 +94,11 @@
     }
 
     onCreatePerson({ name: trimmedNewPersonName, featurePhoto: newPersonFeaturePhoto });
+  };
+
+  const handleReassignPerson = (person: PersonResponseDto) => {
+    rememberPersonSelection(person.id);
+    onReassign(person);
   };
 </script>
 
@@ -238,7 +246,7 @@
           {#each showPeople as person (person.id)}
             {#if !editedFace.person || person.id !== editedFace.person.id}
               <div class="w-fit">
-                <button type="button" class="w-22.5" onclick={() => onReassign(person)}>
+                <button type="button" class="w-22.5" onclick={() => handleReassignPerson(person)}>
                   <div class="relative">
                     <ImageThumbnail
                       curve

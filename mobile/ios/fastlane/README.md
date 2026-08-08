@@ -31,6 +31,22 @@ iOS Development Build to TestFlight (requires separate bundle ID)
 
 iOS Release to TestFlight
 
+### ios nacho_latest_prod_build
+
+```sh
+[bundle exec] fastlane ios nacho_latest_prod_build
+```
+
+Print latest Nacho Fotos TestFlight build
+
+### ios nacho_upload_current_prod
+
+```sh
+[bundle exec] fastlane ios nacho_upload_current_prod
+```
+
+Upload the already configured Nacho Fotos release build to TestFlight
+
 ### ios release_manual
 
 ```sh

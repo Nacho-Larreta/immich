@@ -3,6 +3,7 @@
   import SearchBar from '$lib/elements/SearchBar.svelte';
   import { getPeopleThumbnailUrl } from '$lib/utils';
   import { handleError } from '$lib/utils/handle-error';
+  import { orderPeopleByPreference, rememberPersonSelection } from '$lib/utils/person-preferences';
   import { getAllPeople, type PersonResponseDto } from '@immich/sdk';
   import { Button, HStack, LoadingSpinner, Modal, ModalBody, ModalFooter } from '@immich/ui';
   import { onMount } from 'svelte';
@@ -22,9 +23,11 @@
   let selectedPeople: PersonResponseDto[] = $state([]);
 
   const filteredPeople = $derived(
-    people
-      .filter((person) => !excludedIds.includes(person.id))
-      .filter((person) => !searchName || person.name.toLowerCase().includes(searchName.toLowerCase())),
+    orderPeopleByPreference(
+      people
+        .filter((person) => !excludedIds.includes(person.id))
+        .filter((person) => !searchName || person.name.toLowerCase().includes(searchName.toLowerCase())),
+    ),
   );
 
   onMount(async () => {
@@ -43,12 +46,16 @@
       const index = selectedPeople.findIndex((p) => p.id === person.id);
       selectedPeople = index === -1 ? [...selectedPeople, person] : selectedPeople.filter((p) => p.id !== person.id);
     } else {
+      rememberPersonSelection(person.id);
       onClose([person]);
     }
   };
 
   const handleSubmit = () => {
     if (selectedPeople.length > 0) {
+      for (const person of selectedPeople) {
+        rememberPersonSelection(person.id);
+      }
       onClose(selectedPeople);
     } else {
       onClose();

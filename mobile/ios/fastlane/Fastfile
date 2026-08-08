@@ -17,9 +17,9 @@ default_platform(:ios)
 
 platform :ios do
   # Constants
-  TEAM_ID = "2F67MQ8R79"
-  CODE_SIGN_IDENTITY = "Apple Distribution: Hau Tran (#{TEAM_ID})"
-  BASE_BUNDLE_ID = "app.alextran.immich"
+  TEAM_ID = ENV["FASTLANE_TEAM_ID"] || "32NS8MR6UA"
+  CODE_SIGN_IDENTITY = ENV["FASTLANE_CODE_SIGN_IDENTITY"] || "Apple Distribution"
+  BASE_BUNDLE_ID = "com.nacholarreta.nachofotos"
   
   # Helper method to get App Store Connect API key
   def get_api_key
@@ -75,7 +75,7 @@ end
       path: "./Runner.xcodeproj",
       team_id: ENV["FASTLANE_TEAM_ID"] || TEAM_ID,
       code_sign_identity: CODE_SIGN_IDENTITY,
-      bundle_identifier: "#{BASE_BUNDLE_ID}#{bundle_suffix}.Widget",
+      bundle_identifier: "#{BASE_BUNDLE_ID}#{bundle_suffix}.WidgetExtension",
       profile_name: profile_name_widget,
       targets: ["WidgetExtension"]
     )
@@ -120,7 +120,7 @@ end
         provisioningProfiles: {
           "#{app_identifier}" => profile_name_main,
           "#{app_identifier}.ShareExtension" => profile_name_share,
-          "#{app_identifier}.Widget" => profile_name_widget
+          "#{app_identifier}.WidgetExtension" => profile_name_widget
         },
         signingStyle: "manual",
         signingCertificate: CODE_SIGN_IDENTITY
@@ -148,7 +148,7 @@ end
     sigh(api_key: api_key, app_identifier: "#{BASE_BUNDLE_ID}.development.ShareExtension", force: true)
     share_profile_name = lane_context[SharedValues::SIGH_NAME]
     
-    sigh(api_key: api_key, app_identifier: "#{BASE_BUNDLE_ID}.development.Widget", force: true)
+    sigh(api_key: api_key, app_identifier: "#{BASE_BUNDLE_ID}.development.WidgetExtension", force: true)
     widget_profile_name = lane_context[SharedValues::SIGH_NAME]
     
     # Configure code signing for dev bundle IDs using the downloaded profile names
@@ -183,7 +183,7 @@ end
     sigh(api_key: api_key, app_identifier: "#{BASE_BUNDLE_ID}.ShareExtension", force: true)
     share_profile_name = lane_context[SharedValues::SIGH_NAME]
     
-    sigh(api_key: api_key, app_identifier: "#{BASE_BUNDLE_ID}.Widget", force: true)
+    sigh(api_key: api_key, app_identifier: "#{BASE_BUNDLE_ID}.WidgetExtension", force: true)
     widget_profile_name = lane_context[SharedValues::SIGH_NAME]
     
     
@@ -202,6 +202,84 @@ end
       profile_name_main: main_profile_name,
       profile_name_share: share_profile_name,
       profile_name_widget: widget_profile_name
+    )
+  end
+
+  desc "Print latest Nacho Fotos TestFlight build"
+  lane :nacho_latest_prod_build do
+    api_key = get_api_key
+
+    latest_build = latest_testflight_build_number(
+      api_key: api_key,
+      app_identifier: BASE_BUNDLE_ID
+    )
+
+    UI.message("Latest TestFlight build for #{BASE_BUNDLE_ID}: #{latest_build}")
+  end
+
+  desc "Upload the already configured Nacho Fotos release build to TestFlight"
+  lane :nacho_upload_current_prod do
+    api_key = get_api_key
+
+    expected_version = ENV["EXPECTED_VERSION"] || "2.7.5"
+    expected_build = ENV["EXPECTED_BUILD_NUMBER"] || "241"
+    expected_previous_build = ENV["EXPECTED_PREVIOUS_BUILD_NUMBER"] || "240"
+
+    current_version = get_version_number(xcodeproj: "./Runner.xcodeproj", target: "Runner")
+    current_build = get_build_number(xcodeproj: "./Runner.xcodeproj")
+    latest_build = latest_testflight_build_number(
+      api_key: api_key,
+      app_identifier: BASE_BUNDLE_ID
+    ).to_s
+
+    UI.user_error!("Expected version #{expected_version}, got #{current_version}") unless current_version == expected_version
+    UI.user_error!("Expected build #{expected_build}, got #{current_build}") unless current_build == expected_build
+    UI.user_error!("Expected latest TestFlight build #{expected_previous_build}, got #{latest_build}") unless latest_build == expected_previous_build
+
+    cert(
+      api_key: api_key,
+      development: false,
+      generate_apple_certs: true,
+      output_path: "/tmp/immich-fastlane-certificates"
+    )
+
+    sigh(api_key: api_key, app_identifier: BASE_BUNDLE_ID, force: true)
+    main_profile_name = lane_context[SharedValues::SIGH_NAME]
+
+    sigh(api_key: api_key, app_identifier: "#{BASE_BUNDLE_ID}.ShareExtension", force: true)
+    share_profile_name = lane_context[SharedValues::SIGH_NAME]
+
+    sigh(api_key: api_key, app_identifier: "#{BASE_BUNDLE_ID}.WidgetExtension", force: true)
+    widget_profile_name = lane_context[SharedValues::SIGH_NAME]
+
+    configure_code_signing(
+      profile_name_main: main_profile_name,
+      profile_name_share: share_profile_name,
+      profile_name_widget: widget_profile_name
+    )
+
+    build_app(
+      scheme: "Runner",
+      workspace: "Runner.xcworkspace",
+      configuration: "Release",
+      export_method: "app-store",
+      xcargs: "-skipMacroValidation DEVELOPMENT_TEAM='#{TEAM_ID}' CODE_SIGN_IDENTITY='#{CODE_SIGN_IDENTITY}' CODE_SIGN_STYLE=Manual",
+      export_options: {
+        provisioningProfiles: {
+          BASE_BUNDLE_ID => main_profile_name,
+          "#{BASE_BUNDLE_ID}.ShareExtension" => share_profile_name,
+          "#{BASE_BUNDLE_ID}.WidgetExtension" => widget_profile_name
+        },
+        signingStyle: "manual",
+        signingCertificate: CODE_SIGN_IDENTITY
+      }
+    )
+
+    upload_to_testflight(
+      api_key: api_key,
+      app_identifier: BASE_BUNDLE_ID,
+      skip_waiting_for_build_processing: true,
+      distribute_external: false
     )
   end
 

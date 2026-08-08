@@ -33,6 +33,12 @@
   let showVerticalDots = $state(false);
 
   const { SetDateOfBirth } = $derived(getPersonActions($t, person));
+
+  const handleToggleFavoriteClick = (event: MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onToggleFavorite();
+  };
 </script>
 
 <div
@@ -58,13 +64,23 @@
         circle
         preload={false}
       />
-      {#if person.isFavorite}
-        <div class="absolute top-4 start-4">
-          <Icon icon={mdiHeart} size="24" class="text-white" />
-        </div>
-      {/if}
     </div>
   </a>
+
+  <button
+    type="button"
+    class={`absolute start-2 top-2 z-1 flex h-9 w-9 items-center justify-center rounded-full shadow-sm ring-1 ring-black/20 transition-all focus-visible:outline-2 focus-visible:outline-immich-primary ${
+      person.isFavorite
+        ? 'bg-white/95 text-rose-500 hover:bg-white'
+        : 'bg-black/45 text-white hover:bg-white/95 hover:text-rose-500'
+    }`}
+    aria-label={person.isFavorite ? $t('unfavorite') : $t('to_favorite')}
+    aria-pressed={person.isFavorite}
+    title={person.isFavorite ? $t('unfavorite') : $t('to_favorite')}
+    onclick={handleToggleFavoriteClick}
+  >
+    <Icon icon={person.isFavorite ? mdiHeart : mdiHeartOutline} size="22" aria-hidden />
+  </button>
 
   {#if showVerticalDots}
     <div class="absolute top-2 end-2 z-1">

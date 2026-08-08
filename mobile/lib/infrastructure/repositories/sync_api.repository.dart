@@ -129,20 +129,68 @@ class SyncApiRepository {
     final List<SyncEvent> data = [];
 
     for (final line in lines) {
-      final jsonData = jsonDecode(line);
-      final type = SyncEntityType.fromJson(jsonData['type'])!;
-      final dataJson = jsonData['data'];
-      final ack = jsonData['ack'];
-      final converter = _kResponseMap[type];
-      if (converter == null) {
-        _logger.warning("Unknown type $type");
-        continue;
-      }
+      try {
+        final jsonData = jsonDecode(line);
+        final type = SyncEntityType.fromJson(jsonData['type'])!;
+        final dataJson = jsonData['data'];
+        final ack = jsonData['ack'];
+        final converter = _kResponseMap[type];
+        if (converter == null) {
+          _logger.warning("Unknown type $type");
+          continue;
+        }
 
-      data.add(SyncEvent(type: type, data: converter(dataJson), ack: ack));
+        data.add(SyncEvent(type: type, data: converter(dataJson), ack: ack));
+      } catch (error, stack) {
+        _logger.severe("Failed to parse sync event: ${_describeSyncLine(line)}", error, stack);
+        rethrow;
+      }
     }
 
     return data;
+  }
+
+  String _describeSyncLine(String line) {
+    try {
+      final jsonData = jsonDecode(line);
+      if (jsonData is! Map) {
+        return "payloadType=${jsonData.runtimeType}, length=${line.length}";
+      }
+
+      final type = jsonData['type'];
+      final dataJson = jsonData['data'];
+      final ack = jsonData['ack'];
+
+      if (dataJson is! Map) {
+        return "type=$type, ack=$ack, dataType=${dataJson.runtimeType}, length=${line.length}";
+      }
+
+      final keys = dataJson.keys.join(',');
+      final extra = switch (type) {
+        'AlbumUserV1' || 'AlbumUserBackfillV1' => _describeAlbumUserSyncData(dataJson),
+        _ => "dataKeys=[$keys]",
+      };
+
+      return "type=$type, ack=$ack, $extra, length=${line.length}";
+    } catch (_) {
+      return "invalidJson=true, length=${line.length}";
+    }
+  }
+
+  String _describeAlbumUserSyncData(Map<dynamic, dynamic> dataJson) {
+    final albumId = dataJson['albumId'];
+    final userId = dataJson['userId'];
+    final role = dataJson['role'];
+
+    return [
+      "albumIdPresent=${albumId != null}",
+      "albumIdType=${albumId.runtimeType}",
+      "userIdPresent=${userId != null}",
+      "userIdType=${userId.runtimeType}",
+      "rolePresent=${role != null}",
+      "roleType=${role.runtimeType}",
+      "dataKeys=[${dataJson.keys.join(',')}]",
+    ].join(', ');
   }
 }
 

@@ -155,6 +155,18 @@ export class SyncService extends BaseService {
     const { nowId } = await this.syncCheckpointRepository.getNow();
     const options: SyncQueryOptions = { nowId, userId: auth.user.id };
 
+    if (dto.types.includes(SyncRequestType.AlbumUsersV1)) {
+      this.logger.log(
+        [
+          'Sync stream requested album-user sync',
+          `sessionId=${session.id}`,
+          `reset=${dto.reset === true}`,
+          `typesCount=${dto.types.length}`,
+          `checkpointTypes=[${Object.keys(checkpointMap).join(',')}]`,
+        ].join(', '),
+      );
+    }
+
     const handlers: Record<SyncRequestType, () => Promise<void>> = {
       [SyncRequestType.AuthUsersV1]: () => this.syncAuthUsersV1(options, response, checkpointMap),
       [SyncRequestType.UsersV1]: () => this.syncUsersV1(options, response, checkpointMap),
@@ -443,7 +455,10 @@ export class SyncService extends BaseService {
   ) {
     const deleteType = SyncEntityType.AlbumUserDeleteV1;
     const deletes = this.syncRepository.albumUser.getDeletes({ ...options, ack: checkpointMap[deleteType] });
+    let deleteCount = 0;
     for await (const { id, ...data } of deletes) {
+      deleteCount++;
+      this.logAlbumUserSyncPayload(deleteType, sessionId, [id], data);
       send(response, { type: deleteType, ids: [id], data });
     }
 
@@ -455,6 +470,7 @@ export class SyncService extends BaseService {
     });
     const upsertType = SyncEntityType.AlbumUserV1;
     const upsertCheckpoint = checkpointMap[upsertType];
+    let backfillCount = 0;
     if (upsertCheckpoint) {
       const endId = upsertCheckpoint.updateId;
 
@@ -471,6 +487,8 @@ export class SyncService extends BaseService {
         );
 
         for await (const { updateId, ...data } of backfill) {
+          backfillCount++;
+          this.logAlbumUserSyncPayload(backfillType, sessionId, [createId, updateId], data);
           send(response, { type: backfillType, ids: [createId, updateId], data });
         }
 
@@ -485,8 +503,63 @@ export class SyncService extends BaseService {
     }
 
     const upserts = this.syncRepository.albumUser.getUpserts({ ...options, ack: checkpointMap[upsertType] });
+    let upsertCount = 0;
     for await (const { updateId, ...data } of upserts) {
+      upsertCount++;
+      this.logAlbumUserSyncPayload(upsertType, sessionId, [updateId], data);
       send(response, { type: upsertType, ids: [updateId], data });
+    }
+
+    this.logger.log(
+      [
+        'Sync album-user sync completed',
+        `sessionId=${sessionId}`,
+        `deletes=${deleteCount}`,
+        `backfills=${backfillCount}`,
+        `upserts=${upsertCount}`,
+      ].join(', '),
+    );
+  }
+
+  private logAlbumUserSyncPayload(
+    type: SyncEntityType.AlbumUserV1 | SyncEntityType.AlbumUserBackfillV1 | SyncEntityType.AlbumUserDeleteV1,
+    sessionId: string,
+    ids: [string] | [string, string],
+    data: Record<string, unknown>,
+  ) {
+    const expectsRole = type !== SyncEntityType.AlbumUserDeleteV1;
+    const fieldTypes = {
+      albumId: typeof data.albumId,
+      userId: typeof data.userId,
+      role: typeof data.role,
+    };
+    const missingFields = Object.entries({
+      albumId: data.albumId,
+      userId: data.userId,
+      role: data.role,
+    })
+      .filter(([key, value]) => (key !== 'role' || expectsRole) && (value === null || value === undefined))
+      .map(([key]) => key);
+    const isValid =
+      missingFields.length === 0 &&
+      fieldTypes.albumId === 'string' &&
+      fieldTypes.userId === 'string' &&
+      (!expectsRole || fieldTypes.role === 'string');
+
+    const message = [
+      isValid ? 'Sync album-user payload' : 'Invalid sync album-user payload',
+      `sessionId=${sessionId}`,
+      `type=${type}`,
+      `ids=${ids.join('|')}`,
+      `missingFields=[${missingFields.join(',')}]`,
+      `fieldTypes=${JSON.stringify(fieldTypes)}`,
+      `dataKeys=[${Object.keys(data).join(',')}]`,
+    ].join(', ');
+
+    if (isValid) {
+      this.logger.log(message);
+    } else {
+      this.logger.warn(message);
     }
   }
 
