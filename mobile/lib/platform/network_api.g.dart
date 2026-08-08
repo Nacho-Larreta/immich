@@ -309,4 +309,18 @@ class NetworkApi {
 
     _extractReplyValueOrThrow(pigeonVar_replyList, pigeonVar_channelName, isNullValid: true);
   }
+
+  Future<void> replaceRequestContext(Map<String, String> headers, String? canonicalOrigin, String? token) async {
+    final pigeonVar_channelName =
+        'dev.flutter.pigeon.immich_mobile.NetworkApi.replaceRequestContext$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[headers, canonicalOrigin, token]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    _extractReplyValueOrThrow(pigeonVar_replyList, pigeonVar_channelName, isNullValid: true);
+  }
 }

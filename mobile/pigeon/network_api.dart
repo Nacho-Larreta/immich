@@ -44,4 +44,6 @@ abstract class NetworkApi {
   int getClientPointer();
 
   void setRequestHeaders(Map<String, String> headers, List<String> serverUrls, String? token);
+
+  void replaceRequestContext(Map<String, String> headers, String? canonicalOrigin, String? token);
 }

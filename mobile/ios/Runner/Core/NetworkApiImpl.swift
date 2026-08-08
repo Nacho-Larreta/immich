@@ -62,39 +62,13 @@ class NetworkApiImpl: NetworkApi {
   }
   
   func setRequestHeaders(headers: [String : String], serverUrls: [String], token: String?) throws {
-    URLSessionManager.setServerUrls(serverUrls)
+    try URLSessionManager.replaceLegacyRequestContext(headers: headers, serverUrls: serverUrls, token: token)
+  }
 
-    if let token = token {
-      let expiry = Date().addingTimeInterval(COOKIE_EXPIRY_DAYS * 24 * 60 * 60)
-      for serverUrl in serverUrls {
-        guard let url = URL(string: serverUrl), let domain = url.host else { continue }
-        let isSecure = serverUrl.hasPrefix("https")
-        let values: [AuthCookie: String] = [
-          .accessToken: token,
-          .isAuthenticated: "true",
-          .authType: "password",
-        ]
-        for (cookie, value) in values {
-          var properties: [HTTPCookiePropertyKey: Any] = [
-            .name: cookie.name,
-            .value: value,
-            .domain: domain,
-            .path: "/",
-            .expires: expiry,
-          ]
-          if isSecure { properties[.secure] = "TRUE" }
-          if cookie.httpOnly { properties[.init("HttpOnly")] = "TRUE" }
-          if let httpCookie = HTTPCookie(properties: properties) {
-            URLSessionManager.cookieStorage.setCookie(httpCookie)
-          }
-        }
-      }
-    }
-
-    if headers != UserDefaults.group.dictionary(forKey: HEADERS_KEY) as? [String: String] {
-      UserDefaults.group.set(headers, forKey: HEADERS_KEY)
-      URLSessionManager.shared.recreateSession()
-    }
+  func replaceRequestContext(headers: [String: String], canonicalOrigin: String?, token: String?)
+    throws
+  {
+    try URLSessionManager.replaceRequestContext(headers: headers, canonicalOrigin: canonicalOrigin, token: token)
   }
 }
 

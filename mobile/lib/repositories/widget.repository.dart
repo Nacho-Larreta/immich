@@ -10,6 +10,10 @@ class WidgetRepository {
     await HomeWidget.saveWidgetData<String>(key, value);
   }
 
+  Future<String?> readData(String key) {
+    return HomeWidget.getWidgetData<String>(key);
+  }
+
   Future<void> refresh(String iosName, String androidName) async {
     await HomeWidget.updateWidget(iOSName: iosName, qualifiedAndroidName: androidName);
   }

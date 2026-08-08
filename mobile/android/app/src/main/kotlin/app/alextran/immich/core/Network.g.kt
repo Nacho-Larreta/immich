@@ -315,6 +315,7 @@ interface NetworkApi {
   fun hasCertificate(): Boolean
   fun getClientPointer(): Long
   fun setRequestHeaders(headers: Map<String, String>, serverUrls: List<String>, token: String?)
+  fun replaceRequestContext(headers: Map<String, String>, canonicalOrigin: String?, token: String?)
 
   companion object {
     /** The codec used by NetworkApi. */
@@ -420,6 +421,26 @@ interface NetworkApi {
             val tokenArg = args[2] as String?
             val wrapped: List<Any?> = try {
               api.setRequestHeaders(headersArg, serverUrlsArg, tokenArg)
+              listOf(null)
+            } catch (exception: Throwable) {
+              NetworkPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.immich_mobile.NetworkApi.replaceRequestContext$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val headersArg = args[0] as Map<String, String>
+            val canonicalOriginArg = args[1] as String?
+            val tokenArg = args[2] as String?
+            val wrapped: List<Any?> = try {
+              api.replaceRequestContext(headersArg, canonicalOriginArg, tokenArg)
               listOf(null)
             } catch (exception: Throwable) {
               NetworkPigeonUtils.wrapError(exception)

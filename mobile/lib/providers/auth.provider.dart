@@ -1,15 +1,21 @@
+import 'dart:async';
+
 import 'package:flutter_udid/flutter_udid.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/constants/constants.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/models/user.model.dart';
+import 'package:immich_mobile/domain/interfaces/auth_request_context.interface.dart';
+import 'package:immich_mobile/domain/services/session_mutation_mutex.dart';
 import 'package:immich_mobile/domain/services/user.service.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
+import 'package:immich_mobile/infrastructure/adapters/auth/network_auth_request_context_adapter.dart';
 import 'package:immich_mobile/models/auth/auth_state.model.dart';
 import 'package:immich_mobile/models/auth/login_response.model.dart';
 import 'package:immich_mobile/providers/api.provider.dart';
 import 'package:immich_mobile/providers/cached_session.dart';
 import 'package:immich_mobile/providers/infrastructure/user.provider.dart';
+import 'package:immich_mobile/providers/session_mutation.provider.dart';
 import 'package:immich_mobile/services/api.service.dart';
 import 'package:immich_mobile/services/auth.service.dart';
 import 'package:immich_mobile/services/foreground_upload.service.dart';
@@ -29,6 +35,8 @@ final authProvider = StateNotifierProvider<AuthNotifier, AuthState>((ref) {
     userService,
     ref.watch(secureStorageServiceProvider),
     ref.watch(widgetServiceProvider),
+    const NetworkAuthRequestContextAdapter(),
+    ref.watch(sessionMutationMutexProvider),
     ref,
     cachedSessionReader: StoreCachedSessionReader(Store, userService),
   );
@@ -41,6 +49,8 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
   final SecureStorageService _secureStorageService;
   final WidgetService _widgetService;
+  final AuthRequestContextPort _requestContext;
+  final SessionMutationMutex _sessionMutationMutex;
   final Ref _ref;
   final CachedSessionReader _cachedSessionReader;
   final _log = Logger("AuthenticationNotifier");
@@ -54,6 +64,8 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
     this._secureStorageService,
     this._widgetService,
+    this._requestContext,
+    this._sessionMutationMutex,
     this._ref, {
     required CachedSessionReader cachedSessionReader,
   }) : _cachedSessionReader = cachedSessionReader,
@@ -108,16 +120,61 @@ class AuthNotifier extends StateNotifier<AuthState> {
     return response;
   }
 
-  Future<void> logout() async {
-    try {
-      await _secureStorageService.delete(kSecuredPinCode);
-      await _widgetService.clearCredentials();
+  Future<void> logout() => _sessionMutationMutex.protect(_logout);
 
-      await _authService.logout();
-      await _ref.read(backgroundUploadServiceProvider).cancel();
-      _ref.read(foregroundUploadServiceProvider).cancel();
+  Future<void> _logout() async {
+    Object? operationError;
+    StackTrace? operationStackTrace;
+    Object? cleanupError;
+    StackTrace? cleanupStackTrace;
+    Future<void> attempt(FutureOr<void> Function() operation, void Function(Object, StackTrace) onError) async {
+      try {
+        await operation();
+      } catch (error, stackTrace) {
+        onError(error, stackTrace);
+      }
+    }
+
+    void recordOperationError(Object error, StackTrace stackTrace) {
+      operationError ??= error;
+      operationStackTrace ??= stackTrace;
+    }
+
+    void recordCleanupError(Object error, StackTrace stackTrace) {
+      cleanupError ??= error;
+      cleanupStackTrace ??= stackTrace;
+    }
+
+    try {
+      await attempt(() => _ref.read(backgroundUploadServiceProvider).cancel(), recordOperationError);
+      await attempt(() => _ref.read(foregroundUploadServiceProvider).cancel(), recordOperationError);
+      await attempt(() => _secureStorageService.delete(kSecuredPinCode), recordOperationError);
+      await attempt(_authService.logout, recordOperationError);
     } finally {
-      await _cleanUp();
+      _requestContext.block();
+      await Future.wait([
+        attempt(_widgetService.clearCredentialsAndRefresh, recordCleanupError),
+        attempt(_requestContext.purge, recordCleanupError),
+      ]);
+      if (cleanupError != null) {
+        _requestContext.block();
+      } else {
+        try {
+          _requestContext.publishCleared();
+        } catch (error, stackTrace) {
+          recordCleanupError(error, stackTrace);
+          _requestContext.block();
+        }
+      }
+    }
+
+    if (cleanupError != null) {
+      Error.throwWithStackTrace(cleanupError!, cleanupStackTrace!);
+    }
+
+    await _cleanUp();
+    if (operationError != null) {
+      Error.throwWithStackTrace(operationError!, operationStackTrace!);
     }
   }
 
@@ -152,7 +209,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
     final serverEndpoint = Store.get(StoreKey.serverEndpoint);
     final customHeaders = Store.tryGet(StoreKey.customHeaders);
-    await _widgetService.writeCredentials(serverEndpoint, accessToken, customHeaders);
+    await _widgetService.writeCredentialsAndRefresh(serverEndpoint, accessToken, customHeaders);
 
     // Get the deviceid from the store if it exists, otherwise generate a new one
     String deviceId = Store.tryGet(StoreKey.deviceId) ?? await FlutterUdid.consistentUdid;

@@ -288,6 +288,7 @@ protocol NetworkApi {
   func hasCertificate() throws -> Bool
   func getClientPointer() throws -> Int64
   func setRequestHeaders(headers: [String: String], serverUrls: [String], token: String?) throws
+  func replaceRequestContext(headers: [String: String], canonicalOrigin: String?, token: String?) throws
 }
 
 /// Generated setup class from Pigeon to handle messages through the `binaryMessenger`.
@@ -387,6 +388,23 @@ class NetworkApiSetup {
       }
     } else {
       setRequestHeadersChannel.setMessageHandler(nil)
+    }
+    let replaceRequestContextChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.immich_mobile.NetworkApi.replaceRequestContext\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      replaceRequestContextChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let headersArg = args[0] as! [String: String]
+        let canonicalOriginArg: String? = nilOrValue(args[1])
+        let tokenArg: String? = nilOrValue(args[2])
+        do {
+          try api.replaceRequestContext(headers: headersArg, canonicalOrigin: canonicalOriginArg, token: tokenArg)
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      replaceRequestContextChannel.setMessageHandler(nil)
     }
   }
 }

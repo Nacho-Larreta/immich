@@ -34,6 +34,7 @@ depends = [
   "pigeon:thumbnail",
   "pigeon:background-worker",
   "pigeon:background-worker-lock",
+  "pigeon:network",
   "pigeon:connectivity",
   "pigeon:local-image",
   "pigeon:remote-image",
@@ -153,6 +154,20 @@ outputs = [
 run = [
   "dart run pigeon --input pigeon/connectivity_api.dart",
   "dart format lib/platform/connectivity_api.g.dart",
+]
+
+[tasks."pigeon:network"]
+description = "Generate native network API pigeon code"
+hide = true
+sources = ["pigeon/network_api.dart"]
+outputs = [
+  "lib/platform/network_api.g.dart",
+  "ios/Runner/Core/Network.g.swift",
+  "android/app/src/main/kotlin/app/alextran/immich/core/Network.g.kt",
+]
+run = [
+  "dart run pigeon --input pigeon/network_api.dart",
+  "dart format lib/platform/network_api.g.dart",
 ]
 
 [tasks."pigeon:local-image"]

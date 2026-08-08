@@ -28,6 +28,74 @@ enum AuthCookie: CaseIterable {
   static let names: Set<String> = Set(allCases.map(\.name))
 }
 
+struct NetworkCanonicalOrigin: Equatable {
+  let scheme: String
+  let host: String
+  let port: Int
+
+  init?(origin: String) {
+    guard
+      let components = URLComponents(string: origin),
+      components.user == nil,
+      components.password == nil,
+      components.percentEncodedPath.isEmpty,
+      components.query == nil,
+      components.fragment == nil,
+      let scheme = components.scheme?.lowercased(),
+      let host = components.host?.lowercased(),
+      let port = Self.effectivePort(scheme: scheme, explicitPort: components.port)
+    else { return nil }
+    self.scheme = scheme
+    self.host = host
+    self.port = port
+  }
+
+  init?(endpoint: String) {
+    guard
+      let components = URLComponents(string: endpoint),
+      components.user == nil,
+      components.password == nil,
+      components.query == nil,
+      components.fragment == nil,
+      let scheme = components.scheme?.lowercased(),
+      let host = components.host?.lowercased(),
+      let port = Self.effectivePort(scheme: scheme, explicitPort: components.port)
+    else { return nil }
+    self.scheme = scheme
+    self.host = host
+    self.port = port
+  }
+
+  func matches(_ url: URL) -> Bool {
+    guard
+      url.user == nil,
+      url.password == nil,
+      let scheme = url.scheme?.lowercased(),
+      let host = url.host?.lowercased(),
+      let port = Self.effectivePort(scheme: scheme, explicitPort: url.port)
+    else { return false }
+    return scheme == self.scheme && host == self.host && port == self.port
+  }
+
+  var string: String {
+    var components = URLComponents()
+    components.scheme = scheme
+    components.host = host
+    let defaultPort = scheme == "https" ? 443 : 80
+    components.port = port == defaultPort ? nil : port
+    return components.string!
+  }
+
+  private static func effectivePort(scheme: String, explicitPort: Int?) -> Int? {
+    if let explicitPort { return explicitPort }
+    switch scheme {
+    case "http": return 80
+    case "https": return 443
+    default: return nil
+    }
+  }
+}
+
 extension UserDefaults {
   static let group = UserDefaults(suiteName: APP_GROUP)!
 }
@@ -58,6 +126,8 @@ class URLSessionManager: NSObject {
   static let cookieStorage = HTTPCookieStorage.sharedCookieStorage(forGroupContainerIdentifier: APP_GROUP)
   private static var serverUrls: [String] = []
   private static var isSyncing = false
+  private static var activeCanonicalOrigins: [NetworkCanonicalOrigin] = []
+  private static let requestContextLock = NSRecursiveLock()
 
   var sessionPointer: UnsafeMutableRawPointer {
     Unmanaged.passUnretained(session).toOpaque()
@@ -68,6 +138,7 @@ class URLSessionManager: NSObject {
     session = Self.buildSession(delegate: delegate)
     super.init()
     Self.serverUrls = UserDefaults.group.stringArray(forKey: SERVER_URLS_KEY) ?? []
+    Self.activeCanonicalOrigins = Self.serverUrls.compactMap(NetworkCanonicalOrigin.init(endpoint:))
     NotificationCenter.default.addObserver(
       Self.self,
       selector: #selector(Self.cookiesDidChange),
@@ -80,20 +151,122 @@ class URLSessionManager: NSObject {
     session = Self.buildSession(delegate: delegate)
   }
 
-  static func setServerUrls(_ urls: [String]) {
-    guard urls != serverUrls else { return }
-    serverUrls = urls
-    UserDefaults.group.set(urls, forKey: SERVER_URLS_KEY)
-    syncAuthCookies()
+  static func clearAuthCookies() {
+    withRequestContextLock {
+      clearAuthCookiesLocked()
+    }
+  }
+
+  static func replaceRequestContext(headers: [String: String], canonicalOrigin: String?, token: String?) throws {
+    let origin = try validateContext(headers: headers, canonicalOrigin: canonicalOrigin, token: token)
+    withRequestContextLock {
+      replaceRequestContextLocked(headers: headers, origins: origin.map { [$0] } ?? [], token: token)
+    }
+  }
+
+  static func replaceLegacyRequestContext(headers: [String: String], serverUrls: [String], token: String?) throws {
+    let origins = serverUrls.compactMap(NetworkCanonicalOrigin.init(endpoint:))
+    guard origins.count == serverUrls.count else {
+      throw NetworkContextError.invalidCanonicalOrigin
+    }
+    if token != nil && origins.isEmpty { throw NetworkContextError.tokenWithoutOrigin }
+    if origins.isEmpty && !headers.isEmpty { throw NetworkContextError.headersWithoutOrigin }
+    withRequestContextLock {
+      replaceRequestContextLocked(headers: headers, origins: origins, token: token)
+    }
+  }
+
+  static func allows(_ url: URL) -> Bool {
+    withRequestContextLock {
+      activeCanonicalOrigins.isEmpty || activeCanonicalOrigins.contains { $0.matches(url) }
+    }
+  }
+
+  private static func validateContext(
+    headers: [String: String],
+    canonicalOrigin: String?,
+    token: String?
+  ) throws -> NetworkCanonicalOrigin? {
+    guard let canonicalOrigin else {
+      if token != nil { throw NetworkContextError.tokenWithoutOrigin }
+      if !headers.isEmpty { throw NetworkContextError.headersWithoutOrigin }
+      return nil
+    }
+    guard let origin = NetworkCanonicalOrigin(origin: canonicalOrigin) else {
+      throw NetworkContextError.invalidCanonicalOrigin
+    }
+    return origin
+  }
+
+  private static func replaceRequestContextLocked(
+    headers: [String: String],
+    origins: [NetworkCanonicalOrigin],
+    token: String?
+  ) {
+    clearAuthCookiesLocked()
+    activeCanonicalOrigins = origins
+    serverUrls = origins.map(\.string)
+    UserDefaults.group.set(serverUrls, forKey: SERVER_URLS_KEY)
+    installAuthCookiesLocked(token: token, origins: origins)
+    installHeadersLocked(headers)
+  }
+
+  private static func clearAuthCookiesLocked() {
+    isSyncing = true
+    defer { isSyncing = false }
+    for cookie in cookieStorage.cookies ?? [] where AuthCookie.names.contains(cookie.name) {
+      cookieStorage.deleteCookie(cookie)
+    }
+  }
+
+  private static func installAuthCookiesLocked(token: String?, origins: [NetworkCanonicalOrigin]) {
+    guard let token else { return }
+    let expiry = Date().addingTimeInterval(COOKIE_EXPIRY_DAYS * 24 * 60 * 60)
+    let values: [AuthCookie: String] = [
+      .accessToken: token,
+      .isAuthenticated: "true",
+      .authType: "password",
+    ]
+    for origin in origins {
+      for (cookie, value) in values {
+        var properties: [HTTPCookiePropertyKey: Any] = [
+          .name: cookie.name,
+          .value: value,
+          .domain: origin.host,
+          .path: "/",
+          .port: String(origin.port),
+          .expires: expiry,
+        ]
+        if origin.scheme == "https" { properties[.secure] = "TRUE" }
+        if cookie.httpOnly { properties[.init("HttpOnly")] = "TRUE" }
+        if let httpCookie = HTTPCookie(properties: properties) {
+          cookieStorage.setCookie(httpCookie)
+        }
+      }
+    }
+  }
+
+  private static func installHeadersLocked(_ headers: [String: String]) {
+    guard headers != UserDefaults.group.dictionary(forKey: HEADERS_KEY) as? [String: String] else { return }
+    UserDefaults.group.set(headers, forKey: HEADERS_KEY)
+    shared.recreateSession()
+  }
+
+  private static func withRequestContextLock<T>(_ body: () throws -> T) rethrows -> T {
+    requestContextLock.lock()
+    defer { requestContextLock.unlock() }
+    return try body()
   }
 
   @objc private static func cookiesDidChange(_ notification: Notification) {
-    guard !isSyncing, !serverUrls.isEmpty else { return }
-    syncAuthCookies()
+    withRequestContextLock {
+      guard !isSyncing, !serverUrls.isEmpty else { return }
+      syncAuthCookies()
+    }
   }
 
   private static func syncAuthCookies() {
-    let serverHosts = Set(serverUrls.compactMap { URL(string: $0)?.host })
+    let serverHosts = Set(activeCanonicalOrigins.map(\.host))
     let allCookies = cookieStorage.cookies ?? []
     let now = Date()
 
@@ -111,30 +284,22 @@ class URLSessionManager: NSObject {
     isSyncing = true
     defer { isSyncing = false }
 
-    if sourceCookies.isEmpty {
-      for cookie in serverAuthCookies {
-        cookieStorage.deleteCookie(cookie)
-      }
-      return
+    for cookie in allCookies where AuthCookie.names.contains(cookie.name) {
+      cookieStorage.deleteCookie(cookie)
     }
+    if sourceCookies.isEmpty { return }
 
-    for serverUrl in serverUrls {
-      guard let url = URL(string: serverUrl), let domain = url.host else { continue }
-      let isSecure = serverUrl.hasPrefix("https")
-
+    for origin in activeCanonicalOrigins {
       for (_, source) in sourceCookies {
-        if allCookies.contains(where: { $0.name == source.name && $0.domain == domain && $0.value == source.value }) {
-          continue
-        }
-
         var properties: [HTTPCookiePropertyKey: Any] = [
           .name: source.name,
           .value: source.value,
-          .domain: domain,
+          .domain: origin.host,
           .path: "/",
+          .port: String(origin.port),
           .expires: source.expiresDate ?? Date().addingTimeInterval(COOKIE_EXPIRY_DAYS * 24 * 60 * 60),
         ]
-        if isSecure { properties[.secure] = "TRUE" }
+        if origin.scheme == "https" { properties[.secure] = "TRUE" }
         if source.isHTTPOnly { properties[.init("HttpOnly")] = "TRUE" }
 
         if let cookie = HTTPCookie(properties: properties) {
@@ -192,6 +357,12 @@ class URLSessionManager: NSObject {
   }
 }
 
+enum NetworkContextError: Error {
+  case invalidCanonicalOrigin
+  case tokenWithoutOrigin
+  case headersWithoutOrigin
+}
+
 private extension URLSessionConfiguration {
   @objc dynamic class func immich_background(withIdentifier id: String) -> URLSessionConfiguration {
     // After swizzle, this calls the original implementation
@@ -203,6 +374,20 @@ private extension URLSessionConfiguration {
 }
 
 class URLSessionManagerDelegate: NSObject, URLSessionTaskDelegate, URLSessionWebSocketDelegate {
+  func urlSession(
+    _ session: URLSession,
+    task: URLSessionTask,
+    willPerformHTTPRedirection response: HTTPURLResponse,
+    newRequest request: URLRequest,
+    completionHandler: @escaping (URLRequest?) -> Void
+  ) {
+    guard let url = request.url, URLSessionManager.allows(url) else {
+      completionHandler(nil)
+      return
+    }
+    completionHandler(request)
+  }
+
   func urlSession(
     _ session: URLSession,
     didReceive challenge: URLAuthenticationChallenge,

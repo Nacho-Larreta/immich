@@ -82,4 +82,8 @@ private class NetworkApiImpl : NetworkApi {
   override fun setRequestHeaders(headers: Map<String, String>, serverUrls: List<String>, token: String?) {
     HttpClientManager.setRequestHeaders(headers, serverUrls, token)
   }
+
+  override fun replaceRequestContext(headers: Map<String, String>, canonicalOrigin: String?, token: String?) {
+    HttpClientManager.replaceRequestContext(headers, canonicalOrigin, token)
+  }
 }

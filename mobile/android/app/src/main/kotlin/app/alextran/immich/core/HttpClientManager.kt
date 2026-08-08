@@ -16,7 +16,6 @@ import okhttp3.Cache
 import okhttp3.ConnectionPool
 import okhttp3.Cookie
 import okhttp3.CookieJar
-import okhttp3.Credentials
 import okhttp3.Dispatcher
 import okhttp3.Headers
 import okhttp3.HttpUrl
@@ -72,6 +71,52 @@ private enum class AuthCookie(val cookieName: String, val httpOnly: Boolean) {
   }
 }
 
+private data class CanonicalOrigin(
+  val scheme: String,
+  val host: String,
+  val port: Int,
+) {
+  fun matches(url: HttpUrl): Boolean =
+    url.encodedUsername.isEmpty() &&
+      url.encodedPassword.isEmpty() &&
+      url.scheme == scheme &&
+      url.host == host &&
+      url.port == port
+
+  fun toHttpUrl(): HttpUrl = HttpUrl.Builder()
+    .scheme(scheme)
+    .host(host)
+    .port(port)
+    .build()
+
+  fun asString(): String = URI(scheme, null, host, port, null, null, null).toString()
+
+  companion object {
+    fun fromStrictOrigin(value: String): CanonicalOrigin? {
+      val uri = runCatching { URI(value) }.getOrNull() ?: return null
+      if (uri.rawUserInfo != null || !uri.rawPath.isNullOrEmpty() || uri.rawQuery != null || uri.rawFragment != null) {
+        return null
+      }
+      return fromHttpUrl(value.toHttpUrlOrNull())
+    }
+
+    fun fromEndpoint(value: String): CanonicalOrigin? {
+      val uri = runCatching { URI(value) }.getOrNull() ?: return null
+      if (uri.rawUserInfo != null || uri.rawQuery != null || uri.rawFragment != null) return null
+      return fromHttpUrl(value.toHttpUrlOrNull())
+    }
+
+    private fun fromHttpUrl(url: HttpUrl?): CanonicalOrigin? {
+      if (url == null || url.scheme !in setOf("http", "https") || url.encodedUsername.isNotEmpty() ||
+        url.encodedPassword.isNotEmpty()
+      ) {
+        return null
+      }
+      return CanonicalOrigin(url.scheme, url.host, url.port)
+    }
+  }
+}
+
 /**
  * Manages a shared OkHttpClient with SSL configuration support.
  */
@@ -101,6 +146,8 @@ object HttpClientManager {
 
   var headers: Headers = Headers.headersOf()
     private set
+
+  private var activeOrigins = emptyList<CanonicalOrigin>()
 
   private val cookieJar = PersistentCookieJar()
 
@@ -148,7 +195,9 @@ object HttpClientManager {
 
       val serverUrlsJson = prefs.getString(PREFS_SERVER_URLS, null)
       if (serverUrlsJson != null) {
-        cookieJar.setServerUrls(Json.decodeFromString<List<String>>(serverUrlsJson))
+        activeOrigins = Json.decodeFromString<List<String>>(serverUrlsJson)
+          .mapNotNull(CanonicalOrigin::fromEndpoint)
+        cookieJar.setAllowedOrigins(activeOrigins)
       }
 
       val cacheDir = File(File(context.cacheDir, "okhttp"), "api")
@@ -250,39 +299,65 @@ object HttpClientManager {
   }
 
   fun setRequestHeaders(headerMap: Map<String, String>, serverUrls: List<String>, token: String?) {
+    val origins = serverUrls.map { value ->
+      CanonicalOrigin.fromEndpoint(value) ?: throw IllegalArgumentException("Invalid HTTP(S) server endpoint")
+    }
+    replaceRequestContext(headerMap, origins, token)
+  }
+
+  fun replaceRequestContext(headerMap: Map<String, String>, canonicalOrigin: String?, token: String?) {
+    val origins = canonicalOrigin?.let { value ->
+      listOf(CanonicalOrigin.fromStrictOrigin(value) ?: throw IllegalArgumentException("Invalid canonical origin"))
+    } ?: emptyList()
+    replaceRequestContext(headerMap, origins, token)
+  }
+
+  private fun replaceRequestContext(
+    headerMap: Map<String, String>,
+    origins: List<CanonicalOrigin>,
+    token: String?,
+  ) {
+    require(origins.isNotEmpty() || token == null) { "A token requires a canonical origin" }
+    require(origins.isNotEmpty() || headerMap.isEmpty()) { "Custom headers require a canonical origin" }
+    val builder = Headers.Builder()
+    headerMap.forEach { (key, value) -> builder[key] = value }
+    val newHeaders = builder.build()
+
     synchronized(this) {
-      val builder = Headers.Builder()
-      headerMap.forEach { (key, value) -> builder[key] = value }
-      val newHeaders = builder.build()
-
       val headersChanged = headers != newHeaders
-      val urlsChanged = Json.encodeToString(serverUrls) != prefs.getString(PREFS_SERVER_URLS, null)
+      val serverUrls = origins.map(CanonicalOrigin::asString)
+      val encodedServerUrls = Json.encodeToString(serverUrls)
+      val urlsChanged = encodedServerUrls != prefs.getString(PREFS_SERVER_URLS, null)
 
+      cookieJar.clearAuthCookies()
       headers = newHeaders
-      cookieJar.setServerUrls(serverUrls)
+      activeOrigins = origins
+      cookieJar.setAllowedOrigins(origins)
 
       if (headersChanged || urlsChanged) {
         prefs.edit {
           putString(PREFS_HEADERS, Json.encodeToString(headerMap))
-          putString(PREFS_SERVER_URLS, Json.encodeToString(serverUrls))
+          putString(PREFS_SERVER_URLS, encodedServerUrls)
         }
       }
 
       if (token != null) {
-        val url = serverUrls.firstNotNullOfOrNull { it.toHttpUrlOrNull() } ?: return
         val expiry = System.currentTimeMillis() + COOKIE_EXPIRY_DAYS * 24 * 60 * 60 * 1000
         val values = mapOf(
           AuthCookie.ACCESS_TOKEN to token,
           AuthCookie.IS_AUTHENTICATED to "true",
           AuthCookie.AUTH_TYPE to "password",
         )
-        cookieJar.saveFromResponse(url, values.map { (cookie, value) ->
-          Cookie.Builder().name(cookie.cookieName).value(value).domain(url.host).path("/").expiresAt(expiry)
-            .apply {
-              if (url.isHttps) secure()
-              if (cookie.httpOnly) httpOnly()
-            }.build()
-        })
+        for (origin in origins) {
+          val url = origin.toHttpUrl()
+          cookieJar.saveFromResponse(url, values.map { (cookie, value) ->
+            Cookie.Builder().name(cookie.cookieName).value(value).hostOnlyDomain(url.host).path("/").expiresAt(expiry)
+              .apply {
+                if (url.isHttps) secure()
+                if (cookie.httpOnly) httpOnly()
+              }.build()
+          })
+        }
       }
     }
   }
@@ -294,14 +369,12 @@ object HttpClientManager {
   }
 
   fun getAuthHeaders(url: String): Map<String, String> {
+    val httpUrl = url.toHttpUrlOrNull() ?: return emptyMap()
+    val context = synchronized(this) { activeOrigins to headers }
+    if (context.first.none { it.matches(httpUrl) }) return emptyMap()
     val result = mutableMapOf<String, String>()
-    headers.forEach { (key, value) -> result[key] = value }
+    context.second.forEach { (key, value) -> result[key] = value }
     loadCookieHeader(url)?.let { result["Cookie"] = it }
-    url.toHttpUrlOrNull()?.let { httpUrl ->
-      if (httpUrl.username.isNotEmpty()) {
-        result["Authorization"] = Credentials.basic(httpUrl.username, httpUrl.password)
-      }
-    }
     return result
   }
 
@@ -381,14 +454,19 @@ object HttpClientManager {
 
     return OkHttpClient.Builder()
       .cookieJar(cookieJar)
-      .addInterceptor {
+      .addNetworkInterceptor {
         val request = it.request()
+        val context = synchronized(HttpClientManager) { activeOrigins to headers }
+        if (request.url.encodedUsername.isNotEmpty() || request.url.encodedPassword.isNotEmpty()) {
+          throw IOException("Request URLs must not contain user information")
+        }
+        if (context.first.isNotEmpty() && context.first.none { origin -> origin.matches(request.url) }) {
+          throw IOException("Request rejected outside the active server origins")
+        }
         val builder = request.newBuilder()
         builder.header("User-Agent", USER_AGENT)
-        headers.forEach { (key, value) -> builder.header(key, value) }
-        val url = request.url
-        if (url.username.isNotEmpty()) {
-          builder.header("Authorization", Credentials.basic(url.username, url.password))
+        if (context.first.isNotEmpty()) {
+          context.second.forEach { (key, value) -> builder.header(key, value) }
         }
         it.proceed(builder.build())
       }
@@ -444,15 +522,12 @@ object HttpClientManager {
   }
 
   /**
-   * Persistent CookieJar that duplicates auth cookies across equivalent server URLs.
-   * When the server sets cookies for one domain, copies are created for all other known
-   * server domains (for URL switching between local/remote endpoints of the same server).
+   * Persistent CookieJar that emits authentication cookies only for explicitly allowed origins.
    */
   private class PersistentCookieJar : CookieJar {
     private val store = mutableListOf<Cookie>()
-    private var serverUrls = listOf<HttpUrl>()
+    private var allowedOrigins = emptyList<CanonicalOrigin>()
     private var prefs: SharedPreferences? = null
-
 
     fun init(prefs: SharedPreferences) {
       this.prefs = prefs
@@ -460,69 +535,39 @@ object HttpClientManager {
     }
 
     @Synchronized
-    fun setServerUrls(urls: List<String>) {
-      val parsed = urls.mapNotNull { it.toHttpUrlOrNull() }
-      if (parsed.map { it.host } == serverUrls.map { it.host }) return
-      serverUrls = parsed
-      if (syncAuthCookies()) persist()
+    fun setAllowedOrigins(origins: List<CanonicalOrigin>) {
+      allowedOrigins = origins
+    }
+
+    @Synchronized
+    fun clearAuthCookies() {
+      if (store.removeAll { it.name in AuthCookie.names }) persist()
     }
 
     @Synchronized
     override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
-      val changed = cookies.any { new ->
-        store.none { it.name == new.name && it.domain == new.domain && it.path == new.path && it.value == new.value }
+      val accepted = cookies.filter { it.name !in AuthCookie.names || allowedOrigins.any { origin -> origin.matches(url) } }
+      var changed = false
+      for (newCookie in accepted) {
+        val matching = store.filter {
+          it.name == newCookie.name && it.domain == newCookie.domain && it.path == newCookie.path
+        }
+        if (matching.size == 1 && matching.single() == newCookie) continue
+        store.removeAll { it in matching }
+        store.add(newCookie)
+        changed = true
       }
-      store.removeAll { existing ->
-        cookies.any { it.name == existing.name && it.domain == existing.domain && it.path == existing.path }
-      }
-      store.addAll(cookies)
-      val synced = serverUrls.any { it.host == url.host } && syncAuthCookies()
-      if (changed || synced) persist()
+      if (changed) persist()
     }
 
     @Synchronized
     override fun loadForRequest(url: HttpUrl): List<Cookie> {
       val now = System.currentTimeMillis()
       if (store.removeAll { it.expiresAt < now }) {
-        syncAuthCookies()
         persist()
       }
-      return store.filter { it.matches(url) }
-    }
-
-    private fun syncAuthCookies(): Boolean {
-      val serverHosts = serverUrls.map { it.host }.toSet()
-      val now = System.currentTimeMillis()
-      val sourceCookies = store
-        .filter { it.name in AuthCookie.names && it.domain in serverHosts && it.expiresAt > now }
-        .associateBy { it.name }
-
-      if (sourceCookies.isEmpty()) {
-        return store.removeAll { it.name in AuthCookie.names && it.domain in serverHosts }
-      }
-
-      var changed = false
-      for (url in serverUrls) {
-        for ((_, source) in sourceCookies) {
-          if (store.any { it.name == source.name && it.domain == url.host && it.value == source.value }) continue
-          store.removeAll { it.name == source.name && it.domain == url.host }
-          store.add(rebuildCookie(source, url))
-          changed = true
-        }
-      }
-      return changed
-    }
-
-    private fun rebuildCookie(source: Cookie, url: HttpUrl): Cookie {
-      return Cookie.Builder()
-        .name(source.name).value(source.value)
-        .domain(url.host).path("/")
-        .expiresAt(source.expiresAt)
-        .apply {
-          if (url.isHttps) secure()
-          if (source.httpOnly) httpOnly()
-        }
-        .build()
+      val originAllowed = allowedOrigins.any { it.matches(url) }
+      return store.filter { cookie -> cookie.matches(url) && (cookie.name !in AuthCookie.names || originAllowed) }
     }
 
     private fun persist() {

@@ -5,23 +5,20 @@ import 'package:immich_mobile/domain/models/asset_edit.model.dart' hide AssetEdi
 import 'package:immich_mobile/domain/models/stack.model.dart';
 import 'package:immich_mobile/providers/api.provider.dart';
 import 'package:immich_mobile/repositories/api.repository.dart';
+import 'package:immich_mobile/services/api.service.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:openapi/api.dart';
 
-final assetApiRepositoryProvider = Provider(
-  (ref) => AssetApiRepository(
-    ref.watch(apiServiceProvider).assetsApi,
-    ref.watch(apiServiceProvider).stacksApi,
-    ref.watch(apiServiceProvider).trashApi,
-  ),
-);
+final assetApiRepositoryProvider = Provider((ref) => AssetApiRepository(ref.watch(apiServiceProvider)));
 
 class AssetApiRepository extends ApiRepository {
-  final AssetsApi _api;
-  final StacksApi _stacksApi;
-  final TrashApi _trashApi;
+  final ApiService _apiService;
 
-  AssetApiRepository(this._api, this._stacksApi, this._trashApi);
+  AssetApiRepository(this._apiService);
+
+  AssetsApi get _api => _apiService.assetsApi;
+  StacksApi get _stacksApi => _apiService.stacksApi;
+  TrashApi get _trashApi => _apiService.trashApi;
 
   Future<void> delete(List<String> ids, bool force) async {
     return _api.deleteAssets(AssetBulkDeleteDto(ids: ids, force: force));

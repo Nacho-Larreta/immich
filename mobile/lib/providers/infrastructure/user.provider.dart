@@ -10,7 +10,7 @@ import 'package:immich_mobile/providers/infrastructure/partner.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/store.provider.dart';
 import 'package:immich_mobile/repositories/partner_api.repository.dart';
 
-final userApiRepositoryProvider = Provider((ref) => UserApiRepository(ref.watch(apiServiceProvider).usersApi));
+final userApiRepositoryProvider = Provider((ref) => UserApiRepository(ref.watch(apiServiceProvider)));
 
 final userServiceProvider = Provider(
   (ref) => UserService(

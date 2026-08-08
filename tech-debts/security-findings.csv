@@ -1,0 +1,2 @@
+id,date,status,severity,cwe,area,summary,document
+SEC-WIDGET-001,2026-08-08,open,medium,CWE-598,mobile-widgets,Session token is encoded in widget media request query parameters,08-08-2026/widget-session-token-query-parameter.md

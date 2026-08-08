@@ -7,6 +7,7 @@ enum OfflineErrorCode {
   serverUnavailable,
   wrongServer,
   unauthorized,
+  credentialPurgeFailed,
 }
 
 enum OperationCompletion { completed }
