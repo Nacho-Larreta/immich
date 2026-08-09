@@ -446,10 +446,10 @@ platform :ios do
         archive_path: plan.archive_path,
         output_directory: File.dirname(plan.ipa_path),
         output_name: File.basename(plan.ipa_path),
-        export_method: "app-store-connect",
+        export_method: "app-store",
         xcargs: xcargs,
         export_options: {
-          method: "app-store-connect",
+          method: "app-store",
           signingStyle: "manual",
           signingCertificate: CODE_SIGN_IDENTITY,
           teamID: plan.developer_portal_team_id,

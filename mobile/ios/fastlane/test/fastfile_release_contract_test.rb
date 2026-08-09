@@ -27,7 +27,9 @@ class FastfileReleaseContractTest < Minitest::Test
     assert_includes lane, 'workspace: "Runner.xcworkspace"'
     assert_includes lane, 'scheme: "Runner"'
     assert_includes lane, 'configuration: "Release"'
-    assert_includes lane, 'export_method: "app-store-connect"'
+    assert_includes lane, 'export_method: "app-store"'
+    assert_includes lane, 'method: "app-store"'
+    refute_includes lane, "app-store-connect"
     assert_includes lane, "archive_path: plan.archive_path"
     assert_includes lane, "output_directory: File.dirname(plan.ipa_path)"
     assert_includes lane, "output_name: File.basename(plan.ipa_path)"
