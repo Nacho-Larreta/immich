@@ -99,12 +99,14 @@ final class EndpointActivationRequest {
 }
 
 final class EndpointActivationReceipt {
-  EndpointActivationReceipt({required this.endpoint, required this.sessionEpoch}) {
+  EndpointActivationReceipt({required this.endpoint, required this.sessionEpoch, required this.probeGeneration}) {
     _validateGeneration(sessionEpoch, 'sessionEpoch');
+    _validateGeneration(probeGeneration, 'probeGeneration');
   }
 
   final ValidatedEndpointProbeResult endpoint;
   final int sessionEpoch;
+  final int probeGeneration;
 
   Uri get canonicalOrigin => endpoint.canonicalOrigin;
   Uri get confirmedEndpoint => endpoint.apiEndpoint;

@@ -9,6 +9,8 @@ void main() {
         ReachabilityPhase.probing,
         ReachabilityPhase.offline,
         ReachabilityPhase.online,
+        ReachabilityPhase.paused,
+        ReachabilityPhase.disposed,
       ]);
     });
 
@@ -67,11 +69,27 @@ void main() {
 
     test('reconciliation request validates endpoint and epoch at runtime', () {
       expect(
-        () => ReconciliationRequest(sessionEpoch: -1, confirmedEndpoint: Uri.parse('https://photos.example.test/api')),
+        () => ReconciliationRequest(
+          sessionEpoch: -1,
+          probeGeneration: 0,
+          confirmedEndpoint: Uri.parse('https://photos.example.test/api'),
+        ),
         throwsA(isA<ArgumentError>()),
       );
       expect(
-        () => ReconciliationRequest(sessionEpoch: 0, confirmedEndpoint: Uri.parse('file:///tmp/photos')),
+        () => ReconciliationRequest(
+          sessionEpoch: 0,
+          probeGeneration: -1,
+          confirmedEndpoint: Uri.parse('https://photos.example.test/api'),
+        ),
+        throwsA(isA<ArgumentError>()),
+      );
+      expect(
+        () => ReconciliationRequest(
+          sessionEpoch: 0,
+          probeGeneration: 0,
+          confirmedEndpoint: Uri.parse('file:///tmp/photos'),
+        ),
         throwsA(isA<ArgumentError>()),
       );
     });

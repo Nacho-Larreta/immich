@@ -1,8 +1,8 @@
 import 'package:immich_mobile/domain/models/network_uri.model.dart';
 
-enum ReachabilityPhase { unknown, probing, offline, online }
+enum ReachabilityPhase { unknown, probing, offline, online, paused, disposed }
 
-enum TransportAvailability { unavailable, available }
+enum TransportAvailability { unknown, unavailable, available }
 
 const _confirmedEndpointUnchanged = Object();
 
@@ -62,13 +62,35 @@ final class ReachabilityState {
   int get hashCode => Object.hash(phase, sessionEpoch, confirmedEndpoint, probeGeneration);
 }
 
-final class ReconciliationRequest {
-  ReconciliationRequest({required this.sessionEpoch, required this.confirmedEndpoint}) {
+final class ReachabilityIdentity {
+  ReachabilityIdentity({required this.sessionEpoch, required this.probeGeneration}) {
     _validateGeneration(sessionEpoch, 'sessionEpoch');
+    _validateGeneration(probeGeneration, 'probeGeneration');
+  }
+
+  final int sessionEpoch;
+  final int probeGeneration;
+
+  @override
+  bool operator ==(Object other) {
+    return other is ReachabilityIdentity &&
+        other.sessionEpoch == sessionEpoch &&
+        other.probeGeneration == probeGeneration;
+  }
+
+  @override
+  int get hashCode => Object.hash(sessionEpoch, probeGeneration);
+}
+
+final class ReconciliationRequest {
+  ReconciliationRequest({required this.sessionEpoch, required this.probeGeneration, required this.confirmedEndpoint}) {
+    _validateGeneration(sessionEpoch, 'sessionEpoch');
+    _validateGeneration(probeGeneration, 'probeGeneration');
     validateHttpEndpoint(confirmedEndpoint, 'confirmedEndpoint');
   }
 
   final int sessionEpoch;
+  final int probeGeneration;
   final Uri confirmedEndpoint;
 }
 

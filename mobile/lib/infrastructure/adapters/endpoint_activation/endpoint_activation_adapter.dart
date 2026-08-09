@@ -19,7 +19,6 @@ final class EndpointActivationAdapter implements EndpointActivationPort {
     required NativeRequestContextPort nativeContext,
     required ConfirmedEndpointStorePort endpointStore,
     required WidgetCredentialsPort widgetCredentials,
-    required ReachabilityPublicationPort publication,
     EndpointActivationCheckpoint? checkpoint,
     Duration stalePurgeAttemptTimeout = const Duration(seconds: 5),
   }) : _mutex = mutex,
@@ -28,7 +27,6 @@ final class EndpointActivationAdapter implements EndpointActivationPort {
        _nativeContext = nativeContext,
        _endpointStore = endpointStore,
        _widgetCredentials = widgetCredentials,
-       _publication = publication,
        _checkpoint = checkpoint ?? _noCheckpoint,
        _stalePurgeAttemptTimeout = stalePurgeAttemptTimeout;
 
@@ -38,7 +36,6 @@ final class EndpointActivationAdapter implements EndpointActivationPort {
   final NativeRequestContextPort _nativeContext;
   final ConfirmedEndpointStorePort _endpointStore;
   final WidgetCredentialsPort _widgetCredentials;
-  final ReachabilityPublicationPort _publication;
   final EndpointActivationCheckpoint _checkpoint;
   final Duration _stalePurgeAttemptTimeout;
 
@@ -111,10 +108,11 @@ final class EndpointActivationAdapter implements EndpointActivationPort {
       );
       await _after(EndpointActivationStep.widgetCredentials, request, signal);
 
-      final receipt = EndpointActivationReceipt(endpoint: request.endpoint, sessionEpoch: request.sessionEpoch);
-      progress.onlinePublicationAttempted = true;
-      await _publication.publishOnline(receipt);
-      await _after(EndpointActivationStep.onlinePublication, request, signal);
+      final receipt = EndpointActivationReceipt(
+        endpoint: request.endpoint,
+        sessionEpoch: request.sessionEpoch,
+        probeGeneration: request.probeGeneration,
+      );
       return OfflineResult.success(receipt);
     } on _StaleActivation catch (error) {
       final rollbackError = await _rollback(
@@ -162,9 +160,6 @@ final class EndpointActivationAdapter implements EndpointActivationPort {
       return _purgeStaleSession();
     }
 
-    if (progress.onlinePublicationAttempted) {
-      await _compensate(_publication.restorePrevious);
-    }
     if (progress.widgetCredentialsAttempted) {
       await _compensate(() => _widgetCredentials.write(previousWidgetCredentials));
     }
@@ -197,10 +192,9 @@ final class EndpointActivationAdapter implements EndpointActivationPort {
       return OfflineErrorCode.credentialPurgeFailed;
     }
     try {
-      await _publication.publishLoggedOut();
       _nativeContext.publishCleared();
     } catch (error, stackTrace) {
-      _log.warning('Unable to publish logged-out state after credential purge', error, stackTrace);
+      _log.warning('Unable to publish cleared native state after credential purge', error, stackTrace);
       _applyStaleFence();
       return OfflineErrorCode.credentialPurgeFailed;
     }
@@ -209,7 +203,7 @@ final class EndpointActivationAdapter implements EndpointActivationPort {
 
   bool _applyStaleFence() {
     var applied = true;
-    for (final fence in [_publication.blockOffline, _nativeContext.block, _apiGraph.block]) {
+    for (final fence in [_nativeContext.block, _apiGraph.block]) {
       try {
         fence();
       } catch (error, stackTrace) {
@@ -217,7 +211,7 @@ final class EndpointActivationAdapter implements EndpointActivationPort {
         _log.warning('Unable to apply stale activation fence', error, stackTrace);
       }
     }
-    return applied && _publication.blocked;
+    return applied;
   }
 
   Future<bool> _purgeCredential(Future<void> Function() purge) async {
@@ -299,7 +293,6 @@ final class _ActivationProgress {
   bool apiGraphAttempted = false;
   bool endpointStoreAttempted = false;
   bool widgetCredentialsAttempted = false;
-  bool onlinePublicationAttempted = false;
 }
 
 final class _StaleActivation implements Exception {

@@ -47,8 +47,6 @@ class _MockConfirmedEndpointStore extends Mock implements ConfirmedEndpointStore
 
 class _MockWidgetCredentials extends Mock implements WidgetCredentialsPort {}
 
-class _MockReachabilityPublication extends Mock implements ReachabilityPublicationPort {}
-
 final class _PreparedApiGraph extends Fake implements PreparedApiGraph {}
 
 void main() {
@@ -56,17 +54,6 @@ void main() {
     registerFallbackValue(Uri.parse('https://fallback.test/api'));
     registerFallbackValue(NativeRequestContext(canonicalOrigin: null, accessToken: null, customHeaders: const {}));
     registerFallbackValue(const WidgetCredentials(apiEndpoint: null, accessToken: null, customHeaders: null));
-    registerFallbackValue(
-      EndpointActivationReceipt(
-        endpoint: ValidatedEndpointProbeResult(
-          canonicalOrigin: Uri.parse('https://fallback.test'),
-          apiEndpoint: Uri.parse('https://fallback.test/api'),
-          userId: 'fallback-user',
-          schemePolicy: EndpointSchemePolicy.httpsOnly,
-        ),
-        sessionEpoch: 0,
-      ),
-    );
   });
 
   group('AuthNotifier.hydrateCachedSession', () {
@@ -267,7 +254,8 @@ void main() {
       expect(result, const OfflineResult<EndpointActivationReceipt>.failure(OfflineErrorCode.cancelled));
       verifyNever(() => activation.nativeContext.replace(any()));
       verifyNever(() => activation.widgetCredentials.write(any()));
-      verifyNever(() => activation.publication.publishOnline(any()));
+      verifyNever(() => activation.endpointStore.write(any()));
+      verifyNever(() => activation.apiGraph.prepare(any()));
     });
   });
 }
@@ -382,7 +370,6 @@ final class _ActivationFixture {
       (_) async => const WidgetCredentials(apiEndpoint: null, accessToken: 'old-token', customHeaders: null),
     );
     when(() => widgetCredentials.write(any())).thenAnswer((_) async {});
-    when(() => publication.publishOnline(any())).thenAnswer((_) async {});
     adapter = EndpointActivationAdapter(
       mutex: mutex,
       session: session,
@@ -390,7 +377,6 @@ final class _ActivationFixture {
       nativeContext: nativeContext,
       endpointStore: endpointStore,
       widgetCredentials: widgetCredentials,
-      publication: publication,
       checkpoint: checkpoint,
     );
   }
@@ -399,7 +385,6 @@ final class _ActivationFixture {
   final nativeContext = _MockNativeRequestContext();
   final endpointStore = _MockConfirmedEndpointStore();
   final widgetCredentials = _MockWidgetCredentials();
-  final publication = _MockReachabilityPublication();
   final preparedGraph = _PreparedApiGraph();
   late final EndpointActivationAdapter adapter;
 

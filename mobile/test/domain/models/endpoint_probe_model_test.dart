@@ -183,11 +183,19 @@ void main() {
       schemePolicy: EndpointSchemePolicy.approvedLocalHttp,
     );
 
-    final receipt = EndpointActivationReceipt(endpoint: endpoint, sessionEpoch: 0);
+    final receipt = EndpointActivationReceipt(endpoint: endpoint, sessionEpoch: 0, probeGeneration: 1);
     expect(receipt.confirmedEndpoint, endpoint.apiEndpoint);
     expect(receipt.canonicalOrigin, endpoint.canonicalOrigin);
     expect(receipt.schemePolicy, EndpointSchemePolicy.approvedLocalHttp);
-    expect(() => EndpointActivationReceipt(endpoint: endpoint, sessionEpoch: -1), throwsA(isA<ArgumentError>()));
+    expect(receipt.probeGeneration, 1);
+    expect(
+      () => EndpointActivationReceipt(endpoint: endpoint, sessionEpoch: -1, probeGeneration: 0),
+      throwsA(isA<ArgumentError>()),
+    );
+    expect(
+      () => EndpointActivationReceipt(endpoint: endpoint, sessionEpoch: 0, probeGeneration: -1),
+      throwsA(isA<ArgumentError>()),
+    );
   });
 
   test('activation request validates epoch and generation at runtime', () {

@@ -86,7 +86,7 @@ void main() {
     test('continues rollback when a compensation fails', () async {
       final harness = _Harness(
         checkpoint: (step) async {
-          if (step == EndpointActivationStep.onlinePublication) throw StateError('publish checkpoint');
+          if (step == EndpointActivationStep.widgetCredentials) throw StateError('widget checkpoint');
         },
       );
       harness.widget.failNextWriteAfterActivation = true;
@@ -96,14 +96,7 @@ void main() {
       expect(result, const OfflineResult<EndpointActivationReceipt>.failure(OfflineErrorCode.serverUnavailable));
       expect(
         harness.rollbackEvents,
-        containsAllInOrder([
-          'publication.restore',
-          'widget.write',
-          'store.write',
-          'native.replace',
-          'graph.prepare',
-          'graph.install',
-        ]),
+        containsAllInOrder(['widget.write', 'store.write', 'native.replace', 'graph.prepare', 'graph.install']),
       );
       expect(harness.native.current.canonicalOrigin, Uri.parse('https://old.test'));
       expect(harness.graph.installedGraphs.last.clientIdentity, harness.native.clientIdentity);
@@ -135,10 +128,7 @@ void main() {
 
       expect(result, const OfflineResult<EndpointActivationReceipt>.failure(OfflineErrorCode.cancelled));
       expect(harness.native.current.accessToken, isNull);
-      expect(
-        harness.rollbackEvents,
-        containsAll(['native.clear', 'widget.clear', 'graph.prepare', 'graph.install', 'publication.loggedOut']),
-      );
+      expect(harness.rollbackEvents, containsAll(['native.clear', 'widget.clear', 'graph.prepare', 'graph.install']));
     });
 
     test('installs an empty fresh graph when logout races after graph installation', () async {
@@ -159,10 +149,7 @@ void main() {
       expect(harness.graph.installedGraphs.length, activatedGraph + 3);
       expect(harness.graph.installedGraphs.last, isNot(same(harness.graph.initialGraph)));
       expect(harness.native.current.accessToken, isNull);
-      expect(
-        harness.rollbackEvents,
-        containsAll(['native.clear', 'widget.clear', 'graph.prepare', 'graph.install', 'publication.loggedOut']),
-      );
+      expect(harness.rollbackEvents, containsAll(['native.clear', 'widget.clear', 'graph.prepare', 'graph.install']));
     });
 
     test('purges every credential surface when epoch changes before the first side effect', () async {
@@ -180,17 +167,14 @@ void main() {
       expect(harness.widget.current.accessToken, isNull);
       expect(harness.graph.currentEndpoint, Uri());
       expect(harness.graph.installedGraphs.last.clientIdentity, harness.native.clientIdentity);
-      expect(
-        harness.rollbackEvents,
-        containsAll(['native.clear', 'widget.clear', 'graph.prepare', 'graph.install', 'publication.loggedOut']),
-      );
+      expect(harness.rollbackEvents, containsAll(['native.clear', 'widget.clear', 'graph.prepare', 'graph.install']));
     });
 
     test('does not retry a failed non-cancellable purge', () async {
       late _Harness harness;
       harness = _Harness(
         checkpoint: (step) async {
-          if (step == EndpointActivationStep.onlinePublication) {
+          if (step == EndpointActivationStep.widgetCredentials) {
             harness.session.current = harness.session.current.copyWith(sessionEpoch: 4);
           }
         },
@@ -201,7 +185,7 @@ void main() {
 
       expect(result, const OfflineResult<EndpointActivationReceipt>.failure(OfflineErrorCode.credentialPurgeFailed));
       expect(harness.rollbackEvents.where((event) => event == 'native.clear'), hasLength(1));
-      expect(harness.publication.blocked, isTrue);
+      expect(harness.graph.blocked, isTrue);
       expect(harness.native.blocked, isTrue);
     });
 
@@ -209,7 +193,7 @@ void main() {
       late _Harness harness;
       harness = _Harness(
         checkpoint: (step) async {
-          if (step == EndpointActivationStep.onlinePublication) {
+          if (step == EndpointActivationStep.widgetCredentials) {
             harness.session.current = harness.session.current.copyWith(sessionEpoch: 4);
           }
         },
@@ -220,9 +204,7 @@ void main() {
 
       expect(result, const OfflineResult<EndpointActivationReceipt>.failure(OfflineErrorCode.credentialPurgeFailed));
       expect(harness.rollbackEvents.where((event) => event == 'widget.clear'), hasLength(1));
-      expect(harness.rollbackEvents, isNot(contains('publication.loggedOut')));
       expect(harness.graph.blocked, isTrue);
-      expect(harness.publication.blocked, isTrue);
       expect(harness.native.blocked, isTrue);
     });
 
@@ -242,13 +224,11 @@ void main() {
       expect(harness.rollbackEvents.where((event) => event == 'widget.clear'), hasLength(1));
       expect(harness.native.current.accessToken, isNull);
       expect(harness.graph.currentEndpoint, Uri());
-      expect(harness.rollbackEvents, isNot(contains('publication.loggedOut')));
       expect(harness.graph.blocked, isTrue);
-      expect(harness.publication.blocked, isTrue);
       expect(harness.native.blocked, isTrue);
     });
 
-    test('blocks publication graph and requests while stale purge is pending', () async {
+    test('blocks graph and native requests while stale purge is pending', () async {
       late _Harness harness;
       final clearGate = Completer<void>();
       harness = _Harness(
@@ -263,7 +243,6 @@ void main() {
 
       expect(harness.graph.blocked, isTrue);
       expect(harness.graph.currentEndpoint, Uri());
-      expect(harness.publication.blocked, isTrue);
       expect(harness.native.blocked, isTrue);
 
       clearGate.complete();
@@ -272,7 +251,6 @@ void main() {
         const OfflineResult<EndpointActivationReceipt>.failure(OfflineErrorCode.cancelled),
       );
       expect(harness.graph.installedGraphs.last.clientIdentity, harness.native.clientIdentity);
-      expect(harness.publication.blocked, isFalse);
       expect(harness.native.blocked, isFalse);
     });
   });
@@ -283,14 +261,6 @@ List<String> _expectedRollback(EndpointActivationStep step) => switch (step) {
   EndpointActivationStep.apiGraph => ['native.replace', 'graph.prepare', 'graph.install'],
   EndpointActivationStep.endpointStore => ['store.write', 'native.replace', 'graph.prepare', 'graph.install'],
   EndpointActivationStep.widgetCredentials => [
-    'widget.write',
-    'store.write',
-    'native.replace',
-    'graph.prepare',
-    'graph.install',
-  ],
-  EndpointActivationStep.onlinePublication => [
-    'publication.restore',
     'widget.write',
     'store.write',
     'native.replace',
@@ -314,7 +284,6 @@ final class _Harness {
       nativeContext: native,
       endpointStore: store,
       widgetCredentials: widget,
-      publication: publication,
       checkpoint: checkpoint,
       stalePurgeAttemptTimeout: stalePurgeAttemptTimeout,
     );
@@ -326,7 +295,6 @@ final class _Harness {
   late final native = _Native(events);
   late final store = _Store(events);
   late final widget = _Widget(events);
-  late final publication = _Publication(events);
   late final EndpointActivationAdapter adapter;
 
   List<String> get rollbackEvents {
@@ -548,33 +516,5 @@ final class _Widget implements WidgetCredentialsPort {
       throw StateError('widget clear failed');
     }
     current = const WidgetCredentials(apiEndpoint: null, accessToken: null, customHeaders: null);
-  }
-}
-
-final class _Publication implements ReachabilityPublicationPort {
-  _Publication(this.events);
-
-  final List<String> events;
-  @override
-  var blocked = false;
-
-  @override
-  void blockOffline() {
-    events.add('publication.block.rollback');
-    blocked = true;
-  }
-
-  @override
-  Future<void> publishOnline(EndpointActivationReceipt receipt) async {
-    blocked = false;
-  }
-
-  @override
-  Future<void> restorePrevious() async => events.add('publication.restore.rollback');
-
-  @override
-  Future<void> publishLoggedOut() async {
-    events.add('publication.loggedOut.rollback');
-    blocked = false;
   }
 }

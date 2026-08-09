@@ -1,4 +1,3 @@
-import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/domain/models/network_uri.model.dart';
 
 final class ActivationSessionSnapshot {
@@ -95,18 +94,6 @@ abstract interface class WidgetCredentialsPort {
   Future<void> clear();
 }
 
-abstract interface class ReachabilityPublicationPort {
-  bool get blocked;
-
-  void blockOffline();
-
-  Future<void> publishOnline(EndpointActivationReceipt receipt);
-
-  Future<void> restorePrevious();
-
-  Future<void> publishLoggedOut();
-}
-
-enum EndpointActivationStep { nativeContext, apiGraph, endpointStore, widgetCredentials, onlinePublication }
+enum EndpointActivationStep { nativeContext, apiGraph, endpointStore, widgetCredentials }
 
 typedef EndpointActivationCheckpoint = Future<void> Function(EndpointActivationStep step);
