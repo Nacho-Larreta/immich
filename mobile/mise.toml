@@ -38,6 +38,7 @@ depends = [
   "pigeon:connectivity",
   "pigeon:local-image",
   "pigeon:remote-image",
+  "pigeon:original-export",
   "pigeon:probe-http",
 ]
 
@@ -196,6 +197,20 @@ outputs = [
 run = [
   "dart run pigeon --input pigeon/remote_image_api.dart",
   "dart format lib/platform/remote_image_api.g.dart",
+]
+
+[tasks."pigeon:original-export"]
+description = "Generate original export API pigeon code"
+hide = true
+sources = ["pigeon/original_export_api.dart"]
+outputs = [
+  "lib/platform/original_export_api.g.dart",
+  "ios/Runner/Share/OriginalExport.g.swift",
+  "android/app/src/main/kotlin/app/alextran/immich/share/OriginalExport.g.kt",
+]
+run = [
+  "dart run pigeon --input pigeon/original_export_api.dart",
+  "dart format lib/platform/original_export_api.g.dart",
 ]
 
 [tasks."pigeon:probe-http"]

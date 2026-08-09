@@ -34,6 +34,11 @@ import native_video_player
       api: LocalImageApiImpl(flutterApi: localImageFlutterApi)
     )
     RemoteImageApiSetup.setUp(binaryMessenger: messenger, api: RemoteImageApiImpl())
+    let originalExportFlutterApi = OriginalExportFlutterApi(binaryMessenger: messenger)
+    OriginalExportApiSetup.setUp(
+      binaryMessenger: messenger,
+      api: OriginalExportApiImpl(flutterApi: originalExportFlutterApi)
+    )
     ProbeHttpApiSetup.setUp(binaryMessenger: messenger, api: ProbeHttpApiImpl())
     BackgroundWorkerFgHostApiSetup.setUp(binaryMessenger: messenger, api: BackgroundWorkerApiImpl())
     let connectivityFlutterApi = ConnectivityFlutterApi(binaryMessenger: messenger)

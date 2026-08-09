@@ -21,6 +21,8 @@ import app.alextran.immich.images.LocalImagesImpl
 import app.alextran.immich.images.LocalImageFlutterApi
 import app.alextran.immich.images.RemoteImageApi
 import app.alextran.immich.images.RemoteImagesImpl
+import app.alextran.immich.share.OriginalExportApi
+import app.alextran.immich.share.OriginalExportApiImpl
 import app.alextran.immich.sync.NativeSyncApi
 import app.alextran.immich.sync.NativeSyncApiImpl26
 import app.alextran.immich.sync.NativeSyncApiImpl30
@@ -51,6 +53,10 @@ class MainActivity : FlutterFragmentActivity() {
       NativeSyncApi.setUp(messenger, nativeSyncApiImpl)
       LocalImageApi.setUp(messenger, LocalImagesImpl(ctx, LocalImageFlutterApi(messenger)))
       RemoteImageApi.setUp(messenger, RemoteImagesImpl(ctx))
+      OriginalExportApi.setUp(
+        messenger,
+        OriginalExportApiImpl(),
+      )
       ProbeHttpApi.setUp(messenger, ProbeHttpApiImpl())
 
       BackgroundWorkerFgHostApi.setUp(messenger, BackgroundWorkerApiImpl(ctx))

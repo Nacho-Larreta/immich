@@ -66,6 +66,12 @@ struct NetworkCanonicalOrigin: Equatable {
     self.port = port
   }
 
+  fileprivate init(authorization: NetworkOriginAuthorization) {
+    scheme = authorization.scheme
+    host = authorization.host
+    port = authorization.port
+  }
+
   func matches(_ url: URL) -> Bool {
     guard
       url.user == nil,
@@ -94,6 +100,12 @@ struct NetworkCanonicalOrigin: Equatable {
     default: return nil
     }
   }
+}
+
+struct NetworkOriginAuthorization: Equatable, Sendable {
+  fileprivate let scheme: String
+  fileprivate let host: String
+  fileprivate let port: Int
 }
 
 extension UserDefaults {
@@ -178,7 +190,51 @@ class URLSessionManager: NSObject {
 
   static func allows(_ url: URL) -> Bool {
     withRequestContextLock {
-      activeCanonicalOrigins.isEmpty || activeCanonicalOrigins.contains { $0.matches(url) }
+      !activeCanonicalOrigins.isEmpty && activeCanonicalOrigins.contains { $0.matches(url) }
+    }
+  }
+
+  static func authorize(
+    _ url: URL,
+    declaredOrigin: String
+  ) -> NetworkOriginAuthorization? {
+    guard let declared = NetworkCanonicalOrigin(origin: declaredOrigin) else { return nil }
+    return withRequestContextLock {
+      guard
+        activeCanonicalOrigins.contains(declared),
+        declared.matches(url)
+      else { return nil }
+      return NetworkOriginAuthorization(
+        scheme: declared.scheme,
+        host: declared.host,
+        port: declared.port
+      )
+    }
+  }
+
+  static func allows(
+    _ url: URL,
+    under authorization: NetworkOriginAuthorization
+  ) -> Bool {
+    let authorizedOrigin = NetworkCanonicalOrigin(
+      authorization: authorization
+    )
+    return withRequestContextLock {
+      activeCanonicalOrigins.contains(authorizedOrigin) && authorizedOrigin.matches(url)
+    }
+  }
+
+  static func headers(
+    under authorization: NetworkOriginAuthorization
+  ) -> [String: String]? {
+    let authorizedOrigin = NetworkCanonicalOrigin(authorization: authorization)
+    return withRequestContextLock {
+      guard activeCanonicalOrigins.contains(authorizedOrigin) else { return nil }
+      var headers =
+        UserDefaults.group.dictionary(forKey: HEADERS_KEY) as? [String: String]
+        ?? [:]
+      headers["User-Agent"] = headers["User-Agent"] ?? userAgent
+      return headers
     }
   }
 

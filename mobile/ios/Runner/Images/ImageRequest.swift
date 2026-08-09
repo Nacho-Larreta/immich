@@ -77,4 +77,12 @@ final class RequestRegistry<T: AnyObject & Sendable>: @unchecked Sendable {
       return removed
     }
   }
+
+  func value(requestId: Int64) -> T? {
+    requests.withLock { $0[requestId] }
+  }
+
+  func all() -> [T] {
+    requests.withLock { Array($0.values) }
+  }
 }

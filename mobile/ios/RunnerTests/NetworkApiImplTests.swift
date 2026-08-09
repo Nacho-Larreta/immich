@@ -147,6 +147,32 @@ final class NetworkApiImplTests: XCTestCase {
     XCTAssertNil(redirectedRequest)
   }
 
+  func testOriginalExportAuthorizationIsFailClosedAndRevalidated() throws {
+    let photosURL = try XCTUnwrap(URL(string: "https://photos.test/api/assets/1/original"))
+    let evilURL = try XCTUnwrap(URL(string: "https://evil.test/api/assets/1/original"))
+
+    XCTAssertNil(
+      URLSessionManager.authorize(photosURL, declaredOrigin: "https://photos.test")
+    )
+
+    try URLSessionManager.replaceRequestContext(
+      headers: [:],
+      canonicalOrigin: "https://photos.test",
+      token: nil
+    )
+    let authorization = try XCTUnwrap(
+      URLSessionManager.authorize(photosURL, declaredOrigin: "https://photos.test")
+    )
+    XCTAssertTrue(URLSessionManager.allows(photosURL, under: authorization))
+    XCTAssertFalse(URLSessionManager.allows(evilURL, under: authorization))
+    XCTAssertNil(
+      URLSessionManager.authorize(evilURL, declaredOrigin: "https://evil.test")
+    )
+
+    try URLSessionManager.replaceRequestContext(headers: [:], canonicalOrigin: nil, token: nil)
+    XCTAssertFalse(URLSessionManager.allows(photosURL, under: authorization))
+  }
+
   func testConcurrentContextReplacementPublishesOneCompleteContext() throws {
     let contexts = [
       (origin: "https://photos.test", header: "photos", token: "photos-token"),

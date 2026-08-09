@@ -61,6 +61,32 @@ final class ControlledURLRequest {
   }
 
   @discardableResult
+  func redirect(statusCode: Int = 302, to url: URL) -> Bool {
+    lock.lock()
+    guard
+      state == .active,
+      let protocolInstance,
+      let sourceURL = protocolInstance.request.url,
+      let response = HTTPURLResponse(
+        url: sourceURL,
+        statusCode: statusCode,
+        httpVersion: nil,
+        headerFields: ["Location": url.absoluteString]
+      )
+    else {
+      lock.unlock()
+      return false
+    }
+    lock.unlock()
+    protocolInstance.client?.urlProtocol(
+      protocolInstance,
+      wasRedirectedTo: URLRequest(url: url),
+      redirectResponse: response
+    )
+    return true
+  }
+
+  @discardableResult
   func finish() -> Bool {
     transitionToTerminal(.finished) { protocolInstance in
       protocolInstance.client?.urlProtocolDidFinishLoading(protocolInstance)
