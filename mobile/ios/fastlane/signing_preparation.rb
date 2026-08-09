@@ -4,6 +4,7 @@ require "digest"
 require "openssl"
 require "base64"
 require "pathname"
+require "stringio"
 require "tempfile"
 require_relative "secure_file_operations"
 
@@ -397,6 +398,8 @@ module SigningPreparation
   module ProfileVerifier
     module_function
 
+    MAX_CERTIFICATE_DER_BYTES = 64 * 1024
+
     def verify_destination!(path)
       parent = File.dirname(path)
       stat = File.lstat(parent)
@@ -430,8 +433,7 @@ module SigningPreparation
       end
 
       fingerprints = Array(profile_data["DeveloperCertificates"]).map do |certificate|
-        der = certificate.respond_to?(:to_der) ? certificate.to_der : certificate.to_s
-        Digest::SHA256.hexdigest(der)
+        certificate_fingerprint!(certificate)
       end
       unless fingerprints.include?(certificate_sha256)
         raise InvalidPlan, "Provisioning profile does not contain the expected signing certificate"
@@ -439,5 +441,34 @@ module SigningPreparation
 
       true
     end
+
+    def certificate_fingerprint!(certificate)
+      der = case certificate
+            when OpenSSL::X509::Certificate
+              certificate.to_der
+            when StringIO, IO
+              read_certificate_stream!(certificate)
+            else
+              raise InvalidPlan, "Provisioning profile contains an invalid signing certificate"
+            end
+      unless der.is_a?(String) && !der.empty? && der.bytesize <= MAX_CERTIFICATE_DER_BYTES
+        raise InvalidPlan, "Provisioning profile contains an invalid signing certificate"
+      end
+
+      parsed_certificate = OpenSSL::X509::Certificate.new(der)
+      Digest::SHA256.hexdigest(parsed_certificate.to_der)
+    rescue IOError, SystemCallError, TypeError, OpenSSL::X509::CertificateError
+      raise InvalidPlan, "Provisioning profile contains an invalid signing certificate"
+    end
+    private_class_method :certificate_fingerprint!
+
+    def read_certificate_stream!(stream)
+      original_position = stream.pos
+      stream.rewind
+      stream.read(MAX_CERTIFICATE_DER_BYTES + 1)
+    ensure
+      stream.seek(original_position, IO::SEEK_SET) if original_position
+    end
+    private_class_method :read_certificate_stream!
   end
 end

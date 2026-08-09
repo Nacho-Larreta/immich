@@ -52,6 +52,12 @@ class FastfileReleaseContractTest < Minitest::Test
     refute_match(/\b(delete|revoke)\w*!?\s*\(/, lane)
   end
 
+  def test_signing_import_targets_an_explicit_configurable_keychain
+    lane = lane_source("nacho_prepare_signing_prod")
+
+    assert_includes lane, 'keychain_name: ENV.fetch("KEYCHAIN_NAME", "login.keychain")'
+  end
+
   def test_explicit_sigh_force_false_overrides_true_environment_default
     previous = ENV["SIGH_FORCE"]
     ENV["SIGH_FORCE"] = "true"

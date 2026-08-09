@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "stringio"
 require "tmpdir"
 require_relative "../signing_preparation"
 
@@ -117,8 +118,8 @@ class SigningPreparationTest < Minitest::Test
   end
 
   def test_profile_verifier_requires_exact_bundle_id_and_imported_certificate
-    certificate = "certificate-der"
-    fingerprint = Digest::SHA256.hexdigest(certificate)
+    certificate, = self_signed_identity("profile")
+    fingerprint = Digest::SHA256.hexdigest(certificate.to_der)
     profile = {
       "Entitlements" => { "application-identifier" => "portal-team.com.example.app" },
       "DeveloperCertificates" => [certificate]
@@ -141,6 +142,75 @@ class SigningPreparationTest < Minitest::Test
         profile_data: profile,
         expected_bundle_id: "com.example.app",
         certificate_sha256: "0" * 64
+      )
+    end
+  end
+
+  def test_profile_verifier_reads_fastlane_certificate_stream_without_consuming_it
+    certificate, = self_signed_identity("fastlane-profile")
+    certificate_stream = StringIO.new(certificate.to_der)
+    original_position = certificate.to_der.bytesize / 2
+    certificate_stream.pos = original_position
+
+    assert SigningPreparation::ProfileVerifier.verify!(
+      profile_data: profile_with_certificate(certificate_stream),
+      expected_bundle_id: "com.example.app",
+      certificate_sha256: Digest::SHA256.hexdigest(certificate.to_der)
+    )
+    assert_equal original_position, certificate_stream.pos
+  end
+
+  def test_profile_verifier_reads_io_certificate_without_consuming_it
+    certificate, = self_signed_identity("io-profile")
+
+    Dir.mktmpdir do |directory|
+      path = File.join(directory, "certificate.cer")
+      File.binwrite(path, certificate.to_der)
+      File.open(path, "rb") do |certificate_stream|
+        original_position = certificate.to_der.bytesize / 2
+        certificate_stream.pos = original_position
+
+        assert SigningPreparation::ProfileVerifier.verify!(
+          profile_data: profile_with_certificate(certificate_stream),
+          expected_bundle_id: "com.example.app",
+          certificate_sha256: Digest::SHA256.hexdigest(certificate.to_der)
+        )
+        assert_equal original_position, certificate_stream.pos
+      end
+    end
+  end
+
+  def test_profile_verifier_rejects_unsupported_unreadable_and_malformed_certificates
+    certificate, = self_signed_identity("invalid-profile")
+    unsupported_certificate = Struct.new(:content) do
+      def to_s
+        content
+      end
+    end.new(certificate.to_der)
+    closed_stream = StringIO.new(certificate.to_der)
+    closed_stream.close
+
+    [unsupported_certificate, closed_stream, StringIO.new("not-a-certificate")].each do |profile_certificate|
+      assert_raises(SigningPreparation::InvalidPlan) do
+        SigningPreparation::ProfileVerifier.verify!(
+          profile_data: profile_with_certificate(profile_certificate),
+          expected_bundle_id: "com.example.app",
+          certificate_sha256: Digest::SHA256.hexdigest(certificate.to_der)
+        )
+      end
+    end
+  end
+
+  def test_profile_verifier_rejects_oversized_certificate_stream
+    certificate, private_key = self_signed_identity("oversized-profile")
+    certificate.add_extension(OpenSSL::X509::Extension.new("1.2.3.4", "a" * (64 * 1024)))
+    certificate.sign(private_key, OpenSSL::Digest::SHA256.new)
+
+    assert_raises(SigningPreparation::InvalidPlan) do
+      SigningPreparation::ProfileVerifier.verify!(
+        profile_data: profile_with_certificate(StringIO.new(certificate.to_der)),
+        expected_bundle_id: "com.example.app",
+        certificate_sha256: Digest::SHA256.hexdigest(certificate.to_der)
       )
     end
   end
@@ -402,6 +472,13 @@ class SigningPreparationTest < Minitest::Test
   end
 
   private
+
+  def profile_with_certificate(certificate)
+    {
+      "Entitlements" => { "application-identifier" => "portal-team.com.example.app" },
+      "DeveloperCertificates" => [certificate]
+    }
+  end
 
   def create_plan(directory)
     SigningPreparation::Plan.from_env(

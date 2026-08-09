@@ -322,7 +322,8 @@ platform :ios do
 
         import_certificate(
           certificate_path: plan.p12_path,
-          certificate_password: plan.p12_password
+          certificate_password: plan.p12_password,
+          keychain_name: ENV.fetch("KEYCHAIN_NAME", "login.keychain")
         )
         state.certificate_imported!
 
