@@ -17,8 +17,8 @@ void main() {
       });
       final adapter = EndpointProbeAdapter(
         transport: transport,
-        commonHeaders: const {'x-proxy-key': 'proxy'},
-        authenticationHeaders: const {'x-api-key': 'token'},
+        commonHeaders: const {'x-request-id': 'request-1'},
+        accessToken: 'token',
       );
 
       final result = await adapter.probe(_request()).result;
@@ -38,9 +38,12 @@ void main() {
       expect(transport.configurations.single.persistentCookiesEnabled, isFalse);
       expect(transport.configurations.single.cacheEnabled, isFalse);
       expect(transport.configurations.single.redirectPolicy, ProbeHttpRedirectPolicy.sameOriginOnly);
-      expect(transport.sessions.single.requests[0].headers, {'x-proxy-key': 'proxy'});
-      expect(transport.sessions.single.requests[1].headers, {'x-proxy-key': 'proxy'});
-      expect(transport.sessions.single.requests[2].headers, {'x-proxy-key': 'proxy', 'x-api-key': 'token'});
+      expect(transport.sessions.single.requests[0].headers, {'x-request-id': 'request-1'});
+      expect(transport.sessions.single.requests[1].headers, {'x-request-id': 'request-1'});
+      expect(transport.sessions.single.requests[2].headers, {
+        'x-request-id': 'request-1',
+        'Authorization': 'Bearer token',
+      });
     });
 
     test('preserves the candidate API subpath when well-known is absent', () async {
@@ -119,13 +122,58 @@ void main() {
         session.respond('/.well-known/immich', statusCode: 404);
         session.respond('/api/server/ping', body: '{"res":"not-pong"}');
       });
-      final adapter = EndpointProbeAdapter(transport: transport, authenticationHeaders: const {'x-api-key': 'token'});
+      final adapter = EndpointProbeAdapter(transport: transport, accessToken: 'token');
 
       final result = await adapter.probe(_request()).result;
 
       expect(result, const EndpointProbeResult.rejected(OfflineErrorCode.wrongServer));
       expect(transport.sessions.single.requests, hasLength(2));
       expect(transport.sessions.single.requests.every((request) => !request.headers.containsKey('x-api-key')), isTrue);
+    });
+
+    test('strips credential, cookie and hop-by-hop headers from every probe request', () async {
+      final transport = _FakeProbeHttpTransport((session) {
+        session.respond('/.well-known/immich', statusCode: 404);
+        session.respond('/api/server/ping', body: '{"res":"pong"}');
+        session.respond('/api/users/me', body: '{"id":"user-1"}');
+      });
+      final adapter = EndpointProbeAdapter(
+        transport: transport,
+        accessToken: 'current-token',
+        commonHeaders: const {
+          'x-request-id': 'safe-correlation',
+          'authorization': 'raw-authorization',
+          'X-API-Key': 'raw-api-key',
+          'Cookie': 'session=secret',
+          'set-cookie': 'secret=response',
+          'Proxy-Authorization': 'proxy-secret',
+          'Connection': 'keep-alive',
+          'Transfer-Encoding': 'chunked',
+          'Upgrade': 'websocket',
+        },
+      );
+
+      await adapter.probe(_request()).result;
+
+      final requests = transport.sessions.single.requests;
+      for (final request in requests) {
+        expect(request.headers['x-request-id'], 'safe-correlation');
+        final names = request.headers.keys.map((name) => name.toLowerCase()).toSet();
+        for (final forbidden in <String>{
+          'x-api-key',
+          'cookie',
+          'set-cookie',
+          'proxy-authorization',
+          'connection',
+          'transfer-encoding',
+          'upgrade',
+        }) {
+          expect(names, isNot(contains(forbidden)));
+        }
+      }
+      expect(requests[0].headers.keys.map((name) => name.toLowerCase()), isNot(contains('authorization')));
+      expect(requests[1].headers.keys.map((name) => name.toLowerCase()), isNot(contains('authorization')));
+      expect(requests[2].headers['Authorization'], 'Bearer current-token');
     });
 
     test('times out with an injectable candidate deadline and cancels transport work', () async {

@@ -16,11 +16,10 @@ import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
 import 'package:immich_mobile/providers/auth.provider.dart';
-import 'package:immich_mobile/providers/background_sync.provider.dart';
 import 'package:immich_mobile/providers/gallery_permission.provider.dart';
 import 'package:immich_mobile/providers/oauth.provider.dart';
 import 'package:immich_mobile/providers/server_info.provider.dart';
-import 'package:immich_mobile/providers/websocket.provider.dart';
+import 'package:immich_mobile/providers/session_work.provider.dart';
 import 'package:immich_mobile/repositories/local_files_manager.repository.dart';
 import 'package:immich_mobile/routing/router.dart';
 import 'package:immich_mobile/utils/provider_utils.dart';
@@ -171,16 +170,11 @@ class LoginForm extends HookConsumerWidget {
       serverEndpointController.text = 'http://10.1.15.216:2283/api';
     }
 
-    Future<void> handleSyncFlow() async {
-      final backgroundManager = ref.read(backgroundSyncProvider);
-
-      await backgroundManager.syncLocal(full: true);
-      await backgroundManager.syncRemote();
-      await backgroundManager.hashAssets();
-
-      if (Store.get(StoreKey.syncAlbums, false)) {
-        await backgroundManager.syncLinkedAlbum();
-      }
+    void triggerSessionWork() {
+      final endpoint = Uri.tryParse(Store.tryGet(StoreKey.serverEndpoint) ?? '');
+      ref
+          .read(sessionWorkProvider)
+          .activate(confirmedEndpoint: endpoint?.hasAuthority == true ? endpoint : null, fullLocalSync: true);
     }
 
     getManageMediaPermission() async {
@@ -248,8 +242,7 @@ class LoginForm extends HookConsumerWidget {
           if (isSyncRemoteDeletionsMode()) {
             await getManageMediaPermission();
           }
-          unawaited(handleSyncFlow());
-          ref.read(websocketProvider.notifier).connect();
+          triggerSessionWork();
           unawaited(context.replaceRoute(const TabShellRoute()));
           return;
         }
@@ -336,7 +329,7 @@ class LoginForm extends HookConsumerWidget {
             if (isSyncRemoteDeletionsMode()) {
               await getManageMediaPermission();
             }
-            unawaited(handleSyncFlow());
+            triggerSessionWork();
             unawaited(context.replaceRoute(const TabShellRoute()));
             return;
           }

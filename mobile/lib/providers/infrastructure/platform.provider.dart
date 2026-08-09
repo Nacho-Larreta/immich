@@ -24,6 +24,10 @@ final probeHttpTransportProvider = Provider<ProbeHttpTransportPort>((_) => Nativ
 
 final localImageApi = LocalImageApi();
 
+final localImageApiProvider = Provider<LocalImageApi>((_) => localImageApi);
+
 final remoteImageApi = RemoteImageApi();
+
+final remoteImageApiProvider = Provider<RemoteImageApi>((_) => remoteImageApi);
 
 final networkApi = NetworkApi();

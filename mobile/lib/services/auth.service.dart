@@ -94,17 +94,21 @@ class AuthService {
   ///
   /// Throws any unhandled exceptions from the API request or local data clearing operations.
   Future<void> logout() async {
+    await invalidateRemoteSession();
+    await clearLocalSession();
+  }
+
+  Future<void> invalidateRemoteSession() async {
     try {
       await _authApiRepository.logout();
     } catch (error, stackTrace) {
       _log.severe("Error logging out", error, stackTrace);
-    } finally {
-      await clearLocalData().catchError((error, stackTrace) {
-        _log.severe("Error clearing local data", error, stackTrace);
-      });
-
-      await _appSettingsService.setSetting(AppSettingsEnum.enableBackup, false);
     }
+  }
+
+  Future<void> clearLocalSession() async {
+    await clearLocalData();
+    await _appSettingsService.setSetting(AppSettingsEnum.enableBackup, false);
   }
 
   /// Clears all local authentication-related data.
@@ -128,6 +132,7 @@ class AuthService {
       Store.delete(StoreKey.preferredWifiName),
       Store.delete(StoreKey.localEndpoint),
       Store.delete(StoreKey.externalEndpointList),
+      Store.delete(StoreKey.serverEndpoint),
     ]);
   }
 

@@ -79,9 +79,15 @@ void main() {
         secureStorage,
         widgetService,
         _RecordingAuthRequestContext(<String>[]),
+        _RecordingAuthApiGraph(<String>[]),
         SessionMutationMutex(),
         _MockRef(),
         cachedSessionReader: reader,
+        invalidateSession: () async {},
+        cancelLocalMedia: () async {},
+        cancelRemoteMedia: () async {},
+        stopBackup: () {},
+        disconnectWebsocket: () {},
       );
 
       final hydrated = notifier.hydrateCachedSession();
@@ -111,9 +117,15 @@ void main() {
         _MockSecureStorageService(),
         _MockWidgetService(),
         _RecordingAuthRequestContext(<String>[]),
+        _RecordingAuthApiGraph(<String>[]),
         SessionMutationMutex(),
         _MockRef(),
         cachedSessionReader: reader,
+        invalidateSession: () async {},
+        cancelLocalMedia: () async {},
+        cancelRemoteMedia: () async {},
+        stopBackup: () {},
+        disconnectWebsocket: () {},
       );
 
       expect(notifier.hydrateCachedSession(), isFalse);
@@ -122,6 +134,107 @@ void main() {
   });
 
   group('AuthNotifier.logout', () {
+    test('invalidates reachability before waiting for the session mutation mutex', () async {
+      final mutex = SessionMutationMutex();
+      final mutexEntered = Completer<void>();
+      final releaseMutex = Completer<void>();
+      final heldMutation = mutex.protect(() async {
+        mutexEntered.complete();
+        await releaseMutex.future;
+      });
+      await mutexEntered.future;
+      var invalidationCalls = 0;
+      final auth = _LogoutFixture(
+        mutex: mutex,
+        invalidateSession: () async {
+          invalidationCalls++;
+        },
+      );
+
+      final logout = auth.notifier.logout();
+      await pumpEventQueue();
+
+      expect(invalidationCalls, 1);
+      verifyNever(auth.authService.invalidateRemoteSession);
+
+      releaseMutex.complete();
+      await Future.wait([heldMutation, logout]);
+      verify(auth.authService.invalidateRemoteSession).called(1);
+    });
+
+    test('runs mutex-protected cleanup after coordinator cancellation fails', () async {
+      final auth = _LogoutFixture(
+        mutex: SessionMutationMutex(),
+        invalidateSession: () async => throw StateError('cancel failed'),
+      );
+
+      await expectLater(auth.notifier.logout(), throwsA(isA<StateError>()));
+
+      verify(auth.authService.invalidateRemoteSession).called(1);
+      verify(auth.widgetService.clearCredentialsAndRefresh).called(1);
+      expect(auth.notifier.state.isAuthenticated, isFalse);
+    });
+
+    test('cancels both media pipelines exactly once when one cancellation fails', () async {
+      var localCancellationCalls = 0;
+      var remoteCancellationCalls = 0;
+      final auth = _LogoutFixture(
+        mutex: SessionMutationMutex(),
+        cancelLocalMedia: () async {
+          localCancellationCalls++;
+          throw StateError('local media cancel failed');
+        },
+        cancelRemoteMedia: () async {
+          remoteCancellationCalls++;
+        },
+      );
+
+      await expectLater(auth.notifier.logout(), throwsA(isA<StateError>()));
+
+      expect(localCancellationCalls, 1);
+      expect(remoteCancellationCalls, 1);
+      verify(auth.authService.invalidateRemoteSession).called(1);
+      expect(auth.notifier.state.isAuthenticated, isFalse);
+    });
+
+    test('stops persistent backup and websocket after a completed reconciliation', () async {
+      var backupStops = 0;
+      var websocketDisconnects = 0;
+      final auth = _LogoutFixture(
+        mutex: SessionMutationMutex(),
+        stopBackup: () => backupStops++,
+        disconnectWebsocket: () => websocketDisconnects++,
+      );
+
+      await auth.notifier.logout();
+
+      expect(backupStops, 1);
+      expect(websocketDisconnects, 1);
+      expect(auth.apiGraph.purgeCalls, 1);
+      expect(auth.notifier.state.isAuthenticated, isFalse);
+    });
+
+    test('coalesces concurrent logout calls into one invalidation and cleanup', () async {
+      final invalidationGate = Completer<void>();
+      var invalidationCalls = 0;
+      final auth = _LogoutFixture(
+        mutex: SessionMutationMutex(),
+        invalidateSession: () {
+          invalidationCalls++;
+          return invalidationGate.future;
+        },
+      );
+
+      final first = auth.notifier.logout();
+      final second = auth.notifier.logout();
+      expect(identical(first, second), isTrue);
+      invalidationGate.complete();
+      await Future.wait([first, second]);
+
+      expect(invalidationCalls, 1);
+      verify(auth.authService.invalidateRemoteSession).called(1);
+    });
+
     test('keeps authenticated state and requests blocked until every cleanup completes', () async {
       final authService = _MockAuthService();
       final secureStorage = _MockSecureStorageService();
@@ -135,7 +248,8 @@ void main() {
       final widgetClearStarted = Completer<void>();
       final reader = _authenticatedSessionReader();
       when(() => secureStorage.delete(any())).thenAnswer((_) async {});
-      when(authService.logout).thenAnswer((_) async => events.add('remote.logout'));
+      when(authService.invalidateRemoteSession).thenAnswer((_) async => events.add('remote.logout'));
+      when(authService.clearLocalSession).thenAnswer((_) async {});
       when(widgetService.clearCredentialsAndRefresh).thenAnswer((_) async {
         widgetClearStarted.complete();
         await widgetGate.future;
@@ -151,9 +265,15 @@ void main() {
         secureStorage,
         widgetService,
         requestContext,
+        _RecordingAuthApiGraph(events),
         SessionMutationMutex(),
         ref,
         cachedSessionReader: reader,
+        invalidateSession: () async {},
+        cancelLocalMedia: () async {},
+        cancelRemoteMedia: () async {},
+        stopBackup: () {},
+        disconnectWebsocket: () {},
       );
       notifier.hydrateCachedSession();
 
@@ -162,7 +282,7 @@ void main() {
 
       expect(requestContext.blocked, isTrue);
       expect(notifier.state.isAuthenticated, isTrue);
-      expect(events, containsAllInOrder(['remote.logout', 'network.block', 'network.purge']));
+      expect(events, containsAllInOrder(['remote.logout', 'network.block', 'graph.purge', 'network.purge']));
 
       widgetGate.complete();
       await logout;
@@ -183,7 +303,8 @@ void main() {
       final ref = _MockRef();
       final requestContext = _RecordingAuthRequestContext(<String>[])..purgeError = StateError('native clear failed');
       when(() => secureStorage.delete(any())).thenAnswer((_) async {});
-      when(authService.logout).thenAnswer((_) async {});
+      when(authService.invalidateRemoteSession).thenAnswer((_) async {});
+      when(authService.clearLocalSession).thenAnswer((_) async {});
       when(widgetService.clearCredentialsAndRefresh).thenAnswer((_) async {});
       when(backgroundUploads.cancel).thenAnswer((_) async => 0);
       when(foregroundUploads.cancel).thenReturn(null);
@@ -196,9 +317,15 @@ void main() {
         secureStorage,
         widgetService,
         requestContext,
+        _RecordingAuthApiGraph(<String>[]),
         SessionMutationMutex(),
         ref,
         cachedSessionReader: _authenticatedSessionReader(),
+        invalidateSession: () async {},
+        cancelLocalMedia: () async {},
+        cancelRemoteMedia: () async {},
+        stopBackup: () {},
+        disconnectWebsocket: () {},
       );
       notifier.hydrateCachedSession();
 
@@ -206,6 +333,30 @@ void main() {
 
       expect(requestContext.blocked, isTrue);
       expect(notifier.state.isAuthenticated, isTrue);
+    });
+
+    test('keeps requests blocked when API graph purge fails', () async {
+      final auth = _LogoutFixture(mutex: SessionMutationMutex(), apiGraphPurgeError: StateError('graph purge failed'));
+
+      await expectLater(auth.notifier.logout(), throwsA(isA<StateError>()));
+
+      expect(auth.requestContext.blocked, isTrue);
+      expect(auth.notifier.state.isAuthenticated, isTrue);
+      expect(auth.apiGraph.purgeCalls, 1);
+    });
+
+    test('keeps requests blocked when local Store cleanup fails while purging every other surface', () async {
+      final auth = _LogoutFixture(
+        mutex: SessionMutationMutex(),
+        localSessionClearError: StateError('Store cleanup failed'),
+      );
+
+      await expectLater(auth.notifier.logout(), throwsA(isA<StateError>()));
+
+      expect(auth.requestContext.blocked, isTrue);
+      expect(auth.notifier.state.isAuthenticated, isTrue);
+      expect(auth.apiGraph.purgeCalls, 1);
+      verify(auth.widgetService.clearCredentialsAndRefresh).called(1);
     });
 
     test('waits for an activation holding the shared session mutation mutex', () async {
@@ -231,13 +382,13 @@ void main() {
       await Future<void>.delayed(Duration.zero);
 
       verifyNever(auth.backgroundUploads.cancel);
-      verifyNever(auth.authService.logout);
+      verifyNever(auth.authService.invalidateRemoteSession);
 
       resumeActivation.complete();
       expect(await activationOperation.result, isA<OfflineSuccess<EndpointActivationReceipt>>());
       await logout;
 
-      verify(auth.authService.logout).called(1);
+      verify(auth.authService.invalidateRemoteSession).called(1);
       expect(auth.requestContext.blocked, isFalse);
     });
 
@@ -301,10 +452,43 @@ final class _RecordingAuthRequestContext implements AuthRequestContextPort {
   }
 }
 
+final class _RecordingAuthApiGraph implements AuthApiGraphPort {
+  _RecordingAuthApiGraph(this.events);
+
+  final List<String> events;
+  Object? purgeError;
+  int purgeCalls = 0;
+
+  @override
+  Future<void> purge() async {
+    purgeCalls++;
+    events.add('graph.purge');
+    if (purgeError case final error?) {
+      throw error;
+    }
+  }
+}
+
 final class _LogoutFixture {
-  _LogoutFixture({required SessionMutationMutex mutex, void Function()? onRemoteLogout}) {
+  _LogoutFixture({
+    required SessionMutationMutex mutex,
+    void Function()? onRemoteLogout,
+    Future<void> Function()? invalidateSession,
+    Future<void> Function()? cancelLocalMedia,
+    Future<void> Function()? cancelRemoteMedia,
+    void Function()? stopBackup,
+    void Function()? disconnectWebsocket,
+    Object? apiGraphPurgeError,
+    Object? localSessionClearError,
+  }) {
+    apiGraph.purgeError = apiGraphPurgeError;
     when(() => secureStorage.delete(any())).thenAnswer((_) async {});
-    when(authService.logout).thenAnswer((_) async => onRemoteLogout?.call());
+    when(authService.invalidateRemoteSession).thenAnswer((_) async => onRemoteLogout?.call());
+    when(authService.clearLocalSession).thenAnswer((_) async {
+      if (localSessionClearError case final error?) {
+        throw error;
+      }
+    });
     when(widgetService.clearCredentialsAndRefresh).thenAnswer((_) async {});
     when(backgroundUploads.cancel).thenAnswer((_) async => 0);
     when(foregroundUploads.cancel).thenReturn(null);
@@ -317,9 +501,15 @@ final class _LogoutFixture {
       secureStorage,
       widgetService,
       requestContext,
+      apiGraph,
       mutex,
       ref,
       cachedSessionReader: _authenticatedSessionReader(),
+      invalidateSession: invalidateSession ?? () async {},
+      cancelLocalMedia: cancelLocalMedia ?? () async {},
+      cancelRemoteMedia: cancelRemoteMedia ?? () async {},
+      stopBackup: stopBackup ?? () {},
+      disconnectWebsocket: disconnectWebsocket ?? () {},
     );
     notifier.hydrateCachedSession();
   }
@@ -331,6 +521,7 @@ final class _LogoutFixture {
   final foregroundUploads = _MockForegroundUploadService();
   final ref = _MockRef();
   final requestContext = _RecordingAuthRequestContext(<String>[]);
+  final apiGraph = _RecordingAuthApiGraph(<String>[]);
   late final AuthNotifier notifier;
 }
 

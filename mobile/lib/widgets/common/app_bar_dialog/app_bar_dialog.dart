@@ -13,7 +13,6 @@ import 'package:immich_mobile/providers/backup/backup.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/readonly_mode.provider.dart';
 import 'package:immich_mobile/providers/locale_provider.dart';
 import 'package:immich_mobile/providers/user.provider.dart';
-import 'package:immich_mobile/providers/websocket.provider.dart';
 import 'package:immich_mobile/routing/router.dart';
 import 'package:immich_mobile/utils/bytes_units.dart';
 import 'package:immich_mobile/widgets/common/app_bar_dialog/app_bar_profile_info.dart';
@@ -125,7 +124,6 @@ class ImmichAppBarDialog extends HookConsumerWidget {
                     isLoggingOut.value = true;
                     await ref.read(authProvider.notifier).logout().whenComplete(() => isLoggingOut.value = false);
 
-                    ref.read(websocketProvider.notifier).disconnect();
                     unawaited(context.replaceRoute(const LoginRoute()));
                   },
                 );

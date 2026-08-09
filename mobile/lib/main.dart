@@ -27,6 +27,7 @@ import 'package:immich_mobile/providers/infrastructure/db.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
 import 'package:immich_mobile/providers/locale_provider.dart';
 import 'package:immich_mobile/providers/routes.provider.dart';
+import 'package:immich_mobile/providers/server_reachability.provider.dart';
 import 'package:immich_mobile/providers/theme.provider.dart';
 import 'package:immich_mobile/routing/app_navigation_observer.dart';
 import 'package:immich_mobile/routing/router.dart';
@@ -197,6 +198,7 @@ class ImmichAppState extends ConsumerState<ImmichApp> with WidgetsBindingObserve
   @override
   initState() {
     super.initState();
+    ref.read(serverReachabilityCoordinatorProvider);
     initApp().then((_) => dPrint(() => "App Init Completed"));
     WidgetsBinding.instance.addPostFrameCallback((_) {
       // needs to be delayed so that EasyLocalization is working

@@ -5,3 +5,7 @@ abstract interface class AuthRequestContextPort {
 
   void publishCleared();
 }
+
+abstract interface class AuthApiGraphPort {
+  Future<void> purge();
+}

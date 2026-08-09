@@ -56,6 +56,7 @@ final class ServerReachabilityCoordinator {
   _PipelineRun? _pipeline;
   Future<void>? _startFuture;
   Future<void>? _disposeFuture;
+  Future<void>? _pauseFuture;
   TransportAvailability _availability = TransportAvailability.unknown;
   int _availabilityRevision = 0;
   bool _sessionActive = false;
@@ -83,16 +84,23 @@ final class ServerReachabilityCoordinator {
     }
   }
 
-  void pause() {
-    if (_disposed || _paused) {
-      return;
+  Future<void> pause() {
+    if (_disposed) {
+      return Future.value();
+    }
+    final pendingPause = _pauseFuture;
+    if (_paused && pendingPause != null) {
+      return pendingPause;
+    }
+    if (_paused) {
+      return Future.value();
     }
     _paused = true;
     _epochs.invalidateProbeGeneration();
     _cancelScheduledCycle();
     _rerunRequested = false;
     _publish(ReachabilityPhase.paused, identity: _epochs.current, confirmedEndpoint: _state.confirmedEndpoint);
-    unawaited(_cancelPipelineAndWait());
+    return _pauseFuture = _cancelPipelineAndWait();
   }
 
   void resume() {
@@ -100,6 +108,7 @@ final class ServerReachabilityCoordinator {
       return;
     }
     _paused = false;
+    _pauseFuture = null;
     if (!_sessionActive) {
       return;
     }

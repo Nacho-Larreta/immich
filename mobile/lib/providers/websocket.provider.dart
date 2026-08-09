@@ -49,6 +49,8 @@ class WebsocketNotifier extends StateNotifier<WebsocketState> {
     maxWaitTime: const Duration(seconds: 10),
   );
   final List<dynamic> _batchedAssetUploadReady = [];
+  var _acceptEvents = false;
+  var _connectionGeneration = 0;
 
   @override
   void dispose() {
@@ -59,10 +61,12 @@ class WebsocketNotifier extends StateNotifier<WebsocketState> {
   /// Connects websocket to server unless already connected
   void connect() {
     if (state.isConnected) return;
+    _acceptEvents = false;
     final authenticationState = _ref.read(authProvider);
 
     if (authenticationState.isAuthenticated) {
       try {
+        final generation = ++_connectionGeneration;
         final endpoint = Uri.parse(Store.get(StoreKey.serverEndpoint));
         dPrint(() => "Attempting to connect to websocket");
         // Configure socket transports must be specified
@@ -80,25 +84,55 @@ class WebsocketNotifier extends StateNotifier<WebsocketState> {
         );
 
         socket.onConnect((_) {
+          if (generation != _connectionGeneration) {
+            socket.dispose();
+            return;
+          }
+          _acceptEvents = true;
           dPrint(() => "Established Websocket Connection");
           state = WebsocketState(isConnected: true, socket: socket);
         });
 
         socket.onDisconnect((_) {
+          if (generation != _connectionGeneration) {
+            return;
+          }
+          _acceptEvents = false;
           dPrint(() => "Disconnect to Websocket Connection");
           state = const WebsocketState(isConnected: false, socket: null);
         });
 
         socket.on('error', (errorMessage) {
+          if (generation != _connectionGeneration) {
+            return;
+          }
+          _acceptEvents = false;
           _log.severe("Websocket Error - $errorMessage");
           state = const WebsocketState(isConnected: false, socket: null);
         });
 
-        socket.on('AssetUploadReadyV1', _handleSyncAssetUploadReady);
-        socket.on('AssetEditReadyV1', _handleSyncAssetEditReady);
-        socket.on('on_config_update', _handleOnConfigUpdate);
-        socket.on('on_new_release', _handleReleaseUpdates);
+        socket.on('AssetUploadReadyV1', (data) {
+          if (generation == _connectionGeneration) {
+            handleSyncAssetUploadReady(data);
+          }
+        });
+        socket.on('AssetEditReadyV1', (data) {
+          if (generation == _connectionGeneration) {
+            handleSyncAssetEditReady(data);
+          }
+        });
+        socket.on('on_config_update', (data) {
+          if (generation == _connectionGeneration) {
+            handleOnConfigUpdate(data);
+          }
+        });
+        socket.on('on_new_release', (data) {
+          if (generation == _connectionGeneration) {
+            handleReleaseUpdates(data);
+          }
+        });
       } catch (e) {
+        _acceptEvents = false;
         dPrint(() => "[WEBSOCKET] Catch Websocket Error - ${e.toString()}");
       }
     }
@@ -107,6 +141,8 @@ class WebsocketNotifier extends StateNotifier<WebsocketState> {
   void disconnect() {
     dPrint(() => "Attempting to disconnect from websocket");
 
+    _acceptEvents = false;
+    _connectionGeneration++;
     _batchedAssetUploadReady.clear();
 
     state.socket?.dispose();
@@ -134,12 +170,18 @@ class WebsocketNotifier extends StateNotifier<WebsocketState> {
     );
   }
 
-  void _handleOnConfigUpdate(dynamic _) {
+  void handleOnConfigUpdate(dynamic _) {
+    if (!_acceptEvents) {
+      return;
+    }
     _ref.read(serverInfoProvider.notifier).getServerFeatures();
     _ref.read(serverInfoProvider.notifier).getServerConfig();
   }
 
-  _handleReleaseUpdates(dynamic data) {
+  void handleReleaseUpdates(dynamic data) {
+    if (!_acceptEvents) {
+      return;
+    }
     // Json guard
     if (data is! Map) {
       return;
@@ -163,17 +205,24 @@ class WebsocketNotifier extends StateNotifier<WebsocketState> {
     _ref.read(serverInfoProvider.notifier).handleReleaseInfo(serverVersion, releaseVersion);
   }
 
-  void _handleSyncAssetUploadReady(dynamic data) {
+  void handleSyncAssetUploadReady(dynamic data) {
+    if (!_acceptEvents) {
+      return;
+    }
     _batchedAssetUploadReady.add(data);
     _batchDebouncer.run(_processBatchedAssetUploadReady);
   }
 
-  void _handleSyncAssetEditReady(dynamic data) {
+  void handleSyncAssetEditReady(dynamic data) {
+    if (!_acceptEvents) {
+      return;
+    }
     unawaited(_ref.read(backgroundSyncProvider).syncWebsocketEdit(data));
   }
 
   void _processBatchedAssetUploadReady() {
-    if (_batchedAssetUploadReady.isEmpty) {
+    if (!_acceptEvents || _batchedAssetUploadReady.isEmpty) {
+      _batchedAssetUploadReady.clear();
       return;
     }
 

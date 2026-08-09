@@ -137,6 +137,18 @@ void main() {
       verify(() => backgroundSyncManager.cancel()).called(1);
       verify(() => authRepository.clearLocalData()).called(1);
     });
+
+    test('Should surface local cleanup failure after swallowing server logout failure', () async {
+      when(() => authApiRepository.logout()).thenThrow(Exception('Server error'));
+      when(() => backgroundSyncManager.cancel()).thenAnswer((_) async => {});
+      when(() => authRepository.clearLocalData()).thenThrow(StateError('Store cleanup failed'));
+
+      await expectLater(sut.logout(), throwsA(isA<StateError>()));
+
+      verify(() => authApiRepository.logout()).called(1);
+      verify(() => authRepository.clearLocalData()).called(1);
+      verifyNever(() => appSettingsService.setSetting(AppSettingsEnum.enableBackup, false));
+    });
   });
 
   group('setOpenApiServiceEndpoint', () {

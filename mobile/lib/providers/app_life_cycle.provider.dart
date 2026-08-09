@@ -1,26 +1,23 @@
 import 'dart:async';
 
 import 'package:hooks_riverpod/hooks_riverpod.dart';
-import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/services/log.service.dart';
-import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/extensions/platform_extensions.dart';
-import 'package:immich_mobile/providers/app_settings.provider.dart';
-import 'package:immich_mobile/providers/auth.provider.dart';
 import 'package:immich_mobile/providers/background_sync.provider.dart';
 import 'package:immich_mobile/providers/backup/drift_backup.provider.dart';
 import 'package:immich_mobile/providers/gallery_permission.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
 import 'package:immich_mobile/providers/notification_permission.provider.dart';
-import 'package:immich_mobile/providers/server_info.provider.dart';
+import 'package:immich_mobile/providers/server_reachability.provider.dart';
+import 'package:immich_mobile/providers/session_work.provider.dart';
 import 'package:immich_mobile/providers/websocket.provider.dart';
-import 'package:immich_mobile/services/app_settings.service.dart';
 import 'package:logging/logging.dart';
 
 enum AppLifeCycleEnum { active, inactive, paused, resumed, detached, hidden }
 
 class AppLifeCycleNotifier extends StateNotifier<AppLifeCycleEnum> {
   final Ref _ref;
+  final LifecycleSessionWork _sessionWork;
   bool _wasPaused = false;
 
   // Add operation coordination
@@ -29,7 +26,7 @@ class AppLifeCycleNotifier extends StateNotifier<AppLifeCycleEnum> {
 
   final _log = Logger("AppLifeCycleNotifier");
 
-  AppLifeCycleNotifier(this._ref) : super(AppLifeCycleEnum.active);
+  AppLifeCycleNotifier(this._ref, this._sessionWork) : super(AppLifeCycleEnum.active);
 
   AppLifeCycleEnum getAppState() {
     return state;
@@ -44,9 +41,8 @@ class AppLifeCycleNotifier extends StateNotifier<AppLifeCycleEnum> {
       return;
     }
 
-    // Cancel any ongoing pause operation
     if (_pauseOperation != null && !_pauseOperation!.isCompleted) {
-      _pauseOperation!.complete();
+      await _pauseOperation!.future;
     }
 
     _resumeOperation = Completer<void>();
@@ -68,91 +64,11 @@ class AppLifeCycleNotifier extends StateNotifier<AppLifeCycleEnum> {
     if (!_wasPaused) return;
     _wasPaused = false;
 
-    final isAuthenticated = _ref.read(authProvider).isAuthenticated;
-
-    // Needs to be logged in
-    if (isAuthenticated) {
-      // switch endpoint if needed
-      final endpoint = await _ref.read(authProvider.notifier).setOpenApiServiceEndpoint();
-      _log.info("Using server URL: $endpoint");
-
-      await _ref.read(serverInfoProvider.notifier).getServerVersion();
-    }
-
-    _ref.read(websocketProvider.notifier).connect();
-    await _handleBetaTimelineResume();
+    await _sessionWork.resume(fullLocalSync: CurrentPlatform.isAndroid);
 
     await _ref.read(notificationPermissionProvider.notifier).getNotificationPermission();
 
     await _ref.read(galleryPermissionNotifier.notifier).getGalleryPermissionStatus();
-  }
-
-  Future<void> _safeRun(Future<void> action, String debugName) async {
-    if (!_shouldContinueOperation()) {
-      return;
-    }
-
-    try {
-      await action;
-    } catch (e, stackTrace) {
-      _log.warning("Error during $debugName operation", e, stackTrace);
-    }
-  }
-
-  Future<void> _handleBetaTimelineResume() async {
-    unawaited(_ref.read(backgroundWorkerLockServiceProvider).lock());
-
-    // Give isolates time to complete any ongoing database transactions
-    await Future.delayed(const Duration(milliseconds: 500));
-
-    final backgroundManager = _ref.read(backgroundSyncProvider);
-    final isAlbumLinkedSyncEnable = _ref.read(appSettingsServiceProvider).getSetting(AppSettingsEnum.syncAlbums);
-
-    try {
-      bool syncSuccess = false;
-      await Future.wait([
-        _safeRun(backgroundManager.syncLocal(full: CurrentPlatform.isAndroid ? true : false), "syncLocal"),
-        _safeRun(backgroundManager.syncRemote().then((success) => syncSuccess = success), "syncRemote"),
-      ]);
-      if (syncSuccess) {
-        await Future.wait([
-          _safeRun(backgroundManager.hashAssets(), "hashAssets").then((_) {
-            _resumeBackup();
-          }),
-          _resumeBackup(),
-          // TODO: Bring back when the soft freeze issue is addressed
-          // _safeRun(backgroundManager.syncCloudIds(), "syncCloudIds"),
-        ]);
-      } else {
-        await _safeRun(backgroundManager.hashAssets(), "hashAssets");
-      }
-
-      if (isAlbumLinkedSyncEnable) {
-        await _safeRun(backgroundManager.syncLinkedAlbum(), "syncLinkedAlbum");
-      }
-    } catch (e, stackTrace) {
-      _log.severe("Error during background sync", e, stackTrace);
-    }
-  }
-
-  Future<void> _resumeBackup() async {
-    final isEnableBackup = _ref.read(appSettingsServiceProvider).getSetting(AppSettingsEnum.enableBackup);
-
-    if (isEnableBackup) {
-      final currentUser = Store.tryGet(StoreKey.currentUser);
-      if (currentUser != null) {
-        await _safeRun(
-          _ref.read(driftBackupProvider.notifier).startForegroundBackup(currentUser.id),
-          "handleBackupResume",
-        );
-      }
-    }
-  }
-
-  // Helper method to check if operations should continue
-  bool _shouldContinueOperation() {
-    return [AppLifeCycleEnum.resumed, AppLifeCycleEnum.active].contains(state) &&
-        (_resumeOperation?.isCompleted == false || _resumeOperation == null);
   }
 
   void handleAppInactivity() {
@@ -170,15 +86,14 @@ class AppLifeCycleNotifier extends StateNotifier<AppLifeCycleEnum> {
       return;
     }
 
-    // Cancel any ongoing resume operation
     if (_resumeOperation != null && !_resumeOperation!.isCompleted) {
-      _resumeOperation!.complete();
+      await _resumeOperation!.future;
     }
 
     _pauseOperation = Completer<void>();
 
     try {
-      unawaited(_ref.read(backgroundWorkerLockServiceProvider).unlock());
+      await _sessionWork.pause();
       await _performPause();
     } catch (e, stackTrace) {
       _log.severe("Error during app pause", e, stackTrace);
@@ -190,15 +105,7 @@ class AppLifeCycleNotifier extends StateNotifier<AppLifeCycleEnum> {
     }
   }
 
-  Future<void> _performPause() {
-    if (_ref.read(authProvider).isAuthenticated) {
-      _ref.read(driftBackupProvider.notifier).stopForegroundBackup();
-
-      _ref.read(websocketProvider.notifier).disconnect();
-    }
-
-    return LogService.I.flush().catchError((_) {});
-  }
+  Future<void> _performPause() => LogService.I.flush().catchError((_) {});
 
   Future<void> handleAppDetached() async {
     state = AppLifeCycleEnum.detached;
@@ -218,5 +125,84 @@ class AppLifeCycleNotifier extends StateNotifier<AppLifeCycleEnum> {
 }
 
 final appStateProvider = StateNotifierProvider<AppLifeCycleNotifier, AppLifeCycleEnum>((ref) {
-  return AppLifeCycleNotifier(ref);
+  final coordinator = ref.read(serverReachabilityCoordinatorProvider);
+  final backgroundSync = ref.read(backgroundSyncProvider);
+  return AppLifeCycleNotifier(
+    ref,
+    LifecycleSessionWork(
+      pauseReachability: coordinator.pause,
+      resumeReachability: coordinator.resume,
+      triggerLocalSync: ({required full}) => ref.read(sessionWorkProvider).triggerLocalSync(full: full),
+      cancelLocalSync: ref.read(sessionWorkProvider).cancelLocalSync,
+      cancelBackgroundSync: backgroundSync.cancel,
+      stopBackup: ref.read(driftBackupProvider.notifier).stopForegroundBackup,
+      disconnectWebsocket: ref.read(websocketProvider.notifier).disconnect,
+      lockBackgroundWorker: ref.read(backgroundWorkerLockServiceProvider).lock,
+      unlockBackgroundWorker: ref.read(backgroundWorkerLockServiceProvider).unlock,
+    ),
+  );
 });
+
+final class LifecycleSessionWork {
+  const LifecycleSessionWork({
+    required Future<void> Function() pauseReachability,
+    required void Function() resumeReachability,
+    required void Function({required bool full}) triggerLocalSync,
+    required Future<void> Function() cancelLocalSync,
+    required Future<void> Function() cancelBackgroundSync,
+    required void Function() stopBackup,
+    required void Function() disconnectWebsocket,
+    required Future<void> Function() lockBackgroundWorker,
+    required Future<void> Function() unlockBackgroundWorker,
+  }) : _pauseReachability = pauseReachability,
+       _resumeReachability = resumeReachability,
+       _triggerLocalSync = triggerLocalSync,
+       _cancelLocalSync = cancelLocalSync,
+       _cancelBackgroundSync = cancelBackgroundSync,
+       _stopBackup = stopBackup,
+       _disconnectWebsocket = disconnectWebsocket,
+       _lockBackgroundWorker = lockBackgroundWorker,
+       _unlockBackgroundWorker = unlockBackgroundWorker;
+
+  final Future<void> Function() _pauseReachability;
+  final void Function() _resumeReachability;
+  final void Function({required bool full}) _triggerLocalSync;
+  final Future<void> Function() _cancelLocalSync;
+  final Future<void> Function() _cancelBackgroundSync;
+  final void Function() _stopBackup;
+  final void Function() _disconnectWebsocket;
+  final Future<void> Function() _lockBackgroundWorker;
+  final Future<void> Function() _unlockBackgroundWorker;
+
+  Future<void> pause() async {
+    Object? firstError;
+    StackTrace? firstStackTrace;
+
+    Future<void> attempt(FutureOr<void> Function() operation) async {
+      try {
+        await operation();
+      } on Object catch (error, stackTrace) {
+        firstError ??= error;
+        firstStackTrace ??= stackTrace;
+      }
+    }
+
+    await Future.wait([
+      attempt(_pauseReachability),
+      attempt(_cancelLocalSync),
+      attempt(_stopBackup),
+      attempt(_disconnectWebsocket),
+      attempt(_cancelBackgroundSync),
+    ]);
+    await attempt(_unlockBackgroundWorker);
+    if (firstError != null) {
+      Error.throwWithStackTrace(firstError!, firstStackTrace!);
+    }
+  }
+
+  Future<void> resume({required bool fullLocalSync}) async {
+    await _lockBackgroundWorker();
+    _resumeReachability();
+    _triggerLocalSync(full: fullLocalSync);
+  }
+}

@@ -6,15 +6,20 @@ import 'package:immich_mobile/domain/interfaces/endpoint_probe.interface.dart';
 import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/domain/models/network_uri.model.dart';
 import 'package:immich_mobile/domain/models/offline_result.model.dart';
+import 'package:immich_mobile/infrastructure/adapters/endpoint_probe/probe_common_header_sanitizer.dart';
 import 'package:immich_mobile/infrastructure/adapters/endpoint_probe/probe_http_transport.dart';
 
 final class EndpointProbeAdapter implements EndpointProbePort {
   EndpointProbeAdapter({
     required this.transport,
-    this.commonHeaders = const {},
-    this.authenticationHeaders = const {},
+    Map<String, String> commonHeaders = const {},
+    String accessToken = '',
     this.candidateTimeout = const Duration(seconds: 3),
-  }) {
+    ProbeCommonHeaderSanitizer headerSanitizer = const ProbeCommonHeaderSanitizer(),
+  }) : commonHeaders = headerSanitizer.sanitize(commonHeaders),
+       authenticationHeaders = accessToken.isEmpty
+           ? const {}
+           : Map.unmodifiable({'Authorization': 'Bearer $accessToken'}) {
     if (candidateTimeout <= Duration.zero) {
       throw ArgumentError.value(candidateTimeout, 'candidateTimeout', 'Must be positive');
     }

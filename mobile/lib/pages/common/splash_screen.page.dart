@@ -8,10 +8,13 @@ import 'package:flutter/services.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/constants/colors.dart';
 import 'package:immich_mobile/constants/locales.dart';
+import 'package:immich_mobile/domain/models/store.model.dart';
+import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/generated/codegen_loader.g.dart';
 import 'package:immich_mobile/generated/translations.g.dart';
 import 'package:immich_mobile/pages/common/splash_session.dart';
 import 'package:immich_mobile/providers/auth.provider.dart';
+import 'package:immich_mobile/providers/session_work.provider.dart';
 import 'package:immich_mobile/routing/router.dart';
 import 'package:immich_mobile/theme/color_scheme.dart';
 import 'package:immich_mobile/theme/theme_data.dart';
@@ -298,6 +301,15 @@ class SplashScreenPageState extends ConsumerState<SplashScreenPage> {
           case SplashDestination.login:
             await context.replaceRoute(const LoginRoute());
         }
+      },
+      triggerPostNavigationWork: () async {
+        final cachedEndpoint = Uri.tryParse(Store.tryGet(StoreKey.serverEndpoint) ?? '');
+        ref
+            .read(sessionWorkProvider)
+            .activate(
+              confirmedEndpoint: cachedEndpoint?.hasAuthority == true ? cachedEndpoint : null,
+              fullLocalSync: Platform.isAndroid,
+            );
       },
     ).run();
   }

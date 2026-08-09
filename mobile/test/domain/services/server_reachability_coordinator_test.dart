@@ -174,7 +174,7 @@ void main() {
     harness.connectivity.emit(TransportAvailability.available);
     harness.scheduler.elapse(const Duration(milliseconds: 749));
 
-    harness.coordinator.pause();
+    await harness.coordinator.pause();
     harness.scheduler.elapse(const Duration(seconds: 1));
     await pumpEventQueue();
 
@@ -186,6 +186,30 @@ void main() {
 
     expect(harness.probes.identities, hasLength(1));
     probe.complete(const EndpointProbeResult.rejected(OfflineErrorCode.cancelled));
+    await harness.dispose();
+  });
+
+  test('pause publishes paused synchronously and waits for reconciliation cancellation to drain', () async {
+    final harness = _Harness();
+    harness.probes.enqueueCompleted(_validatedEndpoint());
+    harness.activations.enqueueSuccess();
+    final reconciliation = harness.reconciliations.enqueuePending();
+    await harness.startSession();
+    await harness.runCycle();
+
+    var pauseCompleted = false;
+    final pause = harness.coordinator.pause().then((_) => pauseCompleted = true);
+
+    expect(harness.coordinator.state.phase, ReachabilityPhase.paused);
+    expect(pauseCompleted, isFalse);
+    await pumpEventQueue();
+    expect(reconciliation.cancelCount, 1);
+    expect(pauseCompleted, isFalse);
+
+    reconciliation.complete(const OfflineResult.failure(OfflineErrorCode.cancelled));
+    await pause;
+
+    expect(pauseCompleted, isTrue);
     await harness.dispose();
   });
 

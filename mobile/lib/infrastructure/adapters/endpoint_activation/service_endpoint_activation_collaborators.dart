@@ -1,4 +1,5 @@
 import 'package:immich_mobile/domain/models/store.model.dart';
+import 'package:immich_mobile/domain/interfaces/auth_request_context.interface.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/infrastructure/adapters/endpoint_activation/endpoint_activation_collaborators.dart';
 import 'package:immich_mobile/infrastructure/repositories/network.repository.dart';
@@ -11,7 +12,7 @@ final class ApiServicePreparedGraph implements PreparedApiGraph {
   final ApiServiceGraph graph;
 }
 
-final class ApiServiceEndpointGraphAdapter implements EndpointApiGraphPort {
+final class ApiServiceEndpointGraphAdapter implements EndpointApiGraphPort, AuthApiGraphPort {
   const ApiServiceEndpointGraphAdapter(this._apiService);
 
   final ApiService _apiService;
@@ -38,6 +39,14 @@ final class ApiServiceEndpointGraphAdapter implements EndpointApiGraphPort {
       throw ArgumentError.value(graph, 'graph', 'Expected an ApiServicePreparedGraph');
     }
     _apiService.installGraph(graph.graph);
+  }
+
+  @override
+  Future<void> purge() async {
+    block();
+    if (currentEndpoint != null) {
+      throw StateError('API graph still has an active endpoint after purge');
+    }
   }
 }
 

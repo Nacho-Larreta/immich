@@ -10,12 +10,17 @@ import 'package:immich_mobile/domain/services/session_mutation_mutex.dart';
 import 'package:immich_mobile/domain/services/user.service.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/infrastructure/adapters/auth/network_auth_request_context_adapter.dart';
+import 'package:immich_mobile/infrastructure/adapters/endpoint_activation/service_endpoint_activation_collaborators.dart';
 import 'package:immich_mobile/models/auth/auth_state.model.dart';
 import 'package:immich_mobile/models/auth/login_response.model.dart';
 import 'package:immich_mobile/providers/api.provider.dart';
 import 'package:immich_mobile/providers/cached_session.dart';
 import 'package:immich_mobile/providers/infrastructure/user.provider.dart';
+import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
+import 'package:immich_mobile/providers/server_reachability.provider.dart';
 import 'package:immich_mobile/providers/session_mutation.provider.dart';
+import 'package:immich_mobile/providers/backup/drift_backup.provider.dart';
+import 'package:immich_mobile/providers/websocket.provider.dart';
 import 'package:immich_mobile/services/api.service.dart';
 import 'package:immich_mobile/services/auth.service.dart';
 import 'package:immich_mobile/services/foreground_upload.service.dart';
@@ -36,9 +41,15 @@ final authProvider = StateNotifierProvider<AuthNotifier, AuthState>((ref) {
     ref.watch(secureStorageServiceProvider),
     ref.watch(widgetServiceProvider),
     const NetworkAuthRequestContextAdapter(),
+    ApiServiceEndpointGraphAdapter(ref.watch(apiServiceProvider)),
     ref.watch(sessionMutationMutexProvider),
     ref,
     cachedSessionReader: StoreCachedSessionReader(Store, userService),
+    invalidateSession: ref.read(serverReachabilityCoordinatorProvider).logout,
+    cancelLocalMedia: ref.read(localImageApiProvider).cancelAll,
+    cancelRemoteMedia: ref.read(remoteImageApiProvider).cancelAll,
+    stopBackup: ref.read(driftBackupProvider.notifier).stopForegroundBackup,
+    disconnectWebsocket: ref.read(websocketProvider.notifier).disconnect,
   );
 });
 
@@ -50,10 +61,17 @@ class AuthNotifier extends StateNotifier<AuthState> {
   final SecureStorageService _secureStorageService;
   final WidgetService _widgetService;
   final AuthRequestContextPort _requestContext;
+  final AuthApiGraphPort _apiGraph;
   final SessionMutationMutex _sessionMutationMutex;
   final Ref _ref;
   final CachedSessionReader _cachedSessionReader;
+  final Future<void> Function() _invalidateSession;
+  final Future<void> Function() _cancelLocalMedia;
+  final Future<void> Function() _cancelRemoteMedia;
+  final void Function() _stopBackup;
+  final void Function() _disconnectWebsocket;
   final _log = Logger("AuthenticationNotifier");
+  Future<void>? _logoutFuture;
 
   static const Duration _timeoutDuration = Duration(seconds: 7);
 
@@ -65,10 +83,21 @@ class AuthNotifier extends StateNotifier<AuthState> {
     this._secureStorageService,
     this._widgetService,
     this._requestContext,
+    this._apiGraph,
     this._sessionMutationMutex,
     this._ref, {
     required CachedSessionReader cachedSessionReader,
+    required Future<void> Function() invalidateSession,
+    required Future<void> Function() cancelLocalMedia,
+    required Future<void> Function() cancelRemoteMedia,
+    required void Function() stopBackup,
+    required void Function() disconnectWebsocket,
   }) : _cachedSessionReader = cachedSessionReader,
+       _invalidateSession = invalidateSession,
+       _cancelLocalMedia = cancelLocalMedia,
+       _cancelRemoteMedia = cancelRemoteMedia,
+       _stopBackup = stopBackup,
+       _disconnectWebsocket = disconnectWebsocket,
        super(
          const AuthState(
            deviceId: "",
@@ -120,7 +149,31 @@ class AuthNotifier extends StateNotifier<AuthState> {
     return response;
   }
 
-  Future<void> logout() => _sessionMutationMutex.protect(_logout);
+  Future<void> logout() => _logoutFuture ??= _coordinateLogout().whenComplete(() => _logoutFuture = null);
+
+  Future<void> _coordinateLogout() async {
+    Object? invalidationError;
+    StackTrace? invalidationStackTrace;
+
+    Future<void> invalidate(FutureOr<void> Function() operation) async {
+      try {
+        await operation();
+      } on Object catch (error, stackTrace) {
+        invalidationError ??= error;
+        invalidationStackTrace ??= stackTrace;
+      }
+    }
+
+    await invalidate(_invalidateSession);
+    await invalidate(_cancelLocalMedia);
+    await invalidate(_cancelRemoteMedia);
+    await invalidate(_stopBackup);
+    await invalidate(_disconnectWebsocket);
+    await _sessionMutationMutex.protect(_logout);
+    if (invalidationError != null) {
+      Error.throwWithStackTrace(invalidationError!, invalidationStackTrace!);
+    }
+  }
 
   Future<void> _logout() async {
     Object? operationError;
@@ -149,11 +202,13 @@ class AuthNotifier extends StateNotifier<AuthState> {
       await attempt(() => _ref.read(backgroundUploadServiceProvider).cancel(), recordOperationError);
       await attempt(() => _ref.read(foregroundUploadServiceProvider).cancel(), recordOperationError);
       await attempt(() => _secureStorageService.delete(kSecuredPinCode), recordOperationError);
-      await attempt(_authService.logout, recordOperationError);
+      await attempt(_authService.invalidateRemoteSession, recordOperationError);
     } finally {
       _requestContext.block();
       await Future.wait([
+        attempt(_authService.clearLocalSession, recordCleanupError),
         attempt(_widgetService.clearCredentialsAndRefresh, recordCleanupError),
+        attempt(_apiGraph.purge, recordCleanupError),
         attempt(_requestContext.purge, recordCleanupError),
       ]);
       if (cleanupError != null) {
