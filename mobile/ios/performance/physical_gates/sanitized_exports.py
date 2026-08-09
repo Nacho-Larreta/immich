@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from artifact_integrity import ArtifactVerifier
+from evidence_schema import SCHEMA_VERSION
 from strict_evidence import (
     EvidenceValidationError,
     require_exact_keys,
@@ -54,7 +55,7 @@ def load_trace_export(
         },
         role,
     )
-    if require_int(export["schemaVersion"], f"{role}.schemaVersion") != 1:
+    if require_int(export["schemaVersion"], f"{role}.schemaVersion") != SCHEMA_VERSION:
         raise EvidenceValidationError("unsupported_export_schema", role)
     if require_string(export["kind"], f"{role}.kind") != kind:
         raise EvidenceValidationError("wrong_export_kind", role)
@@ -79,7 +80,7 @@ def load_summary_export(
     document = verifier.verify_json(raw_artifact, expected_role=role)
     summary = document.value
     require_exact_keys(summary, {"schemaVersion", "kind", "payload"}, role)
-    if require_int(summary["schemaVersion"], f"{role}.schemaVersion") != 1:
+    if require_int(summary["schemaVersion"], f"{role}.schemaVersion") != SCHEMA_VERSION:
         raise EvidenceValidationError("unsupported_export_schema", role)
     if require_string(summary["kind"], f"{role}.kind") != kind:
         raise EvidenceValidationError("wrong_export_kind", role)

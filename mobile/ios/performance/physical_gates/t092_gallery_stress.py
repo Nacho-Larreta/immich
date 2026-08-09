@@ -33,7 +33,7 @@ RESIDENT_GROWTH_LIMIT_BYTES = 64 * MIB
 
 def evaluate_t092(
     raw: Any,
-    limiting_device: str,
+    subject_device: str,
     verifier: ArtifactVerifier,
     reducers: TraceReducerRegistry,
     result: GateResult,
@@ -41,8 +41,8 @@ def evaluate_t092(
     gate = require_object(raw, "t092")
     require_exact_keys(gate, {"device", "blackHoleRun", "controls"}, "t092")
     device = require_enum(gate["device"], set(DEVICE_SLOTS), "t092.device")
-    if device != limiting_device:
-        raise EvidenceValidationError("t092_not_on_limiting_device", "t092.device")
+    if device != subject_device:
+        raise EvidenceValidationError("t092_not_on_subject_device", "t092.device")
     _evaluate_black_hole(gate["blackHoleRun"], device, verifier, reducers, result)
 
     controls = require_object(gate["controls"], "t092.controls")

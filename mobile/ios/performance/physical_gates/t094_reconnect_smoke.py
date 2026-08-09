@@ -8,7 +8,6 @@ from evaluation_result import GateResult
 from manifest_template import (
     DEVICE_SLOTS,
     T094_PRIMARY_SCENARIOS,
-    T094_SECONDARY_SCENARIOS,
     _camel_to_kebab,
 )
 from sanitized_exports import load_summary_export
@@ -45,9 +44,7 @@ def evaluate_t094(
         {
             "automatedEvidence",
             "primaryDevice",
-            "secondaryDevice",
             "primaryScenarios",
-            "secondaryScenarios",
         },
         "t094",
     )
@@ -94,11 +91,6 @@ def evaluate_t094(
         result.fail("t094_scoped_tests_failed")
 
     primary = require_enum(gate["primaryDevice"], set(DEVICE_SLOTS), "t094.primaryDevice")
-    secondary = require_enum(
-        gate["secondaryDevice"], set(DEVICE_SLOTS), "t094.secondaryDevice"
-    )
-    if primary == secondary:
-        raise EvidenceValidationError("t094_requires_two_devices", "t094")
     _evaluate_scenarios(
         gate["primaryScenarios"],
         primary,
@@ -106,14 +98,6 @@ def evaluate_t094(
         verifier,
         result,
         "primary",
-    )
-    _evaluate_scenarios(
-        gate["secondaryScenarios"],
-        secondary,
-        T094_SECONDARY_SCENARIOS,
-        verifier,
-        result,
-        "secondary",
     )
 
 

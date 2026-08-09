@@ -61,7 +61,8 @@ are integer kind codes only.
 The executable manifest, artifact-integrity rules, capture names, and physical
 runbook live in `mobile/ios/performance/physical_gates/README.md`. Generated
 manifests, traces, exports, fixture media, and reports stay outside Git under a
-private `/private/tmp` directory. Device slots are always `D1` and `D2`; evidence
+private `/private/tmp` directory. Schema v2 has one physical subject, always `D1`;
+evidence
 must not contain device names, UDIDs, accounts, URLs, IP addresses, asset IDs,
 original paths, or personal media.
 
@@ -76,7 +77,7 @@ production registry entry; manifest data and CLI arguments cannot enable a reduc
 
 ## TC-017 / T091 cold launch
 
-For each device and each condition:
+For D1 and each condition:
 
 1. Run one warm-up and exclude it.
 2. Terminate the app completely between samples.
@@ -97,9 +98,9 @@ A second invalid acquisition leaves the gate invalid.
 
 ## TC-013 / TC-018 / T092 gallery stress
 
-Use the device with lower physical memory. Only when physical memory is equal, use
-the device with the lower 30-second measured memory margin. Under controlled
-black-hole, capture one continuous run of exactly 100 fixture-only traversals. Take
+Use D1. Record its physical memory and 30-second VM Tracker resident-size baseline
+as evidence metadata. Under controlled black-hole, capture one continuous run of
+exactly 100 fixture-only traversals. Take
 baseline after 30 seconds idle on the loaded timeline and final readings after
 another 30 seconds idle. Every tenth traversal backgrounds the app for at least five
 seconds before resume. Run separate controls of five online traversals, five
@@ -128,7 +129,7 @@ Generate and verify the exact-size originals with
 `mobile/ios/performance/fixtures/generate_t093_fixtures.py`; generated media stays
 under `/private/tmp` by default and must not be added to Git.
 
-On the limiting device, execute success 256 MiB, success 1 GiB, and cancel 1 GiB for
+On D1, execute success 256 MiB, success 1 GiB, and cancel 1 GiB for
 both local PhotoKit and remote URLSession adapters. Cancel between 25% and 50%.
 
 Pass only when absolute peak Resident Size is at most 96 MiB, each adapter's 1 GiB
@@ -155,8 +156,9 @@ Focused coordinator, reconciliation, lifecycle, and auth tests prove exactly one
 reconciliation, at most one coalesced rerun, and rejection of old-session
 completions. Physical traces prove black-hole to online, background/resume, and
 logout/login remain responsive and never visibly publish stale state on the primary
-device, with directed smoke on the second device. Do not add epoch or generation
-telemetry solely for this gate.
+device D1. There is no second-device matrix. T108 also uses D1 for final install and
+smoke; other TestFlight participants retain access without repeating the physical
+gates. Do not add epoch or generation telemetry solely for this gate.
 
 Run the four exact Flutter test paths listed in `physical_gates/README.md` with
 `--machine`, but redirect raw JSONL to a mode-`0600` transient file outside evidence.

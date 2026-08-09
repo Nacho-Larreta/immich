@@ -5,8 +5,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from artifact_integrity import ArtifactVerifier
+from evidence_schema import SCHEMA_VERSION
 from evaluation_result import EvaluationReport, EvaluationStatus, GateResult
-from manifest_template import DEVICE_SLOTS
+from manifest_template import DEVICE_SLOT, DEVICE_SLOTS
 from strict_evidence import (
     EvidenceValidationError,
     require_bool,
@@ -29,7 +30,7 @@ from trace_reducers import TraceReducerRegistry
 @dataclass(frozen=True)
 class GlobalEvidence:
     source_revision: str
-    limiting_device: str
+    subject_device: str
 
 
 def evaluate_manifest(
@@ -61,7 +62,7 @@ def evaluate_manifest(
             "T092",
             lambda: evaluate_t092(
                 manifest["t092"],
-                global_evidence.limiting_device,
+                global_evidence.subject_device,
                 verifier,
                 reducers,
                 gates["T092"],
@@ -71,7 +72,7 @@ def evaluate_manifest(
             "T093",
             lambda: evaluate_t093(
                 manifest["t093"],
-                global_evidence.limiting_device,
+                global_evidence.subject_device,
                 global_evidence.source_revision,
                 fixture_root,
                 verifier,
@@ -116,7 +117,6 @@ def _evaluate_global(manifest: dict[str, Any]) -> GlobalEvidence:
             "schemaVersion",
             "build",
             "devices",
-            "limitingDevice",
             "blackHole",
             "t091",
             "t092",
@@ -125,7 +125,7 @@ def _evaluate_global(manifest: dict[str, Any]) -> GlobalEvidence:
         },
         "manifest",
     )
-    if require_int(manifest["schemaVersion"], "schemaVersion") != 1:
+    if require_int(manifest["schemaVersion"], "schemaVersion") != SCHEMA_VERSION:
         raise EvidenceValidationError("unsupported_schema_version", "schemaVersion")
 
     build = require_object(manifest["build"], "build")
@@ -143,18 +143,13 @@ def _evaluate_global(manifest: dict[str, Any]) -> GlobalEvidence:
 
     devices = require_object(manifest["devices"], "devices")
     require_exact_keys(devices, DEVICE_SLOTS, "devices")
-    parsed_devices = {
-        slot: _evaluate_device(devices[slot], f"devices.{slot}") for slot in DEVICE_SLOTS
-    }
-    limiting_device = _evaluate_limiting_device(
-        manifest["limitingDevice"],
-        parsed_devices,
-    )
+    for slot in DEVICE_SLOTS:
+        _evaluate_device(devices[slot], f"devices.{slot}")
     _evaluate_black_hole_setup(manifest["blackHole"])
-    return GlobalEvidence(source_revision, limiting_device)
+    return GlobalEvidence(source_revision, DEVICE_SLOT)
 
 
-def _evaluate_device(raw: Any, location: str) -> dict[str, int]:
+def _evaluate_device(raw: Any, location: str) -> None:
     device = require_object(raw, location)
     require_exact_keys(
         device,
@@ -162,8 +157,7 @@ def _evaluate_device(raw: Any, location: str) -> dict[str, int]:
             "model",
             "iosVersion",
             "physicalMemoryBytes",
-            "selectionBaselineResidentBytes",
-            "measuredMemoryMarginBytes",
+            "baselineResidentBytes",
         },
         location,
     )
@@ -171,57 +165,18 @@ def _evaluate_device(raw: Any, location: str) -> dict[str, int]:
     if not model.startswith("iPhone") or len(model) > 40:
         raise EvidenceValidationError("invalid_device_model", f"{location}.model")
     require_version(device["iosVersion"], f"{location}.iosVersion")
-    physical = require_int(
+    physical_memory = require_int(
         device["physicalMemoryBytes"],
         f"{location}.physicalMemoryBytes",
         minimum=1,
     )
-    baseline = require_int(
-        device["selectionBaselineResidentBytes"],
-        f"{location}.selectionBaselineResidentBytes",
+    baseline_resident = require_int(
+        device["baselineResidentBytes"],
+        f"{location}.baselineResidentBytes",
         minimum=1,
     )
-    margin = require_int(
-        device["measuredMemoryMarginBytes"],
-        f"{location}.measuredMemoryMarginBytes",
-        minimum=1,
-    )
-    if baseline >= physical or margin != physical - baseline:
-        raise EvidenceValidationError("invalid_device_memory_margin", location)
-    return {
-        "physicalMemoryBytes": physical,
-        "measuredMemoryMarginBytes": margin,
-    }
-
-
-def _evaluate_limiting_device(
-    raw: Any,
-    devices: dict[str, dict[str, int]],
-) -> str:
-    limiting = require_object(raw, "limitingDevice")
-    require_exact_keys(limiting, {"slot", "selectionReason"}, "limitingDevice")
-    slot = require_enum(limiting["slot"], set(DEVICE_SLOTS), "limitingDevice.slot")
-    reason = require_enum(
-        limiting["selectionReason"],
-        {"lowerPhysicalMemory", "lowerMeasuredMemoryMargin"},
-        "limitingDevice.selectionReason",
-    )
-    physical_values = {candidate: devices[candidate]["physicalMemoryBytes"] for candidate in DEVICE_SLOTS}
-    if physical_values["D1"] != physical_values["D2"]:
-        expected_slot = min(DEVICE_SLOTS, key=physical_values.__getitem__)
-        expected_reason = "lowerPhysicalMemory"
-    else:
-        margins = {
-            candidate: devices[candidate]["measuredMemoryMarginBytes"]
-            for candidate in DEVICE_SLOTS
-        }
-        if margins["D1"] == margins["D2"]:
-            raise EvidenceValidationError("limiting_device_tie", "limitingDevice")
-        expected_slot = min(DEVICE_SLOTS, key=margins.__getitem__)
-        expected_reason = "lowerMeasuredMemoryMargin"
-    if slot != expected_slot or reason != expected_reason:
-        raise EvidenceValidationError("wrong_limiting_device", "limitingDevice")
-    return slot
+    if baseline_resident >= physical_memory:
+        raise EvidenceValidationError("invalid_device_memory_baseline", location)
 
 
 def _evaluate_black_hole_setup(raw: Any) -> None:

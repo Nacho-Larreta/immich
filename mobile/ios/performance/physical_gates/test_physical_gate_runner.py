@@ -21,7 +21,8 @@ class PhysicalGateRunnerCliTest(unittest.TestCase):
 
         self.assertEqual(0, status)
         self.assertEqual("CREATED", response["status"])
-        self.assertEqual(1, json.loads(output.read_text())["schemaVersion"])
+        self.assertEqual(2, response["schemaVersion"])
+        self.assertEqual(2, json.loads(output.read_text())["schemaVersion"])
         self.assertEqual(0o600, output.stat().st_mode & 0o777)
 
         status, response = self.run_cli("create-template", "--output", str(output))

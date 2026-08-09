@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any
 
+from evidence_schema import SCHEMA_VERSION
+
 
 class EvaluationStatus(IntEnum):
     PASS = 0
@@ -41,7 +43,7 @@ class EvaluationReport:
 
     def as_json(self) -> dict[str, Any]:
         return {
-            "schemaVersion": 1,
+            "schemaVersion": SCHEMA_VERSION,
             "status": self.status.name,
             "artifactCount": self.artifact_count,
             "gates": {name: result.as_json() for name, result in self.gates.items()},

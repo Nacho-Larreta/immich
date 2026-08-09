@@ -32,6 +32,7 @@ class ResultSanitizerTest(unittest.TestCase):
         summary = sanitize_t093_xctest_output(raw, REVISION, 0)
 
         serialized = json.dumps(summary)
+        self.assertEqual(2, summary["schemaVersion"])
         self.assertEqual(sorted(LOCAL_CANCELLATION_TESTS), summary["payload"]["passedTests"])
         self.assertNotIn("secret token", serialized)
         self.assertNotIn("/Users/private/path", serialized)
@@ -54,6 +55,7 @@ class ResultSanitizerTest(unittest.TestCase):
         summary = sanitize_t094_flutter_machine(raw, REVISION, 0)
 
         serialized = json.dumps(summary)
+        self.assertEqual(2, summary["schemaVersion"])
         self.assertEqual(set(REQUIRED_TEST_SUITES), set(summary["payload"]["suites"]))
         self.assertNotIn("PII", serialized)
         self.assertNotIn("secret", serialized)

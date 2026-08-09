@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from artifact_integrity import ARTIFACT_FORMAT_SUFFIXES, digest_artifact
+from evidence_schema import SCHEMA_VERSION
 from manifest_template import create_manifest_template
 from t093_original_share import LOCAL_CANCELLATION_TESTS
 from t094_reconnect_smoke import REQUIRED_TEST_SUITES
@@ -65,20 +66,8 @@ def _completed_manifest() -> dict[str, Any]:
             "model": "iPhone 16 Pro",
             "iosVersion": "26.5",
             "physicalMemoryBytes": 4_000 * MIB,
-            "selectionBaselineResidentBytes": 100 * MIB,
-            "measuredMemoryMarginBytes": 3_900 * MIB,
+            "baselineResidentBytes": 100 * MIB,
         },
-        "D2": {
-            "model": "iPhone 16 Pro Max",
-            "iosVersion": "26.5",
-            "physicalMemoryBytes": 6_000 * MIB,
-            "selectionBaselineResidentBytes": 100 * MIB,
-            "measuredMemoryMarginBytes": 5_900 * MIB,
-        },
-    }
-    manifest["limitingDevice"] = {
-        "slot": "D1",
-        "selectionReason": "lowerPhysicalMemory",
     }
     manifest["blackHole"].update(
         {
@@ -182,8 +171,7 @@ def _completed_manifest() -> dict[str, Any]:
         {"sourceRevision": "a" * 40, "exitCode": 0}
     )
     t094["primaryDevice"] = "D1"
-    t094["secondaryDevice"] = "D2"
-    for scenario in (*t094["primaryScenarios"], *t094["secondaryScenarios"]):
+    for scenario in t094["primaryScenarios"]:
         scenario.update(
             {
                 "freezeOrCrash": False,
@@ -194,7 +182,6 @@ def _completed_manifest() -> dict[str, Any]:
         )
         _complete_capture(scenario["capture"])
 
-    _replace_device_placeholders(manifest)
     return manifest
 
 
@@ -205,20 +192,6 @@ def _complete_capture(capture: dict[str, Any]) -> None:
             "invalidReason": None,
         }
     )
-
-
-def _replace_device_placeholders(value: Any) -> None:
-    if type(value) is dict:
-        if _is_artifact_record(value):
-            value["role"] = value["role"].replace("-DX-", "-D1-")
-            value["role"] = value["role"].replace("-DP-", "-D1-")
-            value["role"] = value["role"].replace("-DS-", "-D2-")
-            return
-        for child in value.values():
-            _replace_device_placeholders(child)
-    elif type(value) is list:
-        for child in value:
-            _replace_device_placeholders(child)
 
 
 def _materialize_artifacts(value: Any, evidence_root: Path, manifest: dict[str, Any]) -> None:
@@ -303,7 +276,7 @@ def _json_export(role: str, manifest: dict[str, Any]) -> dict[str, Any]:
     if role == "T093-local-cancellation-tests":
         evidence = manifest["t093"]["localCancellationAutomatedEvidence"]
         return {
-            "schemaVersion": 1,
+            "schemaVersion": SCHEMA_VERSION,
             "kind": "t093LocalCancellationTests",
             "payload": {
                 "commandId": "t093LocalCancellationXCTestV1",
@@ -356,7 +329,7 @@ def _json_export(role: str, manifest: dict[str, Any]) -> dict[str, Any]:
     if role == "T094-scoped-flutter-tests":
         evidence = manifest["t094"]["automatedEvidence"]
         return {
-            "schemaVersion": 1,
+            "schemaVersion": SCHEMA_VERSION,
             "kind": "t094ScopedFlutterTests",
             "payload": {
                 "commandId": "t094ScopedFlutterTestsV1",
@@ -374,7 +347,7 @@ def _json_export(role: str, manifest: dict[str, Any]) -> dict[str, Any]:
 def _trace_export(kind: str, trace_sha256: str, payload: dict[str, Any]) -> dict[str, Any]:
     reducer_id, reducer_version = TRACE_REDUCERS[kind]
     return {
-        "schemaVersion": 1,
+        "schemaVersion": SCHEMA_VERSION,
         "kind": kind,
         "reducerId": reducer_id,
         "reducerVersion": reducer_version,

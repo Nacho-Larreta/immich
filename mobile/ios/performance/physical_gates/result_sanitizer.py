@@ -6,6 +6,7 @@ import stat
 from pathlib import Path
 from typing import Any
 
+from evidence_schema import SCHEMA_VERSION
 from strict_evidence import (
     EvidenceValidationError,
     parse_strict_json_bytes,
@@ -73,7 +74,7 @@ def sanitize_t094_flutter_machine(
     if done_success != (exit_code == 0):
         raise EvidenceValidationError("flutter_exit_summary_mismatch", "machine")
     return {
-        "schemaVersion": 1,
+        "schemaVersion": SCHEMA_VERSION,
         "kind": "t094ScopedFlutterTests",
         "payload": {
             "commandId": "t094ScopedFlutterTestsV1",
@@ -101,7 +102,7 @@ def sanitize_t093_xctest_output(
             outcomes[name] = match.group("result")
     passed = sorted(name for name, outcome in outcomes.items() if outcome == "passed")
     return {
-        "schemaVersion": 1,
+        "schemaVersion": SCHEMA_VERSION,
         "kind": "t093LocalCancellationTests",
         "payload": {
             "commandId": "t093LocalCancellationXCTestV1",

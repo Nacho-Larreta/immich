@@ -17,18 +17,17 @@ python3 mobile/ios/performance/physical_gates/physical_gate_runner.py \
   --output "$IMMICH_EVIDENCE_ROOT/evidence-manifest.json"
 ```
 
-Use only `D1` and `D2` in filenames and the manifest. Never persist a device name,
+Schema v2 uses one physical test subject, always identified as `D1`. Use only `D1`
+in filenames and the manifest. Never persist a device name,
 UDID, account, URL, IP address, asset identifier, original filename, error body, or
 screen containing personal media. `build.bundleIdentifier` is the observed bundle
 identifier of the installed build; `build.sourceRevision` is the exact Git revision
 from which that build was produced.
 
-The two device records use model, iOS version, physical memory, and a 30-second
-stabilized VM Tracker baseline. The measured margin is exactly
-`physicalMemoryBytes - selectionBaselineResidentBytes`. Select the unique lower
-physical-memory device with `lowerPhysicalMemory`; if physical memory ties, select
-the unique lower measured margin with `lowerMeasuredMemoryMargin`. T092 and T093
-must use that slot.
+The D1 record keeps the model, iOS version, physical memory, and a 30-second
+stabilized VM Tracker resident-size baseline. D1 is the subject for T091-T094 and
+the final T108 install/smoke. Other TestFlight participants keep access to the same
+build but do not repeat the physical gates.
 
 ## Artifact integrity
 
@@ -118,7 +117,7 @@ these properties is false, the capture is not valid black-hole evidence.
 
 ## T091: cold launch
 
-Run both devices in `online`, `airplane`, and `blackHole`. Preserve the same session,
+Run D1 in `online`, `airplane`, and `blackHole`. Preserve the same session,
 Drift database, and caches; do not reinstall or clear data. Per cell:
 
 1. Fix the condition and terminate the app completely.
@@ -140,7 +139,7 @@ attempt named `<role>-retry1`. A second invalid acquisition leaves the gate
 
 ## T092: gallery stress
 
-Run one continuous black-hole trace on the limiting device. Stabilize the open
+Run one continuous black-hole trace on D1. Stabilize the open
 timeline for 30 seconds, record VM Tracker `Resident Size` and open temporary count,
 then perform exactly 100 fixture-only traversals:
 
@@ -176,7 +175,7 @@ runner re-hashes the generator manifest and both fixture files, checks exact
 logical/allocation sizes, and relies on the generator's publish-last contract that
 runs `ffprobe` before `manifest.json`.
 
-Run this exact matrix on the limiting device:
+Run this exact matrix on D1:
 
 | Adapter | Success 256 MiB | Success 1 GiB | Cancel 1 GiB |
 |---|---:|---:|---:|
@@ -255,12 +254,11 @@ evidence. These tests are the
 evidence for exactly one reconciliation, at most one coalesced rerun, and rejection
 of stale-session completions. Do not add or claim epoch/generation signposts.
 
-On the primary device capture the four named scenarios from the template:
+On D1 capture the four named scenarios from the template:
 black-hole to online during a probe, background/resume during sync, logout/login
-during a probe, and logout/login during sync. On the second device capture the three
-directed smokes: black-hole to online, background/resume, and logout/login. Each must
-return to a usable timeline without freeze/crash, stale endpoint publication, or an
-observable side effect from the old session.
+during a probe, and logout/login during sync. Each must return to a usable timeline
+without freeze/crash, stale endpoint publication, or an observable side effect from
+the old session. No second-device matrix is part of schema v2.
 
 ## Evaluate
 

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from evidence_schema import SCHEMA_VERSION
 from trace_reducers import TRACE_REDUCERS
 
 
-DEVICE_SLOTS = ("D1", "D2")
+DEVICE_SLOT = "D1"
+DEVICE_SLOTS = (DEVICE_SLOT,)
 T091_CONDITIONS = ("online", "airplane", "blackHole")
 T092_CONTROL_TRAVERSALS = 5
 T092_ICLOUD_REQUESTS = 5
@@ -24,16 +26,11 @@ T094_PRIMARY_SCENARIOS = (
     "logoutLoginDuringProbe",
     "logoutLoginDuringSync",
 )
-T094_SECONDARY_SCENARIOS = (
-    "blackHoleToOnline",
-    "backgroundResume",
-    "logoutLogin",
-)
 
 
 def create_manifest_template() -> dict[str, Any]:
     return {
-        "schemaVersion": 1,
+        "schemaVersion": SCHEMA_VERSION,
         "build": {
             "marketingVersion": None,
             "buildNumber": None,
@@ -45,14 +42,9 @@ def create_manifest_template() -> dict[str, Any]:
                 "model": None,
                 "iosVersion": None,
                 "physicalMemoryBytes": None,
-                "selectionBaselineResidentBytes": None,
-                "measuredMemoryMarginBytes": None,
+                "baselineResidentBytes": None,
             }
             for slot in DEVICE_SLOTS
-        },
-        "limitingDevice": {
-            "slot": None,
-            "selectionReason": None,
         },
         "blackHole": {
             "appliedAt": "clientSpecificRouterAcl",
@@ -127,7 +119,7 @@ def _t091_samples() -> list[dict[str, Any]]:
 
 def _t092_template() -> dict[str, Any]:
     return {
-        "device": None,
+        "device": DEVICE_SLOT,
         "blackHoleRun": {
             "continuous": None,
             "traversalsCompleted": None,
@@ -144,9 +136,9 @@ def _t092_template() -> dict[str, Any]:
             "finalOpenTemporaries": None,
             "finalActiveRequests": _request_counts(),
             "maxConcurrentPermits": _permit_counts(),
-            "capture": _capture("T092-DX-blackhole-100"),
+            "capture": _capture(f"T092-{DEVICE_SLOT}-blackhole-100"),
             "metricsExport": _trace_export(
-                "T092-DX-blackhole-100-metrics",
+                f"T092-{DEVICE_SLOT}-blackhole-100-metrics",
                 "t092BlackHole",
             ),
         },
@@ -165,9 +157,9 @@ def _t092_template() -> dict[str, Any]:
                     for _ in range(T092_ICLOUD_REQUESTS)
                 ],
                 "freezeOrCrash": None,
-                "capture": _capture("T092-DX-icloudonly-control"),
+                "capture": _capture(f"T092-{DEVICE_SLOT}-icloudonly-control"),
                 "metricsExport": _trace_export(
-                    "T092-DX-icloudonly-control-metrics",
+                    f"T092-{DEVICE_SLOT}-icloudonly-control-metrics",
                     "t092ICloudOnly",
                 ),
             },
@@ -179,9 +171,9 @@ def _t092_traversal_control(condition: str) -> dict[str, Any]:
     return {
         "traversalsCompleted": None,
         "freezeOrCrash": None,
-        "capture": _capture(f"T092-DX-{condition}-control"),
+        "capture": _capture(f"T092-{DEVICE_SLOT}-{condition}-control"),
         "metricsExport": _trace_export(
-            f"T092-DX-{condition}-control-metrics",
+            f"T092-{DEVICE_SLOT}-{condition}-control-metrics",
             "t092TraversalControl",
         ),
     }
@@ -208,7 +200,7 @@ def _permit_counts() -> dict[str, Any]:
 
 def _t093_template() -> dict[str, Any]:
     return {
-        "device": None,
+        "device": DEVICE_SLOT,
         "fixtureGeneratorContract": "manifestPublishedAfterFfprobe",
         "fixtureManifestSha256": None,
         "fixtureManifestByteCount": None,
@@ -228,7 +220,7 @@ def _t093_template() -> dict[str, Any]:
 def _t093_case(adapter: str, operation: str, fixture: str) -> dict[str, Any]:
     case_slug = operation.lower()
     adapter_slug = "local" if adapter == "localPhotoKit" else "remote"
-    role = f"T093-DX-{adapter_slug}-{case_slug}"
+    role = f"T093-{DEVICE_SLOT}-{adapter_slug}-{case_slug}"
     is_cancel = operation == "cancel1024"
     return {
         "adapter": adapter,
@@ -277,13 +269,9 @@ def _t094_template() -> dict[str, Any]:
             "exitCode": None,
             "artifact": _artifact("T094-scoped-flutter-tests", "json"),
         },
-        "primaryDevice": None,
-        "secondaryDevice": None,
+        "primaryDevice": DEVICE_SLOT,
         "primaryScenarios": [
-            _t094_scenario("DP", name) for name in T094_PRIMARY_SCENARIOS
-        ],
-        "secondaryScenarios": [
-            _t094_scenario("DS", name) for name in T094_SECONDARY_SCENARIOS
+            _t094_scenario(DEVICE_SLOT, name) for name in T094_PRIMARY_SCENARIOS
         ],
     }
 

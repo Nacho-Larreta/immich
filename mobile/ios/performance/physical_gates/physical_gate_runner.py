@@ -15,6 +15,7 @@ from artifact_integrity import (
     require_private_external_directory,
     write_private_json_exclusive,
 )
+from evidence_schema import SCHEMA_VERSION
 from evaluation_result import EvaluationStatus
 from gate_evaluator import evaluate_manifest, invalid_report
 from manifest_template import create_manifest_template
@@ -97,7 +98,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             write_private_json_exclusive(arguments.output, create_manifest_template())
             _write_stdout(
                 {
-                    "schemaVersion": 1,
+                    "schemaVersion": SCHEMA_VERSION,
                     "status": "CREATED",
                     "output": arguments.output.name,
                 }
@@ -137,7 +138,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             write_private_json_exclusive(arguments.output, summary)
             _write_stdout(
                 {
-                    "schemaVersion": 1,
+                    "schemaVersion": SCHEMA_VERSION,
                     "status": "SANITIZED",
                     "output": arguments.output.name,
                 }
@@ -164,19 +165,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         _write_stdout(report_json)
         return int(report.status)
     except UsageError:
-        _write_stdout({"schemaVersion": 1, "status": "USAGE_ERROR"})
+        _write_stdout({"schemaVersion": SCHEMA_VERSION, "status": "USAGE_ERROR"})
         return USAGE_EXIT_CODE
     except EvidenceValidationError as error:
         _write_stdout(
             {
-                "schemaVersion": 1,
+                "schemaVersion": SCHEMA_VERSION,
                 "status": "INVALID",
                 "code": error.code,
             }
         )
         return int(EvaluationStatus.INVALID)
     except (OSError, RuntimeError):
-        _write_stdout({"schemaVersion": 1, "status": "INTERNAL_ERROR"})
+        _write_stdout({"schemaVersion": SCHEMA_VERSION, "status": "INTERNAL_ERROR"})
         return INTERNAL_ERROR_EXIT_CODE
 
 

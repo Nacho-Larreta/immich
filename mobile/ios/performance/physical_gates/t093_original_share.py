@@ -43,7 +43,7 @@ LOCAL_CANCELLATION_TESTS = {
 
 def evaluate_t093(
     raw: Any,
-    limiting_device: str,
+    subject_device: str,
     source_revision: str,
     fixture_root: Path,
     verifier: ArtifactVerifier,
@@ -64,8 +64,8 @@ def evaluate_t093(
         "t093",
     )
     device = require_enum(gate["device"], set(DEVICE_SLOTS), "t093.device")
-    if device != limiting_device:
-        raise EvidenceValidationError("t093_not_on_limiting_device", "t093.device")
+    if device != subject_device:
+        raise EvidenceValidationError("t093_not_on_subject_device", "t093.device")
     if (
         require_string(gate["fixtureGeneratorContract"], "t093.fixtureGeneratorContract")
         != "manifestPublishedAfterFfprobe"

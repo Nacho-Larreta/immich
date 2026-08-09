@@ -43,7 +43,7 @@ class PhysicalGateEvaluatorTest(unittest.TestCase):
 
         self.assertEqual(EvaluationStatus.PASS, report.status)
         self.assertTrue(all(gate.status == EvaluationStatus.PASS for gate in report.gates.values()))
-        self.assertGreater(report.artifact_count, 80)
+        self.assertEqual(93, report.artifact_count)
         self.assertEqual(1.0, report.gates["T091"].metrics["cells"]["D1.airplane"]["p95Seconds"])
 
     def test_hand_authored_trace_json_is_invalid_without_pinned_reducer(self) -> None:
@@ -63,7 +63,7 @@ class PhysicalGateEvaluatorTest(unittest.TestCase):
         self.assertEqual(3.0, report.gates["T091"].metrics["cells"]["D1.online"]["p95Seconds"])
 
     def test_airplane_p95_uses_maximum_and_fails_over_threshold(self) -> None:
-        sample = self._t091_sample("D2", "airplane", 7)
+        sample = self._t091_sample("D1", "airplane", 7)
         sample["timelineInteractiveSeconds"] = 2.500001
 
         report = self.evaluate()
@@ -172,27 +172,50 @@ class PhysicalGateEvaluatorTest(unittest.TestCase):
         self.assertEqual(EvaluationStatus.INVALID, report.status)
         self.assertFinding(report, "T092", "incomplete_background_resume_matrix", "INVALID")
 
-    def test_wrong_limiting_device_is_invalid(self) -> None:
-        self.prepared.manifest["limitingDevice"]["slot"] = "D2"
+    def test_rejects_unexpected_second_device(self) -> None:
+        self.prepared.manifest["devices"]["D2"] = dict(
+            self.prepared.manifest["devices"]["D1"]
+        )
 
         report = self.evaluate()
 
         self.assertEqual(EvaluationStatus.INVALID, report.status)
-        self.assertFinding(report, "GLOBAL", "wrong_limiting_device", "INVALID")
+        self.assertFinding(report, "GLOBAL", "unexpected_or_missing_keys", "INVALID")
         for gate in ("T091", "T092", "T093", "T094"):
             self.assertFinding(report, gate, "not_evaluated", "INVALID")
 
-    def test_lower_physical_memory_wins_even_when_other_device_has_lower_margin(self) -> None:
-        d2 = self.prepared.manifest["devices"]["D2"]
-        d2["selectionBaselineResidentBytes"] = 2_500 * 1024 * 1024
-        d2["measuredMemoryMarginBytes"] = 3_500 * 1024 * 1024
+    def test_rejects_d2_as_t092_subject(self) -> None:
+        self.prepared.manifest["t092"]["device"] = "D2"
 
         report = self.evaluate()
 
-        self.assertEqual(EvaluationStatus.PASS, report.status)
+        self.assertEqual(EvaluationStatus.INVALID, report.status)
+        self.assertFinding(report, "T092", "unsupported_enum_value", "INVALID")
 
-    def test_global_schema_failure_marks_every_physical_gate_not_evaluated(self) -> None:
-        self.prepared.manifest["schemaVersion"] = 2
+    def test_rejects_unknown_t093_subject(self) -> None:
+        self.prepared.manifest["t093"]["device"] = "unknown"
+
+        report = self.evaluate()
+
+        self.assertEqual(EvaluationStatus.INVALID, report.status)
+        self.assertFinding(report, "T093", "unsupported_enum_value", "INVALID")
+
+    def test_rejects_device_baseline_at_or_above_physical_memory(self) -> None:
+        device = self.prepared.manifest["devices"]["D1"]
+        device["baselineResidentBytes"] = device["physicalMemoryBytes"]
+
+        report = self.evaluate()
+
+        self.assertEqual(EvaluationStatus.INVALID, report.status)
+        self.assertFinding(
+            report,
+            "GLOBAL",
+            "invalid_device_memory_baseline",
+            "INVALID",
+        )
+
+    def test_schema_v1_manifest_marks_every_physical_gate_not_evaluated(self) -> None:
+        self.prepared.manifest["schemaVersion"] = 1
 
         report = self.evaluate()
 
@@ -200,6 +223,18 @@ class PhysicalGateEvaluatorTest(unittest.TestCase):
         self.assertFinding(report, "GLOBAL", "unsupported_schema_version", "INVALID")
         for gate in ("T091", "T092", "T093", "T094"):
             self.assertFinding(report, gate, "not_evaluated", "INVALID")
+
+    def test_schema_v1_sanitized_export_is_invalid(self) -> None:
+        role = "T094-scoped-flutter-tests"
+        path = self.prepared.evidence_root / f"{role}.json"
+        summary = json.loads(path.read_text(encoding="utf-8"))
+        summary["schemaVersion"] = 1
+        self.prepared.replace_json_artifact(role, summary)
+
+        report = self.evaluate(synchronize_exports=False)
+
+        self.assertEqual(EvaluationStatus.INVALID, report.status)
+        self.assertFinding(report, "T094", "unsupported_export_schema", "INVALID")
 
     def test_t092_temporary_count_must_equal_not_merely_not_increase(self) -> None:
         run = self.prepared.manifest["t092"]["blackHoleRun"]
