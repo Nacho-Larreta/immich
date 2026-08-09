@@ -188,20 +188,32 @@ class ExactReleaseRuntimeTest < Minitest::Test
     assert_archive_preflight_rejected([entry])
   end
 
-  def test_tracked_configuration_digest_detects_delta
+  def test_tracked_configuration_digest_is_independent_from_cwd_and_detects_delta
+    assert_equal File.expand_path("../..", __dir__), ExactReleaseRuntime::IOS_PROJECT_ROOT
+
     Dir.mktmpdir do |directory|
+      unrelated = Dir.mktmpdir
       first = File.join(directory, "first")
       second = File.join(directory, "second")
       File.binwrite(first, "one")
       File.binwrite(second, "two")
-      runtime = service(argv_runner: Object.new, tracked_paths: [first, second])
+      runtime = service(
+        argv_runner: Object.new,
+        tracked_paths: %w[first second],
+        tracked_root: directory
+      )
       before = runtime.tracked_configuration_digest
 
-      assert runtime.verify_tracked_configuration_unchanged!(before)
-      File.binwrite(second, "changed")
-      assert_raises(ExactReleaseRuntime::Error) do
-        runtime.verify_tracked_configuration_unchanged!(before)
+      Dir.chdir(unrelated) do
+        assert_equal before, runtime.tracked_configuration_digest
+        assert runtime.verify_tracked_configuration_unchanged!(before)
+        File.binwrite(second, "changed")
+        assert_raises(ExactReleaseRuntime::Error) do
+          runtime.verify_tracked_configuration_unchanged!(before)
+        end
       end
+    ensure
+      FileUtils.remove_entry(unrelated) if unrelated && File.exist?(unrelated)
     end
   end
 
@@ -268,12 +280,13 @@ class ExactReleaseRuntimeTest < Minitest::Test
     entry
   end
 
-  def service(argv_runner:, tracked_paths: [])
+  def service(argv_runner:, tracked_paths: [], tracked_root: ExactReleaseRuntime::IOS_PROJECT_ROOT)
     ExactReleaseRuntime::Service.new(
       bundle_id: BUNDLE_ID,
       profile_parser: ->(_path) { raise "not used" },
       argv_runner: argv_runner,
-      tracked_configuration_paths: tracked_paths
+      tracked_configuration_paths: tracked_paths,
+      tracked_configuration_root: tracked_root
     )
   end
 

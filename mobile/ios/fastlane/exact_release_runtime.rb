@@ -15,6 +15,7 @@ require_relative "testflight_release_artifact"
 module ExactReleaseRuntime
   class Error < StandardError; end
 
+  IOS_PROJECT_ROOT = File.expand_path("..", __dir__).freeze
   TRACKED_CONFIGURATION_PATHS = %w[
     Flutter/Release.xcconfig
     Podfile
@@ -268,11 +269,13 @@ module ExactReleaseRuntime
 
   class Service
     def initialize(bundle_id:, profile_parser:, argv_runner: ArgvRunner.new,
-                   tracked_configuration_paths: TRACKED_CONFIGURATION_PATHS)
+                   tracked_configuration_paths: TRACKED_CONFIGURATION_PATHS,
+                   tracked_configuration_root: IOS_PROJECT_ROOT)
       @bundle_id = bundle_id
       @profile_parser = profile_parser
       @argv_runner = argv_runner
-      @tracked_configuration_paths = tracked_configuration_paths
+      @tracked_configuration_root = validated_configuration_root!(tracked_configuration_root)
+      @tracked_configuration_paths = validated_configuration_paths!(tracked_configuration_paths)
     end
 
     def contract(version:, build_number:, developer_portal_team_id:, signing_certificate_sha256:,
@@ -412,7 +415,8 @@ module ExactReleaseRuntime
     end
 
     def digest_tracked_file!(digest, path)
-      io = File.open(path, File::RDONLY | File::NOFOLLOW)
+      absolute_path = File.expand_path(path, @tracked_configuration_root)
+      io = File.open(absolute_path, File::RDONLY | File::NOFOLLOW)
       opened = io.stat
       raise Error, "Tracked build configuration is invalid" unless opened.file?
 
@@ -421,12 +425,42 @@ module ExactReleaseRuntime
       while (chunk = io.read(1024 * 1024))
         digest.update(chunk)
       end
-      after = File.lstat(path)
+      after = File.lstat(absolute_path)
       unless after.dev == opened.dev && after.ino == opened.ino && after.size == opened.size
         raise Error, "Tracked build configuration changed while it was read"
       end
     ensure
       io&.close
+    end
+
+    def validated_configuration_root!(root)
+      expanded = File.expand_path(root)
+      stat = File.lstat(expanded)
+      unless stat.directory? && !stat.symlink?
+        raise Error, "Tracked build configuration root is invalid"
+      end
+
+      expanded.freeze
+    rescue Error
+      raise
+    rescue StandardError
+      raise Error, "Tracked build configuration root is unavailable"
+    end
+
+    def validated_configuration_paths!(paths)
+      unless paths.is_a?(Array) && paths.all? { |path| valid_relative_configuration_path?(path) }
+        raise Error, "Tracked build configuration paths are invalid"
+      end
+
+      paths.map { |path| path.dup.freeze }.freeze
+    end
+
+    def valid_relative_configuration_path?(path)
+      return false unless path.is_a?(String) && !path.empty? && !path.start_with?("/")
+
+      expanded = File.expand_path(path, @tracked_configuration_root)
+      expanded.start_with?("#{@tracked_configuration_root}/") &&
+        expanded == File.join(@tracked_configuration_root, path)
     end
   end
 end
