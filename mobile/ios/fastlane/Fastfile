@@ -13,6 +13,9 @@
 # Uncomment the line if you want fastlane to automatically update itself
 # update_fastlane
 
+require_relative "exact_release_runtime"
+require_relative "installed_signing_identity"
+require_relative "production_build_plan"
 require_relative "release_build_guard"
 require_relative "signing_preparation"
 require_relative "testflight_connect_api_gateway"
@@ -125,18 +128,54 @@ platform :ios do
     File.umask(previous_umask) if previous_umask
   end
 
-  def snapshot_exact_ipa!(release)
-    TestFlightReleaseArtifact::Snapshot.create(
-      source_path: release.ipa_path,
-      bundle_id: release.bundle_id,
-      version: release.version,
-      build_number: release.build_number,
-      metadata_reader: lambda do |path, key|
-        get_ipa_info_plist_value(ipa: path, key: key)
+  def production_artifact_contract(version:, build_number:, developer_portal_team_id:,
+                                   signing_certificate_sha256:, provisioning_profile_uuids:)
+    exact_release_runtime.contract(
+      version: version,
+      build_number: build_number,
+      developer_portal_team_id: developer_portal_team_id,
+      signing_certificate_sha256: signing_certificate_sha256,
+      provisioning_profile_uuids: provisioning_profile_uuids
+    )
+  end
+
+  def exact_release_runtime
+    @exact_release_runtime ||= ExactReleaseRuntime::Service.new(
+      bundle_id: BASE_BUNDLE_ID,
+      profile_parser: lambda do |path|
+        FastlaneCore::ProvisioningProfile.parse(path)
       end
     )
+  end
+
+  def validate_exact_ipa!(ipa_path, contract)
+    exact_release_runtime.validate_exact_ipa!(ipa_path, contract)
+  end
+
+  def snapshot_exact_ipa!(release, contract)
+    exact_release_runtime.snapshot_exact_ipa!(release.ipa_path, contract)
   rescue TestFlightReleaseArtifact::InvalidArtifact => error
     UI.user_error!(error.message)
+  end
+
+  def verify_installed_signing_identity!(plan)
+    exact_release_runtime.verify_installed_signing_identity!(plan)
+  end
+
+  def verified_profile_uuids!(plan)
+    exact_release_runtime.verified_profile_uuids!(plan)
+  end
+
+  def tracked_build_configuration_digest
+    exact_release_runtime.tracked_configuration_digest
+  end
+
+  def verify_tracked_build_configuration_unchanged!(before_digest)
+    exact_release_runtime.verify_tracked_configuration_unchanged!(before_digest)
+  end
+
+  def secure_private_ipa!(path)
+    exact_release_runtime.secure_private_ipa!(path)
   end
 
   # Helper method to configure code signing for all targets
@@ -379,13 +418,75 @@ platform :ios do
     UI.user_error!(error.message)
   end
 
+  desc "Build and locally verify one exact production IPA without remote actions"
+  lane :nacho_build_exact_prod do
+    plan = ProductionBuildPlan::Plan.from_env(ENV, bundle_id: BASE_BUNDLE_ID)
+    tracked_configuration_before = tracked_build_configuration_digest
+
+    begin
+      verify_installed_signing_identity!(plan)
+      profile_uuids = verified_profile_uuids!(plan)
+      contract = production_artifact_contract(
+        version: plan.version,
+        build_number: plan.build_number,
+        developer_portal_team_id: plan.developer_portal_team_id,
+        signing_certificate_sha256: plan.signing_certificate_sha256,
+        provisioning_profile_uuids: profile_uuids
+      )
+      xcargs = exact_release_runtime.xcode_arguments(
+        plan: plan,
+        code_sign_identity: CODE_SIGN_IDENTITY
+      )
+
+      build_app(
+        workspace: "Runner.xcworkspace",
+        scheme: "Runner",
+        configuration: "Release",
+        clean: true,
+        archive_path: plan.archive_path,
+        output_directory: File.dirname(plan.ipa_path),
+        output_name: File.basename(plan.ipa_path),
+        export_method: "app-store-connect",
+        xcargs: xcargs,
+        export_options: {
+          method: "app-store-connect",
+          signingStyle: "manual",
+          signingCertificate: CODE_SIGN_IDENTITY,
+          teamID: plan.developer_portal_team_id,
+          provisioningProfiles: profile_uuids
+        }
+      )
+
+      secure_private_ipa!(plan.ipa_path)
+      validate_exact_ipa!(plan.ipa_path, contract)
+      UI.success("Exact production IPA built and locally verified")
+    ensure
+      verify_tracked_build_configuration_unchanged!(tracked_configuration_before)
+    end
+  rescue ProductionBuildPlan::InvalidPlan,
+         InstalledSigningIdentity::VerificationError,
+         SigningPreparation::InvalidPlan,
+         TestFlightReleaseArtifact::InvalidArtifact,
+         ExactReleaseRuntime::Error => error
+    UI.user_error!(error.message)
+  end
+
   desc "Upload one exact prebuilt IPA after a second fail-closed preflight"
   lane :nacho_upload_exact_prod do
     release = production_release_configuration
     configuration = api_key_configuration
-    artifact = snapshot_exact_ipa!(release)
+    run_production_preflight(release, configuration)
+    signing_inputs = ProductionBuildPlan::Plan.signing_inputs_from_env(ENV, bundle_id: BASE_BUNDLE_ID)
+    profile_uuids = verified_profile_uuids!(signing_inputs)
+    contract = production_artifact_contract(
+      version: release.version,
+      build_number: release.build_number,
+      developer_portal_team_id: release.developer_portal_team_id,
+      signing_certificate_sha256: signing_inputs.signing_certificate_sha256,
+      provisioning_profile_uuids: profile_uuids
+    )
+    artifact = snapshot_exact_ipa!(release, contract)
     begin
-      run_production_preflight(release, configuration)
       api_key = get_api_key(configuration)
       artifact.verify_unchanged!
 
