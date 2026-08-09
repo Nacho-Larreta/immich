@@ -90,6 +90,10 @@ Pass only when:
 Use synthetic, non-personal 256 MiB and 1 GiB originals. Capture each fixture from
 request start until the lease is released or cleanup fails.
 
+Generate and verify the exact-size originals with
+`mobile/ios/performance/fixtures/generate_t093_fixtures.py`; generated media stays
+under `/private/tmp` by default and must not be added to Git.
+
 Pass only when peak Resident Size is at most 96 MiB, the 1 GiB delta is at most
 1.5 times the 256 MiB delta, cancellation aborts the producer, request/permit
 intervals return to zero, and temporary intervals return to baseline. An open
