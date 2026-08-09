@@ -17,7 +17,7 @@ class Spaceship22331ContractTest < Minitest::Test
 
   def test_models_expose_every_eagerly_snapshotted_attribute
     assert_includes Spaceship::ConnectAPI::User.instance_methods, :visible_apps
-    assert_includes Spaceship::ConnectAPI::BetaTester.instance_methods, :beta_tester_state
+    assert_includes Spaceship::ConnectAPI::BetaTester.instance_methods, :invite_type
     assert_includes Spaceship::ConnectAPI::BetaTester.instance_methods, :beta_groups
     assert_includes Spaceship::ConnectAPI::Build.instance_methods, :build_beta_detail
     assert_includes Spaceship::ConnectAPI::Build.instance_methods, :pre_release_version

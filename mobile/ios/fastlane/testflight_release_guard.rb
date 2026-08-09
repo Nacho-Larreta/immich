@@ -6,7 +6,6 @@ require_relative "testflight_gateway_errors"
 
 module TestFlightReleaseGuard
   ELIGIBLE_ROLES = %w[ACCOUNT_HOLDER ADMIN APP_MANAGER DEVELOPER MARKETING].freeze
-  ELIGIBLE_TESTER_STATES = %w[ACCEPTED INSTALLED].freeze
   RETRY_BUILD_STATES = %w[PROCESSING].freeze
   ADVANCE_BUILD_STATES = %w[VALID].freeze
   FAIL_BUILD_STATES = %w[FAILED INVALID].freeze
@@ -38,7 +37,7 @@ module TestFlightReleaseGuard
   App = FrozenDto.new(:id, :bundle_id, keyword_init: true)
   Group = FrozenDto.new(:id, :app_id, :name, :internal, keyword_init: true)
   User = FrozenDto.new(:id, :email, :roles, :app_ids, :all_apps_access, keyword_init: true)
-  BetaTester = FrozenDto.new(:id, :app_id, :email, :state, :group_ids, keyword_init: true)
+  BetaTester = FrozenDto.new(:id, :app_id, :email, :invite_type, :group_ids, keyword_init: true)
   Build = FrozenDto.new(
     :id,
     :app_id,
@@ -176,7 +175,7 @@ module TestFlightReleaseGuard
 
         testers = @gateway.beta_testers(app_id: app_id, email: email)
         unless testers.length == 1 && eligible_tester?(testers.first, group_id)
-          raise PreflightFailure, "Each user must be an accepted internal beta tester in the exact group"
+          raise PreflightFailure, "Each user must be an internal beta tester in the exact group"
         end
       end
       emails.length
@@ -191,7 +190,7 @@ module TestFlightReleaseGuard
     end
 
     def eligible_tester?(tester, group_id)
-      ELIGIBLE_TESTER_STATES.include?(tester.state) && tester.group_ids.include?(group_id)
+      tester.group_ids.include?(group_id)
     end
 
     def verify_remote_build_expectation!(release, app_id)

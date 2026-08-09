@@ -129,8 +129,8 @@ class TestFlightReleaseGuardTest < Minitest::Test
       eligible_user("two@example.test")
     ]
     @testers = [
-      eligible_tester("one@example.test", "ACCEPTED"),
-      eligible_tester("two@example.test", "INSTALLED")
+      eligible_tester("one@example.test"),
+      eligible_tester("two@example.test")
     ]
     @release = Release.new(
       bundle_id: @app.bundle_id,
@@ -155,6 +155,15 @@ class TestFlightReleaseGuardTest < Minitest::Test
     assert result.frozen?
   end
 
+  def test_preflight_accepts_internal_group_membership_without_beta_tester_state
+    guard, = guard_with([build(number: "41")])
+
+    result = guard.preflight(@release)
+
+    assert_equal 2, result.eligible_tester_count
+    refute_respond_to @testers.first, :state
+  end
+
   def test_preflight_fails_closed_on_ambiguous_or_drifted_remote_state
     mutations = [
       ->(gateway) { gateway.duplicate_app },
@@ -172,15 +181,12 @@ class TestFlightReleaseGuardTest < Minitest::Test
     end
   end
 
-  def test_preflight_rejects_ineligible_roles_app_access_tester_states_and_group_membership
+  def test_preflight_rejects_ineligible_roles_app_access_and_group_membership
     invalid_users = [
       eligible_user(@users.first.email, roles: ["FINANCE"]),
       eligible_user(@users.first.email, app_ids: ["another-app"])
     ]
-    invalid_testers = [
-      eligible_tester(@testers.first.email, "INVITED"),
-      eligible_tester(@testers.first.email, "ACCEPTED", group_ids: [])
-    ]
+    invalid_testers = [eligible_tester(@testers.first.email, group_ids: [])]
 
     invalid_users.each do |user|
       guard, gateway = guard_with([build(number: "41")])
@@ -346,9 +352,9 @@ class TestFlightReleaseGuardTest < Minitest::Test
     )
   end
 
-  def eligible_tester(email, state, group_ids: [@group.id])
+  def eligible_tester(email, invite_type: "EMAIL", group_ids: [@group.id])
     TestFlightReleaseGuard::BetaTester.new(
-      id: "tester-#{email}", app_id: @app.id, email: email, state: state, group_ids: group_ids
+      id: "tester-#{email}", app_id: @app.id, email: email, invite_type: invite_type, group_ids: group_ids
     )
   end
 

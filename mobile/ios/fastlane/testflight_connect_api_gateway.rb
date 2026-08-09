@@ -81,7 +81,7 @@ module TestFlightConnectApiGateway
           id: value(raw, :id),
           app_id: relationship_id(raw, :app_id, :apps) || app_id,
           email: attribute(raw, :email),
-          state: attribute(raw, :state, :inviteType)&.to_s&.upcase,
+          invite_type: attribute(raw, :invite_type, :inviteType)&.to_s&.upcase,
           group_ids: relationship_ids(raw, :group_ids, :betaGroups)
         )
       end.select { |tester| tester.app_id == app_id && tester.email.to_s.casecmp(email).zero? }.freeze
@@ -404,7 +404,7 @@ module TestFlightConnectApiGateway
           id: read(model_instance, :id),
           app_id: related_ids(model_instance, :apps).first,
           email: read(model_instance, :email),
-          state: read(model_instance, :beta_tester_state),
+          invite_type: read(model_instance, :invite_type),
           group_ids: related_ids(model_instance, :beta_groups)
         }
       when :builds

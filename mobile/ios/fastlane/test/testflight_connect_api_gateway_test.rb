@@ -78,6 +78,31 @@ class TestFlightConnectApiGatewayTest < Minitest::Test
     assert apps.frozen?
   end
 
+  def test_maps_beta_tester_invite_type_without_treating_it_as_membership_state
+    pages = {
+      nil => TestFlightConnectApiGateway::Page.new(
+        items: [
+          {
+            "id" => "tester-1",
+            "attributes" => { "email" => "one@example.test", "inviteType" => "EMAIL" },
+            "relationships" => {
+              "apps" => { "data" => [{ "id" => "app-1" }] },
+              "betaGroups" => { "data" => [{ "id" => "group-1" }] }
+            }
+          }
+        ],
+        next_cursor: nil
+      )
+    }
+    gateway = gateway_with(FakeTransport.new(pages: pages))
+
+    tester = gateway.beta_testers(app_id: "app-1", email: "one@example.test").fetch(0)
+
+    assert_equal "EMAIL", tester.invite_type
+    refute_respond_to tester, :state
+    assert_equal ["group-1"], tester.group_ids
+  end
+
   def test_renews_an_expired_token_once_and_retries_the_same_page
     transport = FakeTransport.new(
       pages: { nil => TestFlightConnectApiGateway::Page.new(items: [], next_cursor: nil) },
