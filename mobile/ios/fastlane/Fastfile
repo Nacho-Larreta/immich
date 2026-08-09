@@ -14,6 +14,33 @@
 # update_fastlane
 
 require_relative "release_build_guard"
+require_relative "signing_preparation"
+require_relative "testflight_connect_api_gateway"
+require_relative "testflight_release_configuration"
+require_relative "testflight_release_artifact"
+require_relative "testflight_release_guard"
+
+class TestFlightSystemClock
+  def monotonic_now
+    Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  end
+
+  def now
+    Time.now
+  end
+end
+
+class TestFlightSleeper
+  def sleep(seconds)
+    Kernel.sleep(seconds)
+  end
+end
+
+class TestFlightSanitizedLogger
+  def info(event, evidence)
+    UI.message("#{event}: #{evidence}")
+  end
+end
 
 default_platform(:ios)
 
@@ -23,34 +50,95 @@ platform :ios do
   CODE_SIGN_IDENTITY = ENV["FASTLANE_CODE_SIGN_IDENTITY"] || "Apple Distribution"
   BASE_BUNDLE_ID = "com.nacholarreta.nachofotos"
   
-  # Helper method to get App Store Connect API key
-  def get_api_key
-    app_store_connect_api_key(
-      key_id: ENV["APP_STORE_CONNECT_API_KEY_ID"],
-      issuer_id: ENV["APP_STORE_CONNECT_API_KEY_ISSUER_ID"],
-      key_filepath: "#{Dir.home}/.appstoreconnect/private_keys/AuthKey_#{ENV['APP_STORE_CONNECT_API_KEY_ID']}.p8",
-      duration: 1200,
-      in_house: false
+  def api_key_configuration
+    TestFlightReleaseConfiguration::ApiKey.from_env(ENV)
+  rescue TestFlightReleaseConfiguration::InvalidConfiguration => error
+    UI.user_error!(error.message)
+  end
+
+  def get_api_key(configuration = api_key_configuration)
+    app_store_connect_api_key(**configuration.fastlane_options)
+  end
+
+  def production_release_configuration
+    TestFlightReleaseConfiguration::Release.from_env(ENV, bundle_id: BASE_BUNDLE_ID)
+  rescue TestFlightReleaseConfiguration::InvalidConfiguration => error
+    UI.user_error!(error.message)
+  end
+
+  def testflight_gateway(configuration)
+    transport = TestFlightConnectApiGateway::SpaceshipTransport.new(
+      api_key_configuration: configuration
+    )
+    TestFlightConnectApiGateway::Gateway.new(
+      token: transport.refresh_token,
+      transport: transport
+    )
+  rescue TestFlightConnectApiGateway::Error => error
+    UI.user_error!(error.message)
+  end
+
+  def testflight_release_guard(configuration)
+    TestFlightReleaseGuard::Guard.new(
+      gateway: testflight_gateway(configuration),
+      clock: TestFlightSystemClock.new,
+      sleeper: TestFlightSleeper.new,
+      logger: TestFlightSanitizedLogger.new
     )
   end
 
-  def required_env(name)
-    value = ENV[name]
-    UI.user_error!("#{name} must be set explicitly") if value.nil? || value.strip.empty?
-    value
+  def run_production_preflight(release, configuration)
+    testflight_release_guard(configuration).preflight(release)
+  rescue TestFlightReleaseGuard::Error, TestFlightConnectApiGateway::Error => error
+    UI.user_error!(error.message)
   end
-  
-  # Helper method to get version from pubspec.yaml
-def get_version_from_pubspec
-  require 'yaml'
-  
-  pubspec_path = File.join(Dir.pwd, "../..", "pubspec.yaml")
-  pubspec = YAML.load_file(pubspec_path)
-  
-  version_string = pubspec['version']
-  version_string ? version_string.split('+').first : nil
-end
-  
+
+  def verify_portal_certificate!(certificate_id:, fingerprint:)
+    certificate = Spaceship::ConnectAPI::Certificate.get(certificate_id: certificate_id)
+    SigningPreparation::PortalCertificateVerifier.verify!(
+      portal_certificate: certificate,
+      expected_id: certificate_id,
+      expected_fingerprint: fingerprint
+    )
+  rescue SigningPreparation::InvalidPlan
+    raise
+  rescue StandardError
+    raise SigningPreparation::InvalidPlan, "SIGNING_CERTIFICATE_ID could not be verified"
+  end
+
+  def verify_profiles!(profiles, fingerprint)
+    profiles.each do |profile|
+      SigningPreparation::ProfileVerifier.verify_file!(
+        path: profile.path,
+        expected_bundle_id: "#{BASE_BUNDLE_ID}#{profile.bundle_id_suffix}",
+        certificate_sha256: fingerprint
+      ) do |path|
+        FastlaneCore::ProvisioningProfile.parse(path)
+      end
+    end
+  end
+
+  def with_private_file_umask
+    previous_umask = File.umask(0o077)
+    yield
+  ensure
+    File.umask(previous_umask) if previous_umask
+  end
+
+  def snapshot_exact_ipa!(release)
+    TestFlightReleaseArtifact::Snapshot.create(
+      source_path: release.ipa_path,
+      bundle_id: release.bundle_id,
+      version: release.version,
+      build_number: release.build_number,
+      metadata_reader: lambda do |path, key|
+        get_ipa_info_plist_value(ipa: path, key: key)
+      end
+    )
+  rescue TestFlightReleaseArtifact::InvalidArtifact => error
+    UI.user_error!(error.message)
+  end
+
   # Helper method to configure code signing for all targets
   def configure_code_signing(bundle_id_suffix: "", profile_name_main:, profile_name_share:, profile_name_widget:)
     bundle_suffix = bundle_id_suffix.empty? ? "" : ".#{bundle_id_suffix}"
@@ -94,12 +182,15 @@ end
     api_key:,
     bundle_id_suffix: "",
     configuration: "Release",
-    distribute_external: true,
+    distribute_external: false,
     version_number: nil,
     profile_name_main:,
     profile_name_share:,
     profile_name_widget:
   )
+    UI.user_error!("Production uploads require the protected exact-release workflow") if bundle_id_suffix.empty?
+    UI.user_error!("Development uploads cannot distribute externally") if distribute_external
+
     bundle_suffix = bundle_id_suffix.empty? ? "" : ".#{bundle_id_suffix}"
     app_identifier = "#{BASE_BUNDLE_ID}#{bundle_suffix}"
     
@@ -181,160 +272,158 @@ end
 
   desc "iOS Release to TestFlight"
   lane :gha_release_prod do
-    api_key = get_api_key
-    
-    # Download and install provisioning profiles from App Store Connect
-    # Certificate is imported by GHA workflow into build.keychain
-    sigh(api_key: api_key, app_identifier: BASE_BUNDLE_ID, force: true)
-    main_profile_name = lane_context[SharedValues::SIGH_NAME]
-    
-    sigh(api_key: api_key, app_identifier: "#{BASE_BUNDLE_ID}.ShareExtension", force: true)
-    share_profile_name = lane_context[SharedValues::SIGH_NAME]
-    
-    sigh(api_key: api_key, app_identifier: "#{BASE_BUNDLE_ID}.WidgetExtension", force: true)
-    widget_profile_name = lane_context[SharedValues::SIGH_NAME]
-    
-    
-    # Configure code signing for production bundle IDs
-    configure_code_signing(
-      profile_name_main: main_profile_name,
-      profile_name_share: share_profile_name,
-      profile_name_widget: widget_profile_name
-    )
-
-    # Build and upload with version number
-    build_and_upload(
-      api_key: api_key,
-      version_number: get_version_from_pubspec,
-      distribute_external: false,
-      profile_name_main: main_profile_name,
-      profile_name_share: share_profile_name,
-      profile_name_widget: widget_profile_name
-    )
+    UI.user_error!("Production release is protected; run preflight, exact upload, then finalizer")
   end
 
   desc "Print latest Nacho Fotos TestFlight build"
   lane :nacho_latest_prod_build do
-    api_key = get_api_key
-
-    latest_build = latest_testflight_build_number(
-      api_key: api_key,
-      app_identifier: BASE_BUNDLE_ID
-    )
-
-    UI.message("Latest TestFlight build for #{BASE_BUNDLE_ID}: #{latest_build}")
+    UI.user_error!("Production build lookup is protected by nacho_testflight_preflight_prod")
   end
 
   desc "Upload the already configured Nacho Fotos release build to TestFlight"
   lane :nacho_upload_current_prod do
-    expected_version = required_env("EXPECTED_VERSION")
-    expected_previous_build = required_env("EXPECTED_PREVIOUS_BUILD_NUMBER")
-    expected_build = required_env("EXPECTED_BUILD_NUMBER")
-
-    begin
-      ReleaseBuildGuard.validate!(previous_build: expected_previous_build, build: expected_build)
-    rescue ReleaseBuildGuard::InvalidExpectation => error
-      UI.user_error!(error.message)
-    end
-
-    current_version = get_version_number(xcodeproj: "./Runner.xcodeproj", target: "Runner")
-    current_build = get_build_number(xcodeproj: "./Runner.xcodeproj")
-
-    UI.user_error!("Expected version #{expected_version}, got #{current_version}") unless current_version == expected_version
-    UI.user_error!("Expected build #{expected_build}, got #{current_build}") unless current_build == expected_build
-
-    api_key = get_api_key
-    remote_latest_build = latest_testflight_build_number(
-      api_key: api_key,
-      app_identifier: BASE_BUNDLE_ID,
-      version: expected_version
-    ).to_s
-
-    unless remote_latest_build == expected_previous_build
-      UI.user_error!("Expected latest TestFlight build #{expected_previous_build}, got #{remote_latest_build}")
-    end
-
-    cert(
-      api_key: api_key,
-      development: false,
-      generate_apple_certs: true,
-      output_path: "/tmp/immich-fastlane-certificates"
-    )
-
-    sigh(api_key: api_key, app_identifier: BASE_BUNDLE_ID, force: true)
-    main_profile_name = lane_context[SharedValues::SIGH_NAME]
-
-    sigh(api_key: api_key, app_identifier: "#{BASE_BUNDLE_ID}.ShareExtension", force: true)
-    share_profile_name = lane_context[SharedValues::SIGH_NAME]
-
-    sigh(api_key: api_key, app_identifier: "#{BASE_BUNDLE_ID}.WidgetExtension", force: true)
-    widget_profile_name = lane_context[SharedValues::SIGH_NAME]
-
-    configure_code_signing(
-      profile_name_main: main_profile_name,
-      profile_name_share: share_profile_name,
-      profile_name_widget: widget_profile_name
-    )
-
-    build_app(
-      scheme: "Runner",
-      workspace: "Runner.xcworkspace",
-      configuration: "Release",
-      export_method: "app-store",
-      xcargs: "-skipMacroValidation DEVELOPMENT_TEAM='#{TEAM_ID}' CODE_SIGN_IDENTITY='#{CODE_SIGN_IDENTITY}' CODE_SIGN_STYLE=Manual",
-      export_options: {
-        provisioningProfiles: {
-          BASE_BUNDLE_ID => main_profile_name,
-          "#{BASE_BUNDLE_ID}.ShareExtension" => share_profile_name,
-          "#{BASE_BUNDLE_ID}.WidgetExtension" => widget_profile_name
-        },
-        signingStyle: "manual",
-        signingCertificate: CODE_SIGN_IDENTITY
-      }
-    )
-
-    upload_to_testflight(
-      api_key: api_key,
-      app_identifier: BASE_BUNDLE_ID,
-      skip_waiting_for_build_processing: true,
-      distribute_external: false
-    )
+    UI.user_error!("Legacy production upload is disabled; use nacho_upload_exact_prod")
   end
 
   desc "iOS Manual Release"
   lane :release_manual do
-    enable_automatic_code_signing(
-      path: "./Runner.xcodeproj",
-      targets: ["Runner", "ShareExtension", "WidgetExtension"]
+    UI.user_error!("Manual production release is disabled; use the protected exact-release workflow")
+  end
+
+  desc "Read-only fail-closed preflight for the exact Nacho Fotos TestFlight release"
+  lane :nacho_testflight_preflight_prod do
+    release = production_release_configuration
+    configuration = api_key_configuration
+
+    result = run_production_preflight(release, configuration)
+    UI.success(
+      "Preflight passed: remote_latest_build_number=#{result.remote_latest_build_number}, " \
+      "eligible_tester_count=#{result.eligible_tester_count}"
+    )
+  end
+
+  desc "Explicitly import or create the production signing identity and exact three profiles"
+  lane :nacho_prepare_signing_prod do
+    configuration = api_key_configuration
+    plan = SigningPreparation::Plan.from_env(ENV, api_key_configuration: configuration)
+    state = SigningPreparation::PartialState.new
+    created_identity_secured = false
+
+    begin
+      if plan.mode == :import
+        get_api_key(configuration)
+        identity = SigningPreparation::IdentityVerifier.verify_pkcs12!(
+          p12_path: plan.p12_path,
+          password: plan.p12_password,
+          expected_fingerprint: plan.certificate_sha256
+        )
+        verify_portal_certificate!(certificate_id: plan.certificate_id, fingerprint: identity.fingerprint)
+        verify_profiles!(plan.profiles, identity.fingerprint)
+
+        import_certificate(
+          certificate_path: plan.p12_path,
+          certificate_password: plan.p12_password
+        )
+        state.certificate_imported!
+
+        plan.profiles.each do |profile|
+          install_provisioning_profile(path: profile.path)
+          state.profile_ready!
+        end
+      else
+        api_key = get_api_key(configuration)
+        with_private_file_umask do
+          cert(
+            api_key: api_key,
+            team_id: plan.developer_portal_team_id,
+            development: false,
+            generate_apple_certs: true,
+            force: true,
+            output_path: plan.backup_directory
+          )
+        end
+        state.certificate_created!
+        certificate_id = lane_context[SharedValues::CERT_CERTIFICATE_ID].to_s
+        UI.user_error!("Created certificate ID was not returned") if certificate_id.empty?
+        identity = SigningPreparation::EncryptedBackup.secure_created_identity!(
+          directory: plan.backup_directory,
+          certificate_id: certificate_id,
+          password: plan.p12_password
+        )
+        created_identity_secured = true
+        verify_portal_certificate!(certificate_id: certificate_id, fingerprint: identity.fingerprint)
+
+        plan.profiles.each do |profile|
+          SigningPreparation::ProfileVerifier.verify_destination!(profile.path)
+          sigh(
+            api_key: api_key,
+            team_id: plan.developer_portal_team_id,
+            app_identifier: "#{BASE_BUNDLE_ID}#{profile.bundle_id_suffix}",
+            cert_id: certificate_id,
+            force: false,
+            output_path: File.dirname(profile.path),
+            filename: File.basename(profile.path)
+          )
+          verify_profiles!([profile], identity.fingerprint)
+          state.profile_ready!
+        end
+      end
+    ensure
+      if plan.mode == :create_authorized && !created_identity_secured
+        SigningPreparation::EncryptedBackup.remove_plaintext_private_keys!(directory: plan.backup_directory)
+      end
+      UI.message("Signing preparation state: #{state.evidence}")
+    end
+  rescue SigningPreparation::InvalidPlan => error
+    UI.user_error!(error.message)
+  end
+
+  desc "Upload one exact prebuilt IPA after a second fail-closed preflight"
+  lane :nacho_upload_exact_prod do
+    release = production_release_configuration
+    configuration = api_key_configuration
+    artifact = snapshot_exact_ipa!(release)
+    begin
+      run_production_preflight(release, configuration)
+      api_key = get_api_key(configuration)
+      artifact.verify_unchanged!
+
+      upload_to_testflight(
+        api_key: api_key,
+        app_identifier: BASE_BUNDLE_ID,
+        ipa: artifact.path,
+        team_id: release.asc_team_id,
+        dev_portal_team_id: release.developer_portal_team_id,
+        app_version: release.version,
+        build_number: release.build_number,
+        skip_waiting_for_build_processing: false,
+        wait_processing_timeout_duration: 3600,
+        skip_submission: true,
+        distribute_external: false,
+        uses_non_exempt_encryption: false
+      )
+    ensure
+      artifact.cleanup!
+    end
+  end
+
+  desc "Resume processing and idempotently associate the exact build with its internal group"
+  lane :nacho_finalize_testflight_prod do
+    release = production_release_configuration
+    configuration = api_key_configuration
+    result = testflight_release_guard(configuration).finalize(
+      release,
+      timeout_seconds: 3600,
+      poll_interval_seconds: 30
     )
 
-    increment_version_number(
-      version_number: get_version_from_pubspec
+    UI.success(
+      "Finalization passed: build_number=#{result.build_number}, " \
+      "processing_state=#{result.processing_state}, internal_state=#{result.internal_state}, " \
+      "eligible_tester_count=#{result.eligible_tester_count}, group_associated=#{result.group_associated}"
     )
-    increment_build_number(
-      build_number: latest_testflight_build_number + 1,
-    )
-    
-    # Build archive with automatic signing
-    gym(
-      scheme: "Runner",
-      workspace: "Runner.xcworkspace",
-      configuration: "Release",
-      export_method: "app-store",
-      skip_package_ipa: false,
-      xcargs: "-skipMacroValidation -allowProvisioningUpdates",
-      export_options: {
-        method: "app-store",
-        signingStyle: "automatic",
-        uploadBitcode: false,
-        uploadSymbols: true,
-        compileBitcode: false
-      }
-    )
-    
-    upload_to_testflight(
-      skip_waiting_for_build_processing: true
-    )
+  rescue TestFlightReleaseGuard::Error, TestFlightConnectApiGateway::Error => error
+    UI.user_error!(error.message)
   end
 
   desc "iOS Build Only (no TestFlight upload)"
