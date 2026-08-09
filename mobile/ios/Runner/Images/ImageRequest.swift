@@ -44,6 +44,15 @@ final class RequestRegistry<T: AnyObject & Sendable>: @unchecked Sendable {
   private let requests = Mutex<[Int64: T]>([:])
 
   @discardableResult
+  func addIfAbsent(requestId: Int64, request: T) -> Bool {
+    requests.withLock {
+      guard $0[requestId] == nil else { return false }
+      $0[requestId] = request
+      return true
+    }
+  }
+
+  @discardableResult
   func add(requestId: Int64, request: T) -> T? {
     requests.withLock { $0.updateValue(request, forKey: requestId) }
   }

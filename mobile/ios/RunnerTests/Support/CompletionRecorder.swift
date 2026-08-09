@@ -2,12 +2,13 @@ import Foundation
 
 final class CompletionRecorder<Value> {
   private let lock = NSLock()
+  private var completionCount = 0
   private var storedResult: Result<Value, Error>?
 
   var count: Int {
     lock.lock()
     defer { lock.unlock() }
-    return storedResult == nil ? 0 : 1
+    return completionCount
   }
 
   var result: Result<Value, Error>? {
@@ -20,6 +21,7 @@ final class CompletionRecorder<Value> {
   func record(_ result: Result<Value, Error>) -> Bool {
     lock.lock()
     defer { lock.unlock() }
+    completionCount += 1
     guard storedResult == nil else { return false }
     storedResult = result
     return true
@@ -27,6 +29,7 @@ final class CompletionRecorder<Value> {
 
   func reset() {
     lock.lock()
+    completionCount = 0
     storedResult = nil
     lock.unlock()
   }
