@@ -178,6 +178,13 @@
 			path = Core;
 			sourceTree = "<group>";
 		};
+		B29000002F93000000000001 /* Performance */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+			);
+			path = Performance;
+			sourceTree = "<group>";
+		};
 		B2CF7F8C2DDE4EBB00744BF6 /* Sync */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
@@ -317,6 +324,7 @@
 				FE1BB4562F8319560087DBF9 /* Utility */,
 				FEE084F22EC172080045228E /* Schemas */,
 				B231F52D2E93A44A00BC45D1 /* Core */,
+				B29000002F93000000000001 /* Performance */,
 				A22000000000000000000001 /* Share */,
 				B25D37792E72CA15008B6CA7 /* Connectivity */,
 				B21E34A62E5AF9760031FDB9 /* Background */,
@@ -428,6 +436,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				B231F52D2E93A44A00BC45D1 /* Core */,
+				B29000002F93000000000001 /* Performance */,
 				B2CF7F8C2DDE4EBB00744BF6 /* Sync */,
 				FEE084F22EC172080045228E /* Schemas */,
 				A22000000000000000000001 /* Share */,

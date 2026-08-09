@@ -9,18 +9,24 @@ private enum RemoteImageTestError: Error {
 
 final class RemoteImagesImplTests: XCTestCase {
   private var context: URLSessionTestContext!
+  private var performance: RecordingPerformanceRecorder!
   private var api: RemoteImageApiImpl!
 
   override func setUp() {
     super.setUp()
     context = URLSessionTestFactory.make()
-    api = RemoteImageApiImpl(sessionConfiguration: context.session.configuration)
+    performance = RecordingPerformanceRecorder()
+    api = RemoteImageApiImpl(
+      sessionConfiguration: context.session.configuration,
+      performanceRecorder: performance
+    )
   }
 
   override func tearDown() {
     api.dispose()
     context.reset()
     api = nil
+    performance = nil
     context = nil
     super.tearDown()
   }
@@ -46,6 +52,7 @@ final class RemoteImagesImplTests: XCTestCase {
 
     assertEncodedPayload(result, equals: data)
     XCTAssertTrue(ControllableURLProtocol.observedRequests.isEmpty)
+    XCTAssertEqual(performance.finishedCount(.request(.remoteThumbnail)), 1)
   }
 
   func testCacheOnlyReturnsCacheMissWithoutStartingNetwork() {
@@ -62,6 +69,7 @@ final class RemoteImagesImplTests: XCTestCase {
 
     XCTAssertEqual(try? result.get().error, .cacheMiss)
     XCTAssertTrue(ControllableURLProtocol.observedRequests.isEmpty)
+    XCTAssertEqual(performance.finishedCount(.request(.remoteThumbnail)), 1)
   }
 
   func testCacheOnlyDoesNotReuseAnEntryFromAnotherOrigin() {
@@ -284,6 +292,117 @@ final class RemoteImagesImplTests: XCTestCase {
     XCTAssertFalse(controlledRequest?.send(Data("late".utf8)) ?? true)
     XCTAssertFalse(controlledRequest?.finish() ?? true)
     XCTAssertEqual(recorder.count, 1)
+    XCTAssertEqual(performance.startedCount(.request(.remoteThumbnail)), 1)
+    XCTAssertEqual(performance.finishedCount(.request(.remoteThumbnail)), 1)
+  }
+
+  func testDuplicateRequestReplacesOriginalAndPairsBothSpans() {
+    let originalStarted = expectation(description: "original request started")
+    let replacementStarted = expectation(description: "replacement request started")
+    let originalCompleted = expectation(description: "original request cancelled")
+    let replacementCompleted = expectation(description: "replacement request cancelled")
+    let original = CompletionRecorder<RemoteImageResult>()
+    let replacement = CompletionRecorder<RemoteImageResult>()
+    let startCount = Mutex(0)
+    ControllableURLProtocol.setRequestHandler { _ in
+      let count = startCount.withLock { count in
+        count += 1
+        return count
+      }
+      if count == 1 {
+        originalStarted.fulfill()
+      } else {
+        replacementStarted.fulfill()
+      }
+    }
+
+    let request = makeRequest(
+      url: URL(string: "https://photos.example.test/api/assets/duplicate/thumbnail")!,
+      origin: "https://photos.example.test",
+      policy: .cacheThenNetwork,
+      requestId: 70
+    )
+    api.requestImage(request: request) { result in
+      if original.record(result) { originalCompleted.fulfill() }
+    }
+    wait(for: [originalStarted], timeout: 1)
+
+    api.requestImage(request: request) { result in
+      if replacement.record(result) { replacementCompleted.fulfill() }
+    }
+    wait(for: [originalCompleted, replacementStarted], timeout: 1)
+
+    XCTAssertEqual(try? original.result?.get().error, .cancelled)
+    XCTAssertEqual(ControllableURLProtocol.observedRequests.count, 2)
+    XCTAssertEqual(performance.startedCount(.request(.remoteThumbnail)), 2)
+    XCTAssertEqual(performance.finishedCount(.request(.remoteThumbnail)), 1)
+    XCTAssertEqual(performance.activeCount(.request(.remoteThumbnail)), 1)
+
+    api.cancelRequest(requestId: 70)
+    wait(for: [replacementCompleted], timeout: 1)
+    XCTAssertEqual(try? replacement.result?.get().error, .cancelled)
+    XCTAssertEqual(performance.finishedCount(.request(.remoteThumbnail)), 2)
+    XCTAssertEqual(performance.activeCount(.request(.remoteThumbnail)), 0)
+  }
+
+  func testReplacementIsInstrumentedBeforeOriginalCompletionCancelsItReentrantly() {
+    let originalStarted = expectation(description: "original request started")
+    let originalCompleted = expectation(description: "original request cancelled")
+    let replacementCompleted = expectation(description: "replacement request cancelled")
+    let original = CompletionRecorder<RemoteImageResult>()
+    let replacement = CompletionRecorder<RemoteImageResult>()
+    ControllableURLProtocol.setRequestHandler { _ in originalStarted.fulfill() }
+
+    let request = makeRequest(
+      url: URL(string: "https://photos.example.test/api/assets/reentrant/thumbnail")!,
+      origin: "https://photos.example.test",
+      policy: .cacheThenNetwork,
+      requestId: 71
+    )
+    api.requestImage(request: request) { [self] result in
+      guard original.record(result) else { return }
+      api.cancelRequest(requestId: 71)
+      originalCompleted.fulfill()
+    }
+    wait(for: [originalStarted], timeout: 1)
+
+    api.requestImage(request: request) { result in
+      if replacement.record(result) { replacementCompleted.fulfill() }
+    }
+    wait(for: [originalCompleted, replacementCompleted], timeout: 1)
+
+    XCTAssertEqual(try? original.result?.get().error, .cancelled)
+    XCTAssertEqual(try? replacement.result?.get().error, .cancelled)
+    XCTAssertEqual(performance.startedCount(.request(.remoteThumbnail)), 2)
+    XCTAssertEqual(performance.finishedCount(.request(.remoteThumbnail)), 2)
+    XCTAssertEqual(performance.activeCount(.request(.remoteThumbnail)), 0)
+  }
+
+  func testDisposeFinishesRunningRequestSpanExactlyOnce() {
+    let started = expectation(description: "request started")
+    let completed = expectation(description: "request cancelled by dispose")
+    let recorder = CompletionRecorder<RemoteImageResult>()
+    ControllableURLProtocol.setRequestHandler { _ in started.fulfill() }
+
+    api.requestImage(
+      request: makeRequest(
+        url: URL(string: "https://photos.example.test/api/assets/dispose/thumbnail")!,
+        origin: "https://photos.example.test",
+        policy: .cacheThenNetwork,
+        requestId: 71
+      )
+    ) { result in
+      if recorder.record(result) { completed.fulfill() }
+    }
+    wait(for: [started], timeout: 1)
+
+    api.dispose()
+    api.dispose()
+    wait(for: [completed], timeout: 1)
+
+    XCTAssertEqual(recorder.count, 1)
+    XCTAssertEqual(try? recorder.result?.get().error, .cancelled)
+    XCTAssertEqual(performance.finishedCount(.request(.remoteThumbnail)), 1)
   }
 
   func testLateOwnedPayloadIsReleasedAfterCancellationWins() {

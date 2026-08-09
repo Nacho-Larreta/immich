@@ -141,7 +141,15 @@ final class RemoteImageSessionDelegate: NSObject, URLSessionTaskDelegate {
 }
 
 final class RemoteImageOperation: ImageRequest<RemoteImageResult>, @unchecked Sendable {
-  private let task = Mutex<URLSessionDataTask?>(nil)
+  private struct State: @unchecked Sendable {
+    var task: URLSessionDataTask?
+    var interval: (any PerformanceInterval)?
+    var isAccepted = false
+    var isCancelled = false
+    var isCompleted = false
+  }
+
+  private let state = Mutex(State())
   let id: Int64
 
   init(
@@ -152,10 +160,22 @@ final class RemoteImageOperation: ImageRequest<RemoteImageResult>, @unchecked Se
     super.init(completion: completion)
   }
 
+  func markAccepted(
+    kind: RemoteImageRequestKind,
+    recorder: any PerformanceRecording
+  ) {
+    let interval = recorder.beginRequest(kind.performanceRequestKind)
+    state.withLock { state in
+      precondition(!state.isAccepted, "Remote image request accepted more than once")
+      state.isAccepted = true
+      state.interval = interval
+    }
+  }
+
   func start(_ dataTask: URLSessionDataTask) {
-    let shouldCancel = task.withLock {
-      $0 = dataTask
-      return isCancelled
+    let shouldCancel = state.withLock {
+      $0.task = dataTask
+      return $0.isCancelled
     }
     if shouldCancel {
       dataTask.cancel()
@@ -165,14 +185,46 @@ final class RemoteImageOperation: ImageRequest<RemoteImageResult>, @unchecked Se
   }
 
   var taskIdentifier: Int? {
-    task.withLock { $0?.taskIdentifier }
+    state.withLock { $0.task?.taskIdentifier }
+  }
+
+  override var isCancelled: Bool {
+    state.withLock { $0.isCancelled }
   }
 
   override func cancel() -> Bool {
-    guard super.cancel() else { return false }
-    task.withLock { $0?.cancel() }
-    complete(.success(RemoteImageResult(payload: nil, error: .cancelled)))
+    let cancellation: (accepted: Bool, task: URLSessionDataTask?) = state.withLock { state in
+      guard !state.isCancelled, !state.isCompleted else { return (false, nil) }
+      state.isCancelled = true
+      return (true, state.task)
+    }
+    guard cancellation.accepted else { return false }
+    cancellation.task?.cancel()
+    _ = complete(.success(RemoteImageResult(payload: nil, error: .cancelled)))
     return true
+  }
+
+  override func complete(_ result: Result<RemoteImageResult, any Error>) -> Bool {
+    let terminal: (shouldComplete: Bool, interval: (any PerformanceInterval)?) =
+      state.withLock { state in
+      guard !state.isCompleted else { return (false, nil) }
+      state.isCompleted = true
+      defer { state.interval = nil }
+      return (true, state.interval)
+    }
+    guard terminal.shouldComplete else { return false }
+    terminal.interval?.finish()
+    completion(result)
+    return true
+  }
+}
+
+private extension RemoteImageRequestKind {
+  var performanceRequestKind: PerformanceRequestKind {
+    switch self {
+    case .thumbnail: .remoteThumbnail
+    case .original: .remoteOriginal
+    }
   }
 }
 
@@ -193,6 +245,7 @@ class RemoteImageApiImpl: NSObject, RemoteImageApi {
   private let session: URLSession
   private let cookieStorage: HTTPCookieStorage?
   private let urlCache: URLCache?
+  private let performanceRecorder: any PerformanceRecording
   private static let rgbaFormat = vImage_CGImageFormat(
     bitsPerComponent: 8,
     bitsPerPixel: 32,
@@ -214,17 +267,26 @@ class RemoteImageApiImpl: NSObject, RemoteImageApi {
       sessionConfiguration: manager.session.configuration,
       challengeHandler: { session, challenge, task, completion in
         manager.delegate.handleChallenge(session, challenge, completion, task: task)
-      }
+      },
+      performanceRecorder: PerformanceTelemetry.shared
     )
   }
 
-  convenience init(sessionConfiguration: URLSessionConfiguration) {
-    self.init(sessionConfiguration: sessionConfiguration, challengeHandler: nil)
+  convenience init(
+    sessionConfiguration: URLSessionConfiguration,
+    performanceRecorder: any PerformanceRecording = PerformanceTelemetry.shared
+  ) {
+    self.init(
+      sessionConfiguration: sessionConfiguration,
+      challengeHandler: nil,
+      performanceRecorder: performanceRecorder
+    )
   }
 
   private init(
     sessionConfiguration: URLSessionConfiguration,
-    challengeHandler: RemoteImageSessionDelegate.ChallengeHandler?
+    challengeHandler: RemoteImageSessionDelegate.ChallengeHandler?,
+    performanceRecorder: any PerformanceRecording
   ) {
     let urlCache = sessionConfiguration.urlCache
     let configuration = sessionConfiguration.copy() as! URLSessionConfiguration
@@ -238,6 +300,7 @@ class RemoteImageApiImpl: NSObject, RemoteImageApi {
     let sessionDelegate = RemoteImageSessionDelegate(challengeHandler: challengeHandler)
     self.cookieStorage = cookieStorage
     self.urlCache = urlCache
+    self.performanceRecorder = performanceRecorder
     self.sessionDelegate = sessionDelegate
     self.session = URLSession(
       configuration: configuration, delegate: sessionDelegate, delegateQueue: nil)
@@ -265,9 +328,9 @@ class RemoteImageApiImpl: NSObject, RemoteImageApi {
     }
 
     let request = RemoteImageOperation(id: input.requestId, completion: completion)
-    if let replacedRequest = registry.add(requestId: input.requestId, request: request) {
-      _ = replacedRequest.cancel()
-    }
+    let replacedRequest = registry.add(requestId: input.requestId, request: request)
+    request.markAccepted(kind: input.kind, recorder: performanceRecorder)
+    _ = replacedRequest?.cancel()
 
     if input.policy == .cacheOnly {
       guard let cachedResponse = urlCache?.cachedResponse(for: urlRequest) else {

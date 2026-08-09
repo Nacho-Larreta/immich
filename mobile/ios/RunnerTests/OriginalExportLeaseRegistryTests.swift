@@ -25,7 +25,11 @@ final class OriginalExportLeaseRegistryTests: XCTestCase {
       [.modificationDate: oldDate],
       ofItemAtPath: unrelated.path
     )
-    let store = TemporaryOriginalExportFileStore(temporaryDirectory: root)
+    let performance = RecordingPerformanceRecorder()
+    let store = TemporaryOriginalExportFileStore(
+      temporaryDirectory: root,
+      performanceRecorder: performance
+    )
     let cleaned = expectation(description: "janitor completed off main")
 
     DispatchQueue.global(qos: .utility).async {
@@ -41,6 +45,8 @@ final class OriginalExportLeaseRegistryTests: XCTestCase {
     XCTAssertFalse(FileManager.default.fileExists(atPath: expiredOwned.path))
     XCTAssertTrue(FileManager.default.fileExists(atPath: recentOwned.path))
     XCTAssertTrue(FileManager.default.fileExists(atPath: unrelated.path))
+    XCTAssertEqual(performance.startedCount(.temporary), 1)
+    XCTAssertEqual(performance.finishedCount(.temporary), 1)
   }
 
   func testReleaseDeletesRegisteredLeaseOnceAndRejectsUnknownTokensWithoutUsingThemAsPaths()
@@ -92,11 +98,53 @@ final class OriginalExportLeaseRegistryTests: XCTestCase {
     XCTAssertTrue(FileManager.default.fileExists(atPath: unrelated.path))
   }
 
+  func testCleanupFailureKeepsLeaseAndTemporarySpanOpenUntilRetrySucceeds() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let executor = SerialOriginalExportIOExecutor()
+    let registry = OriginalExportLeaseRegistry(ioExecutor: executor)
+    let store = LeaseRegistryRecordingStore(root: root)
+    let performance = RecordingPerformanceRecorder()
+    let writer = try makeCommittedWriter(store: store, performanceRecorder: performance)
+    let committed = try XCTUnwrap(store.destination?.committed)
+    let token = try registry.adopt(writer: writer, committedURL: committed)
+    store.removeFailuresRemaining = 1
+
+    let failed = expectation(description: "first release reports cleanup failure")
+    registry.release(token: token) { result in
+      XCTAssertEqual(result.error, .cleanupFailed)
+      failed.fulfill()
+    }
+    wait(for: [failed], timeout: 1)
+
+    XCTAssertEqual(registry.registeredPath(for: token), committed.standardizedFileURL)
+    XCTAssertEqual(performance.activeCount(.temporary), 1)
+    XCTAssertEqual(performance.finishedCount(.temporary), 0)
+
+    let retried = expectation(description: "retry removes lease")
+    registry.release(token: token) { result in
+      XCTAssertNil(result.error)
+      retried.fulfill()
+    }
+    wait(for: [retried], timeout: 1)
+
+    XCTAssertNil(registry.registeredPath(for: token))
+    XCTAssertEqual(store.removeCount, 2)
+    XCTAssertEqual(performance.activeCount(.temporary), 0)
+    XCTAssertEqual(performance.finishedCount(.temporary), 1)
+  }
+
   private func makeCommittedWriter(
-    store: LeaseRegistryRecordingStore
+    store: LeaseRegistryRecordingStore,
+    performanceRecorder: any PerformanceRecording = PerformanceTelemetry.shared
   ) throws -> OriginalExportLeaseWriter {
     let destination = try store.createDestination(suggestedName: "asset.jpg")
-    let writer = OriginalExportLeaseWriter(destination: destination, store: store)
+    let writer = OriginalExportLeaseWriter(
+      destination: destination,
+      store: store,
+      performanceRecorder: performanceRecorder
+    )
     try writer.open()
     try writer.append(Data("original".utf8))
     _ = try writer.commit()
@@ -112,6 +160,7 @@ private final class LeaseRegistryRecordingStore: OriginalExportFileStoring {
   private let store: TemporaryOriginalExportFileStore
   private(set) var destination: OriginalExportDestination?
   private(set) var removeCount = 0
+  var removeFailuresRemaining = 0
 
   func createDestination(suggestedName: String) throws -> OriginalExportDestination {
     let destination = try store.createDestination(suggestedName: suggestedName)
@@ -132,6 +181,10 @@ private final class LeaseRegistryRecordingStore: OriginalExportFileStoring {
   func remove(_ destination: OriginalExportDestination) throws {
     XCTAssertFalse(Thread.isMainThread)
     removeCount += 1
+    if removeFailuresRemaining > 0 {
+      removeFailuresRemaining -= 1
+      throw OriginalExportFailure.cleanupFailed
+    }
     try store.remove(destination)
   }
 }

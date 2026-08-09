@@ -39,6 +39,7 @@ import native_video_player
       binaryMessenger: messenger,
       api: OriginalExportApiImpl(flutterApi: originalExportFlutterApi)
     )
+    PerformanceApiSetup.setUp(binaryMessenger: messenger, api: PerformanceApiImpl())
     ProbeHttpApiSetup.setUp(binaryMessenger: messenger, api: ProbeHttpApiImpl())
     BackgroundWorkerFgHostApiSetup.setUp(binaryMessenger: messenger, api: BackgroundWorkerApiImpl())
     let connectivityFlutterApi = ConnectivityFlutterApi(binaryMessenger: messenger)

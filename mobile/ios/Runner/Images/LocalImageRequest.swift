@@ -206,18 +206,29 @@ final class DispatchLocalImageExecutor: LocalImageExecuting {
 }
 
 final class LocalImagePermit: @unchecked Sendable {
-  init(release: @escaping () -> Void) {
-    self.releaseAction = Mutex(release)
+  private struct Resources: @unchecked Sendable {
+    var interval: (any PerformanceInterval)?
+    var release: (() -> Void)?
   }
 
-  private let releaseAction: Mutex<(() -> Void)?>
+  init(
+    interval: (any PerformanceInterval)?,
+    release: @escaping () -> Void
+  ) {
+    resources = Mutex(Resources(interval: interval, release: release))
+  }
+
+  private let resources: Mutex<Resources>
 
   func release() {
-    let action = releaseAction.withLock { action in
-      defer { action = nil }
-      return action
+    let terminalResources = resources.withLock { resources in
+      let terminalResources = resources
+      resources.interval = nil
+      resources.release = nil
+      return terminalResources
     }
-    action?()
+    terminalResources.interval?.finish()
+    terminalResources.release?()
   }
 }
 
@@ -233,12 +244,20 @@ final class LocalImagePermitPool: @unchecked Sendable {
     var queued: [Entry] = []
   }
 
-  init(limit: Int) {
+  init(
+    limit: Int,
+    kind: PerformancePermitKind,
+    recorder: any PerformanceRecording = PerformanceTelemetry.shared
+  ) {
     precondition(limit > 0)
     self.limit = limit
+    self.kind = kind
+    self.recorder = recorder
   }
 
   private let limit: Int
+  private let kind: PerformancePermitKind
+  private let recorder: any PerformanceRecording
   private let state = Mutex(State())
 
   var activeCount: Int { state.withLock { $0.activeCount } }
@@ -279,7 +298,9 @@ final class LocalImagePermitPool: @unchecked Sendable {
   }
 
   private func makePermit() -> LocalImagePermit {
-    LocalImagePermit { [weak self] in self?.releaseAndStartNext() }
+    LocalImagePermit(interval: recorder.beginPermit(kind)) {
+      [weak self] in self?.releaseAndStartNext()
+    }
   }
 
   private func releaseAndStartNext() {
@@ -338,6 +359,8 @@ final class LocalImageOperation: @unchecked Sendable {
     var timeout: (any LocalImageScheduledTask)?
     var activeProgressDeliveries = 0
     var pendingTerminal: PendingTerminal?
+    var requestInterval: (any PerformanceInterval)?
+    var isAccepted = false
   }
 
   private struct PendingTerminal: @unchecked Sendable {
@@ -347,6 +370,15 @@ final class LocalImageOperation: @unchecked Sendable {
 
   private let completion: (Result<LocalImageResult, any Error>) -> Void
   private let state = Mutex(State())
+
+  func markAccepted(by recorder: any PerformanceRecording) {
+    let interval = recorder.beginRequest(kind.performanceRequestKind)
+    state.withLock { state in
+      precondition(!state.isAccepted, "Local image request accepted more than once")
+      state.isAccepted = true
+      state.requestInterval = interval
+    }
+  }
 
   var isQueued: Bool {
     state.withLock {
@@ -439,6 +471,11 @@ final class LocalImageOperation: @unchecked Sendable {
   }
 
   func complete(_ result: LocalImageResult) {
+    let interval = state.withLock { state in
+      defer { state.requestInterval = nil }
+      return state.requestInterval
+    }
+    interval?.finish()
     completion(.success(result))
   }
 
@@ -470,6 +507,15 @@ final class LocalImageOperation: @unchecked Sendable {
       result: pending.result,
       cancelNativeRequest: pending.cancelNativeRequest
     )
+  }
+}
+
+private extension LocalImageRequestKind {
+  var performanceRequestKind: PerformanceRequestKind {
+    switch self {
+    case .thumbnail: .localThumbnail
+    case .original: .localOriginal
+    }
   }
 }
 

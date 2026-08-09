@@ -15,6 +15,7 @@ final class LocalImagesImplTests: XCTestCase {
   private var scheduler: ManualLocalImageTimeoutScheduler!
   private var allocator: RecordingLocalImagePayloadAllocator!
   private var progress: ProgressRecorder!
+  private var performance: RecordingPerformanceRecorder!
   private var api: LocalImageApiImpl!
 
   override func setUp() {
@@ -23,6 +24,7 @@ final class LocalImagesImplTests: XCTestCase {
     scheduler = ManualLocalImageTimeoutScheduler()
     allocator = RecordingLocalImagePayloadAllocator()
     progress = ProgressRecorder()
+    performance = RecordingPerformanceRecorder()
     api = makeAPI()
   }
 
@@ -33,6 +35,7 @@ final class LocalImagesImplTests: XCTestCase {
     api = nil
     progress = nil
     allocator = nil
+    performance = nil
     scheduler = nil
     provider = nil
     super.tearDown()
@@ -54,6 +57,8 @@ final class LocalImagesImplTests: XCTestCase {
     XCTAssertNotNil(try? recorder.result?.get().payload)
     XCTAssertEqual(allocator.allocationCount, 1)
     XCTAssertEqual(api.activeRequestCount(for: .thumbnail), 0)
+    XCTAssertEqual(performance.finishedCount(.request(.localThumbnail)), 1)
+    XCTAssertEqual(performance.finishedCount(.permit(.localThumbnail)), 1)
   }
 
   func testMultipleDegradedCallbacksDoNotAllocateOrComplete() {
@@ -122,6 +127,8 @@ final class LocalImagesImplTests: XCTestCase {
 
   func testNativeErrorMapsToMediaNotLocal() {
     assertNativeTerminal(.failed, mapsTo: .mediaNotLocal, requestId: 6)
+    XCTAssertEqual(performance.finishedCount(.request(.localThumbnail)), 1)
+    XCTAssertEqual(performance.finishedCount(.permit(.localThumbnail)), 1)
   }
 
   func testFinalNilInCloudMapsToICloudUnavailable() {
@@ -143,6 +150,8 @@ final class LocalImagesImplTests: XCTestCase {
     XCTAssertEqual(try? recorder.result?.get().error, .timeout)
     XCTAssertEqual(provider.cancelledRequestIDs, [nativeID])
     XCTAssertEqual(api.activeRequestCount(for: .thumbnail), 0)
+    XCTAssertEqual(performance.finishedCount(.request(.localThumbnail)), 1)
+    XCTAssertEqual(performance.finishedCount(.permit(.localThumbnail)), 1)
   }
 
   func testInvalidNativeRequestIDFailsWithoutWaitingForTimeout() {
@@ -242,6 +251,8 @@ final class LocalImagesImplTests: XCTestCase {
     XCTAssertEqual(recorder.count, 1)
     XCTAssertEqual(try? recorder.result?.get().error, .mediaNotLocal)
     XCTAssertEqual(api.activeRequestCount(for: .thumbnail), 0)
+    XCTAssertEqual(performance.finishedCount(.request(.localThumbnail)), 1)
+    XCTAssertEqual(performance.finishedCount(.permit(.localThumbnail)), 1)
   }
 
   func testThumbnailGateStartsAtMostFourRequestsAndStartsNextAfterRelease() {
@@ -301,10 +312,16 @@ final class LocalImagesImplTests: XCTestCase {
     XCTAssertEqual(try? queued.result?.get().error, .cancelled)
     XCTAssertEqual(provider.startedRequestIDs.count, 4)
     XCTAssertEqual(api.activeRequestCount(for: .thumbnail), 4)
+    XCTAssertEqual(performance.startedCount(.request(.localThumbnail)), 5)
+    XCTAssertEqual(performance.startedCount(.permit(.localThumbnail)), 4)
+    XCTAssertEqual(performance.finishedCount(.request(.localThumbnail)), 1)
+    XCTAssertEqual(performance.finishedCount(.permit(.localThumbnail)), 0)
 
     completeAllStartedRequests()
     XCTAssertTrue(active.allSatisfy { $0.count == 1 })
     XCTAssertEqual(provider.startedRequestIDs.count, 4)
+    XCTAssertEqual(performance.finishedCount(.request(.localThumbnail)), 5)
+    XCTAssertEqual(performance.finishedCount(.permit(.localThumbnail)), 4)
   }
 
   func testCancellingActiveRequestReleasesPermitAndStartsNextQueuedRequest() {
@@ -316,10 +333,14 @@ final class LocalImagesImplTests: XCTestCase {
     XCTAssertEqual(try? recorders[0].result?.get().error, .cancelled)
     XCTAssertEqual(provider.startedRequestIDs.count, 5)
     XCTAssertEqual(api.activeRequestCount(for: .thumbnail), 4)
+    XCTAssertEqual(performance.finishedCount(.request(.localThumbnail)), 1)
+    XCTAssertEqual(performance.finishedCount(.permit(.localThumbnail)), 1)
 
     completeAllStartedRequests()
     XCTAssertTrue(recorders.allSatisfy { $0.count == 1 })
     XCTAssertEqual(api.activeRequestCount(for: .thumbnail), 0)
+    XCTAssertEqual(performance.finishedCount(.request(.localThumbnail)), 5)
+    XCTAssertEqual(performance.finishedCount(.permit(.localThumbnail)), 5)
   }
 
   func testCancelAllAndDisposeAreIdempotentAndIgnoreLateCallbacks() {
@@ -346,6 +367,8 @@ final class LocalImagesImplTests: XCTestCase {
     }
     XCTAssertTrue(recorders.allSatisfy { $0.count == 1 })
     XCTAssertEqual(allocator.allocationCount, 0)
+    XCTAssertEqual(performance.finishedCount(.request(.localThumbnail)), 6)
+    XCTAssertEqual(performance.finishedCount(.permit(.localThumbnail)), 4)
   }
 
   func testPayloadAllocatedDuringCancellationRaceIsReleasedWhenCancellationWins() {
@@ -517,6 +540,7 @@ final class LocalImagesImplTests: XCTestCase {
       nativeExecutor: nativeExecutor,
       progressExecutor: progressExecutor,
       payloadAllocator: allocator,
+      performanceRecorder: performance,
       progressHandler: progressHandler ?? progress.record
     )
   }

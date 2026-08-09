@@ -115,14 +115,17 @@ final class TemporaryOriginalExportFileStore: OriginalExportFileStoring {
 
   init(
     fileManager: FileManager = .default,
-    temporaryDirectory: URL = FileManager.default.temporaryDirectory
+    temporaryDirectory: URL = FileManager.default.temporaryDirectory,
+    performanceRecorder: any PerformanceRecording = PerformanceTelemetry.shared
   ) {
     self.fileManager = fileManager
     self.temporaryDirectory = temporaryDirectory
+    self.performanceRecorder = performanceRecorder
   }
 
   private let fileManager: FileManager
   private let temporaryDirectory: URL
+  private let performanceRecorder: any PerformanceRecording
 
   func cleanupExpiredOwnedDirectories(olderThan cutoff: Date) throws {
     let properties: Set<URLResourceKey> = [.contentModificationDateKey, .isDirectoryKey]
@@ -138,7 +141,9 @@ final class TemporaryOriginalExportFileStore: OriginalExportFileStoring {
         let modificationDate = values.contentModificationDate,
         modificationDate < cutoff
       else { continue }
+      let interval = performanceRecorder.beginTemporary()
       try fileManager.removeItem(at: candidate)
+      interval?.finish()
     }
   }
 
@@ -234,13 +239,19 @@ final class OriginalExportLeaseWriter: @unchecked Sendable {
     case cleaned
   }
 
-  init(destination: OriginalExportDestination, store: any OriginalExportFileStoring) {
+  init(
+    destination: OriginalExportDestination,
+    store: any OriginalExportFileStoring,
+    performanceRecorder: any PerformanceRecording = PerformanceTelemetry.shared
+  ) {
     self.destination = destination
     self.store = store
+    self.temporaryInterval = performanceRecorder.beginTemporary()
   }
 
   private let destination: OriginalExportDestination
   private let store: any OriginalExportFileStoring
+  private let temporaryInterval: (any PerformanceInterval)?
   private let state = Mutex<State>(.prepared)
 
   func open() throws {
@@ -295,9 +306,9 @@ final class OriginalExportLeaseWriter: @unchecked Sendable {
       do {
         try store.remove(destination)
         state = .cleaned
+        temporaryInterval?.finish()
         return nil
       } catch {
-        state = .cleaned
         return .cleanupFailed
       }
     }
@@ -309,8 +320,8 @@ final class OriginalExportLeaseWriter: @unchecked Sendable {
       do {
         try store.remove(destination)
         state = .cleaned
+        temporaryInterval?.finish()
       } catch {
-        state = .cleaned
         throw OriginalExportFailure.cleanupFailed
       }
     }
@@ -387,8 +398,16 @@ final class OriginalExportLeaseRegistry: @unchecked Sendable {
         result = OriginalExportReleaseResult(error: .cleanupFailed)
       }
       let waiters = entries.withLock { entries -> [(OriginalExportReleaseResult) -> Void] in
-        guard let entry = entries.removeValue(forKey: token) else { return [] }
-        return entry.waiters
+        guard var entry = entries[token] else { return [] }
+        let waiters = entry.waiters
+        if result.error == nil {
+          entries.removeValue(forKey: token)
+        } else {
+          entry.phase = .active
+          entry.waiters.removeAll()
+          entries[token] = entry
+        }
+        return waiters
       }
       for waiter in waiters { waiter(result) }
     }
@@ -400,10 +419,15 @@ final class OriginalExportLeaseRegistry: @unchecked Sendable {
 }
 
 final class OriginalExportPermit: @unchecked Sendable {
-  init(release: @escaping () -> Void) {
+  init(
+    interval: (any PerformanceInterval)?,
+    release: @escaping () -> Void
+  ) {
+    self.interval = interval
     self.releaseAction = Mutex(release)
   }
 
+  private let interval: (any PerformanceInterval)?
   private let releaseAction: Mutex<(() -> Void)?>
 
   func release() {
@@ -411,6 +435,7 @@ final class OriginalExportPermit: @unchecked Sendable {
       defer { action = nil }
       return action
     }
+    interval?.finish()
     action?()
   }
 }
@@ -712,12 +737,17 @@ final class OriginalExportPermitPool: @unchecked Sendable {
     var queued: [Entry] = []
   }
 
-  init(limit: Int) {
+  init(
+    limit: Int,
+    performanceRecorder: any PerformanceRecording = PerformanceTelemetry.shared
+  ) {
     precondition(limit > 0)
     self.limit = limit
+    self.performanceRecorder = performanceRecorder
   }
 
   private let limit: Int
+  private let performanceRecorder: any PerformanceRecording
   private let state = Mutex(State())
 
   var activeCount: Int { state.withLock { $0.activeCount } }
@@ -751,7 +781,11 @@ final class OriginalExportPermitPool: @unchecked Sendable {
   }
 
   private func makePermit() -> OriginalExportPermit {
-    OriginalExportPermit { [weak self] in self?.releaseAndStartNext() }
+    OriginalExportPermit(
+      interval: performanceRecorder.beginPermit(.originalExport)
+    ) { [weak self] in
+      self?.releaseAndStartNext()
+    }
   }
 
   private func releaseAndStartNext() {

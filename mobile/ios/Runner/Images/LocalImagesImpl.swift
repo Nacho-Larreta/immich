@@ -170,9 +170,10 @@ class LocalImageApiImpl: LocalImageApi {
   private let progressExecutor: any LocalImageExecuting
   private let payloadAllocator: any LocalImagePayloadAllocating
   private let progressHandler: (LocalImageProgress) -> Void
+  private let performanceRecorder: any PerformanceRecording
   private let registry = RequestRegistry<LocalImageOperation>()
-  private let thumbnailPool = LocalImagePermitPool(limit: thumbnailLimit)
-  private let originalPool = LocalImagePermitPool(limit: originalLimit)
+  private let thumbnailPool: LocalImagePermitPool
+  private let originalPool: LocalImagePermitPool
   private let lifecycle = Mutex(false)
 
   convenience init(flutterApi: LocalImageFlutterApi) {
@@ -189,6 +190,7 @@ class LocalImageApiImpl: LocalImageApi {
       ),
       progressExecutor: DispatchLocalImageExecutor(queue: .main),
       payloadAllocator: VImageLocalImagePayloadAllocator(),
+      performanceRecorder: PerformanceTelemetry.shared,
       progressHandler: { progress in
         flutterApi.onProgress(progress: progress) { _ in }
       }
@@ -202,6 +204,7 @@ class LocalImageApiImpl: LocalImageApi {
     nativeExecutor: any LocalImageExecuting,
     progressExecutor: any LocalImageExecuting,
     payloadAllocator: any LocalImagePayloadAllocating,
+    performanceRecorder: any PerformanceRecording = PerformanceTelemetry.shared,
     progressHandler: @escaping (LocalImageProgress) -> Void
   ) {
     self.provider = provider
@@ -210,7 +213,18 @@ class LocalImageApiImpl: LocalImageApi {
     self.nativeExecutor = nativeExecutor
     self.progressExecutor = progressExecutor
     self.payloadAllocator = payloadAllocator
+    self.performanceRecorder = performanceRecorder
     self.progressHandler = progressHandler
+    self.thumbnailPool = LocalImagePermitPool(
+      limit: Self.thumbnailLimit,
+      kind: .localThumbnail,
+      recorder: performanceRecorder
+    )
+    self.originalPool = LocalImagePermitPool(
+      limit: Self.originalLimit,
+      kind: .localOriginal,
+      recorder: performanceRecorder
+    )
   }
 
   func getThumbhash(
@@ -255,6 +269,7 @@ class LocalImageApiImpl: LocalImageApi {
       completion(.success(Self.failure(.cancelled)))
       return
     }
+    operation.markAccepted(by: performanceRecorder)
 
     permitPool(for: input.kind).enqueue(operation: operation) {
       [weak self, weak operation] permit in

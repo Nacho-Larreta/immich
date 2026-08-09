@@ -40,6 +40,7 @@ depends = [
   "pigeon:remote-image",
   "pigeon:original-export",
   "pigeon:probe-http",
+  "pigeon:performance",
 ]
 
 [tasks."codegen:translation"]
@@ -225,6 +226,19 @@ outputs = [
 run = [
   "dart run pigeon --input pigeon/probe_http_api.dart",
   "dart format lib/platform/probe_http_api.g.dart",
+]
+
+[tasks."pigeon:performance"]
+description = "Generate iOS performance API pigeon code"
+hide = true
+sources = ["pigeon/performance_api.dart"]
+outputs = [
+  "lib/platform/performance_api.g.dart",
+  "ios/Runner/Performance/Performance.g.swift",
+]
+run = [
+  "dart run pigeon --input pigeon/performance_api.dart",
+  "dart format lib/platform/performance_api.g.dart",
 ]
 
 [tasks."i18n:loader"]

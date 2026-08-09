@@ -46,6 +46,7 @@ class Timeline extends StatelessWidget {
     this.readOnly = false,
     this.persistentBottomBar = false,
     this.loadingWidget,
+    this.onInteractive,
   });
 
   final Widget? topSliverWidget;
@@ -61,6 +62,7 @@ class Timeline extends StatelessWidget {
   final bool readOnly;
   final bool persistentBottomBar;
   final Widget? loadingWidget;
+  final VoidCallback? onInteractive;
 
   @override
   Widget build(BuildContext context) {
@@ -93,6 +95,7 @@ class Timeline extends StatelessWidget {
             snapToMonth: snapToMonth,
             maxWidth: constraints.maxWidth,
             loadingWidget: loadingWidget,
+            onInteractive: onInteractive,
           ),
         ),
       ),
@@ -123,6 +126,7 @@ class _SliverTimeline extends ConsumerStatefulWidget {
     this.snapToMonth = true,
     this.maxWidth,
     this.loadingWidget,
+    this.onInteractive,
   });
 
   final Widget? topSliverWidget;
@@ -135,6 +139,7 @@ class _SliverTimeline extends ConsumerStatefulWidget {
   final bool snapToMonth;
   final double? maxWidth;
   final Widget? loadingWidget;
+  final VoidCallback? onInteractive;
 
   @override
   ConsumerState createState() => _SliverTimelineState();
@@ -143,6 +148,7 @@ class _SliverTimeline extends ConsumerStatefulWidget {
 class _SliverTimelineState extends ConsumerState<_SliverTimeline> {
   late final ScrollController _scrollController;
   StreamSubscription? _eventSubscription;
+  final TimelineInteractiveGate _interactiveGate = TimelineInteractiveGate();
 
   // Drag selection state
   bool _dragging = false;
@@ -430,59 +436,63 @@ class _SliverTimelineState extends ConsumerState<_SliverTimeline> {
             timeline = grid;
           }
 
-          return PrimaryScrollController(
-            controller: _scrollController,
-            child: RawGestureDetector(
-              gestures: {
-                CustomScaleGestureRecognizer: GestureRecognizerFactoryWithHandlers<CustomScaleGestureRecognizer>(
-                  () => CustomScaleGestureRecognizer(),
-                  (CustomScaleGestureRecognizer scale) {
-                    scale.onStart = (details) {
-                      _baseScaleFactor = _scaleFactor;
-                    };
+          return TimelineInteractiveFrame(
+            gate: _interactiveGate,
+            onInteractive: widget.onInteractive,
+            child: PrimaryScrollController(
+              controller: _scrollController,
+              child: RawGestureDetector(
+                gestures: {
+                  CustomScaleGestureRecognizer: GestureRecognizerFactoryWithHandlers<CustomScaleGestureRecognizer>(
+                    () => CustomScaleGestureRecognizer(),
+                    (CustomScaleGestureRecognizer scale) {
+                      scale.onStart = (details) {
+                        _baseScaleFactor = _scaleFactor;
+                      };
 
-                    scale.onUpdate = (details) {
-                      final newScaleFactor = math.max(math.min(5.0, _baseScaleFactor * details.scale), 1.0);
-                      final newPerRow = 7 - newScaleFactor.toInt();
+                      scale.onUpdate = (details) {
+                        final newScaleFactor = math.max(math.min(5.0, _baseScaleFactor * details.scale), 1.0);
+                        final newPerRow = 7 - newScaleFactor.toInt();
 
-                      if (newPerRow != _perRow) {
-                        final targetAssetIndex = _getCurrentAssetIndex(segments);
-                        setState(() {
-                          _scaleFactor = newScaleFactor;
-                          _perRow = newPerRow;
-                          _restoreAssetIndex = targetAssetIndex;
-                        });
+                        if (newPerRow != _perRow) {
+                          final targetAssetIndex = _getCurrentAssetIndex(segments);
+                          setState(() {
+                            _scaleFactor = newScaleFactor;
+                            _perRow = newPerRow;
+                            _restoreAssetIndex = targetAssetIndex;
+                          });
 
-                        ref.read(settingsProvider.notifier).set(Setting.tilesPerRow, _perRow);
-                      }
-                    };
-                  },
-                ),
-              },
-              child: TimelineDragRegion(
-                onStart: !isReadonlyModeEnabled ? _setDragStartIndex : null,
-                onAssetEnter: _handleDragAssetEnter,
-                onEnd: !isReadonlyModeEnabled ? _stopDrag : null,
-                onScroll: _dragScroll,
-                onScrollStart: () {
-                  // Minimize the bottom sheet when drag selection starts
-                  ref.read(timelineStateProvider.notifier).setScrolling(true);
+                          ref.read(settingsProvider.notifier).set(Setting.tilesPerRow, _perRow);
+                        }
+                      };
+                    },
+                  ),
                 },
-                child: Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    timeline,
-                    if (isBottomWidgetVisible)
-                      Positioned(
-                        top: MediaQuery.paddingOf(context).top,
-                        left: 25,
-                        child: const SizedBox(
-                          height: kToolbarHeight,
-                          child: Center(child: _MultiSelectStatusButton()),
+                child: TimelineDragRegion(
+                  onStart: !isReadonlyModeEnabled ? _setDragStartIndex : null,
+                  onAssetEnter: _handleDragAssetEnter,
+                  onEnd: !isReadonlyModeEnabled ? _stopDrag : null,
+                  onScroll: _dragScroll,
+                  onScrollStart: () {
+                    // Minimize the bottom sheet when drag selection starts
+                    ref.read(timelineStateProvider.notifier).setScrolling(true);
+                  },
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      timeline,
+                      if (isBottomWidgetVisible)
+                        Positioned(
+                          top: MediaQuery.paddingOf(context).top,
+                          left: 25,
+                          child: const SizedBox(
+                            height: kToolbarHeight,
+                            child: Center(child: _MultiSelectStatusButton()),
+                          ),
                         ),
-                      ),
-                    if (isBottomWidgetVisible) widget.bottomSheet!,
-                  ],
+                      if (isBottomWidgetVisible) widget.bottomSheet!,
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -491,6 +501,50 @@ class _SliverTimelineState extends ConsumerState<_SliverTimeline> {
       ),
     );
   }
+}
+
+class TimelineInteractiveGate {
+  bool _isClaimed = false;
+
+  bool claim() {
+    if (_isClaimed) return false;
+    _isClaimed = true;
+    return true;
+  }
+}
+
+class TimelineInteractiveFrame extends StatefulWidget {
+  const TimelineInteractiveFrame({
+    required this.gate,
+    required this.onInteractive,
+    required this.child,
+    this.schedulePostFrame = _scheduleTimelinePostFrame,
+    super.key,
+  });
+
+  final TimelineInteractiveGate gate;
+  final VoidCallback? onInteractive;
+  final Widget child;
+  final void Function(VoidCallback callback) schedulePostFrame;
+
+  @override
+  State<TimelineInteractiveFrame> createState() => _TimelineInteractiveFrameState();
+}
+
+class _TimelineInteractiveFrameState extends State<TimelineInteractiveFrame> {
+  @override
+  Widget build(BuildContext context) {
+    if (widget.onInteractive != null && widget.gate.claim()) {
+      widget.schedulePostFrame(() {
+        if (mounted) widget.onInteractive?.call();
+      });
+    }
+    return widget.child;
+  }
+}
+
+void _scheduleTimelinePostFrame(VoidCallback callback) {
+  WidgetsBinding.instance.addPostFrameCallback((_) => callback());
 }
 
 class _SliverSegmentedList extends SliverMultiBoxAdaptorWidget {

@@ -1,10 +1,37 @@
 import Flutter
 import Foundation
 
+protocol LocalOriginalExporting: AnyObject {
+  func export(
+    request: LocalOriginalExportRequest,
+    completion: @escaping (Result<OriginalExportResult, any Error>) -> Void
+  )
+  func cancel(requestId: Int64, completion: @escaping () -> Void)
+  func cancelAll(completion: @escaping () -> Void)
+  func dispose(completion: @escaping () -> Void)
+}
+
+protocol RemoteOriginalExporting: AnyObject {
+  func export(
+    request: RemoteOriginalExportRequest,
+    completion: @escaping (Result<OriginalExportResult, any Error>) -> Void
+  )
+  func cancel(requestId: Int64, completion: @escaping () -> Void)
+  func cancelAll(completion: @escaping () -> Void)
+  func dispose(completion: @escaping () -> Void)
+}
+
+extension LocalOriginalExporter: LocalOriginalExporting {}
+extension RemoteOriginalExporter: RemoteOriginalExporting {}
+
 final class OriginalExportApiImpl: OriginalExportApi {
+  private struct ActiveRequest {
+    let interval: (any PerformanceInterval)?
+  }
+
   private struct Lifecycle {
     var disposed = false
-    var activeRequestIds: Set<Int64> = []
+    var activeRequests: [Int64: ActiveRequest] = [:]
   }
 
   convenience init(flutterApi: OriginalExportFlutterApi) {
@@ -42,36 +69,43 @@ final class OriginalExportApiImpl: OriginalExportApi {
         leaseRegistry: leaseRegistry,
         progressHandler: progress
       ),
-      leaseRegistry: leaseRegistry
+      leaseRegistry: leaseRegistry,
+      performanceRecorder: PerformanceTelemetry.shared
     )
   }
 
   init(
-    localExporter: LocalOriginalExporter,
-    remoteExporter: RemoteOriginalExporter,
-    leaseRegistry: OriginalExportLeaseRegistry
+    localExporter: any LocalOriginalExporting,
+    remoteExporter: any RemoteOriginalExporting,
+    leaseRegistry: OriginalExportLeaseRegistry,
+    performanceRecorder: any PerformanceRecording = PerformanceTelemetry.shared
   ) {
     self.localExporter = localExporter
     self.remoteExporter = remoteExporter
     self.leaseRegistry = leaseRegistry
+    self.performanceRecorder = performanceRecorder
   }
 
-  private let localExporter: LocalOriginalExporter
-  private let remoteExporter: RemoteOriginalExporter
+  private let localExporter: any LocalOriginalExporting
+  private let remoteExporter: any RemoteOriginalExporting
   private let leaseRegistry: OriginalExportLeaseRegistry
+  private let performanceRecorder: any PerformanceRecording
   private let lifecycle = Mutex(Lifecycle())
 
   func exportLocal(
     request: LocalOriginalExportRequest,
     completion: @escaping (Result<OriginalExportResult, any Error>) -> Void
   ) {
-    guard begin(requestId: request.requestId) else {
+    guard begin(requestId: request.requestId, kind: .localOriginalExport) else {
       completion(.success(.failure(.cancelled)))
       return
     }
     localExporter.export(request: request) { [weak self] result in
-      self?.finish(requestId: request.requestId)
-      completion(result)
+      guard let self else {
+        completion(result)
+        return
+      }
+      self.complete(requestId: request.requestId, result: result, completion: completion)
     }
   }
 
@@ -79,13 +113,16 @@ final class OriginalExportApiImpl: OriginalExportApi {
     request: RemoteOriginalExportRequest,
     completion: @escaping (Result<OriginalExportResult, any Error>) -> Void
   ) {
-    guard begin(requestId: request.requestId) else {
+    guard begin(requestId: request.requestId, kind: .remoteOriginalExport) else {
       completion(.success(.failure(.cancelled)))
       return
     }
     remoteExporter.export(request: request) { [weak self] result in
-      self?.finish(requestId: request.requestId)
-      completion(result)
+      guard let self else {
+        completion(result)
+        return
+      }
+      self.complete(requestId: request.requestId, result: result, completion: completion)
     }
   }
 
@@ -129,19 +166,31 @@ final class OriginalExportApiImpl: OriginalExportApi {
     }
   }
 
-  private func begin(requestId: Int64) -> Bool {
+  private func begin(
+    requestId: Int64,
+    kind: PerformanceRequestKind
+  ) -> Bool {
     lifecycle.withLock { lifecycle in
-      guard !lifecycle.disposed, !lifecycle.activeRequestIds.contains(requestId) else {
+      guard !lifecycle.disposed, lifecycle.activeRequests[requestId] == nil else {
         return false
       }
-      lifecycle.activeRequestIds.insert(requestId)
+      lifecycle.activeRequests[requestId] = ActiveRequest(
+        interval: performanceRecorder.beginRequest(kind)
+      )
       return true
     }
   }
 
-  private func finish(requestId: Int64) {
-    lifecycle.withLock { lifecycle in
-      _ = lifecycle.activeRequestIds.remove(requestId)
+  private func complete(
+    requestId: Int64,
+    result: Result<OriginalExportResult, any Error>,
+    completion: (Result<OriginalExportResult, any Error>) -> Void
+  ) {
+    let request = lifecycle.withLock { lifecycle in
+      lifecycle.activeRequests.removeValue(forKey: requestId)
     }
+    guard let request else { return }
+    request.interval?.finish()
+    completion(result)
   }
 }
