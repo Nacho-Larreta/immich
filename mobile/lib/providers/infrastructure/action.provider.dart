@@ -5,8 +5,10 @@ import 'package:background_downloader/background_downloader.dart';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/constants/enums.dart';
+import 'package:immich_mobile/domain/interfaces/share_operation.interface.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/asset_edit.model.dart';
+import 'package:immich_mobile/domain/models/share.model.dart';
 import 'package:immich_mobile/domain/services/asset.service.dart';
 import 'package:immich_mobile/models/download/livephotos_medatada.model.dart';
 import 'package:immich_mobile/providers/asset_viewer/asset_viewer.provider.dart';
@@ -421,20 +423,8 @@ class ActionNotifier extends Notifier<void> {
     }
   }
 
-  Future<ActionResult> shareAssets(
-    ActionSource source,
-    BuildContext context, {
-    Completer<void>? cancelCompleter,
-  }) async {
-    final ids = _getAssets(source).toList(growable: false);
-
-    try {
-      await _service.shareAssets(ids, context, cancelCompleter: cancelCompleter);
-      return ActionResult(count: ids.length, success: true);
-    } catch (error, stack) {
-      _logger.severe('Failed to share assets', error, stack);
-      return ActionResult(count: ids.length, success: false, error: error.toString());
-    }
+  ShareOperation shareAssets(ActionSource source, {ShareAnchor? anchor}) {
+    return _service.shareAssets(_getAssets(source).toList(growable: false), anchor: anchor);
   }
 
   Future<ActionResult> downloadAll(ActionSource source) async {

@@ -1,154 +1,305 @@
 import 'dart:async';
-import 'dart:io';
 
-import 'package:device_info_plus/device_info_plus.dart';
-import 'package:flutter/widgets.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:immich_mobile/domain/interfaces/cancellable_request.interface.dart';
+import 'package:immich_mobile/domain/interfaces/local_asset_management.interface.dart';
+import 'package:immich_mobile/domain/interfaces/local_original_export.interface.dart';
+import 'package:immich_mobile/domain/interfaces/remote_original_export.interface.dart';
+import 'package:immich_mobile/domain/interfaces/share_operation.interface.dart';
+import 'package:immich_mobile/domain/interfaces/share_sheet.interface.dart';
+import 'package:immich_mobile/domain/interfaces/temporary_file_lease.interface.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
-import 'package:immich_mobile/extensions/build_context_extensions.dart';
-import 'package:immich_mobile/extensions/platform_extensions.dart';
-import 'package:immich_mobile/extensions/response_extensions.dart';
-import 'package:immich_mobile/repositories/asset_api.repository.dart';
-import 'package:logging/logging.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:photo_manager/photo_manager.dart';
-import 'package:share_plus/share_plus.dart';
+import 'package:immich_mobile/domain/models/original_export.model.dart';
+import 'package:immich_mobile/domain/models/share.model.dart';
+import 'package:immich_mobile/infrastructure/adapters/local_asset_management/photo_manager_local_asset_management_adapter.dart';
+import 'package:immich_mobile/providers/original_export.provider.dart';
+import 'package:immich_mobile/providers/share_sheet.provider.dart';
 
-final assetMediaRepositoryProvider = Provider((ref) => AssetMediaRepository(ref.watch(assetApiRepositoryProvider)));
+typedef RemoteOriginalUriBuilder = Uri? Function(String assetId, {required bool edited});
+
+final assetMediaRepositoryProvider = Provider((ref) {
+  final repository = AssetMediaRepository(
+    localExporter: ref.read(localOriginalExportProvider),
+    remoteExporter: ref.read(remoteOriginalExportProvider),
+    shareSheet: ref.read(shareSheetProvider),
+    buildRemoteOriginalUri: ref.read(remoteOriginalUriBuilderProvider),
+    localAssets: PhotoManagerLocalAssetManagementAdapter(),
+  );
+  ref.onDispose(() => unawaited(repository.dispose()));
+  return repository;
+});
 
 class AssetMediaRepository {
-  final AssetApiRepository _assetApiRepository;
-  static final Logger _log = Logger("AssetMediaRepository");
+  final LocalOriginalExportPort _localExporter;
+  final RemoteOriginalExportPort _remoteExporter;
+  final ShareSheetPort _shareSheet;
+  final RemoteOriginalUriBuilder _buildRemoteOriginalUri;
+  final LocalAssetManagementPort _localAssets;
+  final Set<_AssetShareOperation> _shareOperations = {};
+  bool _acceptingShares = true;
+  bool _disposed = false;
 
-  const AssetMediaRepository(this._assetApiRepository);
-
-  Future<bool> _androidSupportsTrash() async {
-    if (Platform.isAndroid) {
-      DeviceInfoPlugin deviceInfo = DeviceInfoPlugin();
-      AndroidDeviceInfo androidInfo = await deviceInfo.androidInfo;
-      int sdkVersion = androidInfo.version.sdkInt;
-      return sdkVersion >= 31;
-    }
-    return false;
-  }
+  AssetMediaRepository({
+    required LocalOriginalExportPort localExporter,
+    required RemoteOriginalExportPort remoteExporter,
+    required ShareSheetPort shareSheet,
+    required RemoteOriginalUriBuilder buildRemoteOriginalUri,
+    required LocalAssetManagementPort localAssets,
+  }) : _localExporter = localExporter,
+       _remoteExporter = remoteExporter,
+       _shareSheet = shareSheet,
+       _buildRemoteOriginalUri = buildRemoteOriginalUri,
+       _localAssets = localAssets;
 
   Future<List<String>> deleteAll(List<String> ids) async {
-    if (CurrentPlatform.isAndroid) {
-      if (await _androidSupportsTrash()) {
-        return PhotoManager.editor.android.moveToTrash(
-          ids.map((e) => AssetEntity(id: e, width: 1, height: 1, typeInt: 0)).toList(),
-        );
-      } else {
-        return PhotoManager.editor.deleteWithIds(ids);
-      }
-    }
-    return PhotoManager.editor.deleteWithIds(ids);
-  }
-
-  Future<AssetEntity?> get(String id) async {
-    final entity = await AssetEntity.fromId(id);
-    return entity;
+    return _localAssets.deleteAll(ids);
   }
 
   Future<String?> getOriginalFilename(String id) async {
-    final entity = await AssetEntity.fromId(id);
-    if (entity == null) {
-      return null;
-    }
-
-    try {
-      // titleAsync gets the correct original filename for some assets on iOS
-      // otherwise using the `entity.title` would return a random GUID
-      final originalFilename = await entity.titleAsync;
-      // treat empty filename as missing
-      return originalFilename.isNotEmpty ? originalFilename : null;
-    } catch (e) {
-      _log.warning("Failed to get original filename for asset: $id. Error: $e");
-      return null;
-    }
+    return _localAssets.getOriginalFilename(id);
   }
 
-  /// Deletes temporary files in parallel
-  Future<void> _cleanupTempFiles(List<File> tempFiles) async {
+  ShareOperation shareAssets(List<BaseAsset> assets, {ShareAnchor? anchor}) {
+    if (!_acceptingShares || _disposed) {
+      return const _RejectedShareOperation();
+    }
+    final operation = _AssetShareOperation(
+      assets: List.unmodifiable(assets),
+      anchor: anchor,
+      localExporter: _localExporter,
+      remoteExporter: _remoteExporter,
+      shareSheet: _shareSheet,
+      buildRemoteOriginalUri: _buildRemoteOriginalUri,
+      onFinished: _shareOperations.remove,
+    );
+    _shareOperations.add(operation);
+    operation.start();
+    return operation;
+  }
+
+  Future<void> cancelAll() async {
+    _acceptingShares = false;
+    final operations = _shareOperations.toList(growable: false);
+    await Future.wait(operations.map((operation) => operation.cancel()));
     await Future.wait(
-      tempFiles.map((file) async {
-        try {
-          await file.delete();
-        } catch (e) {
-          _log.warning("Failed to delete temporary file: ${file.path}", e);
-        }
-      }),
+      operations.where((operation) => !operation.isPresentationOwned).map((operation) => operation.result),
     );
   }
 
-  // TODO: make this more efficient
-  Future<int> shareAssets(List<BaseAsset> assets, BuildContext context, {Completer<void>? cancelCompleter}) async {
-    final downloadedXFiles = <XFile>[];
-    final tempFiles = <File>[];
-
-    for (var asset in assets) {
-      if (cancelCompleter != null && cancelCompleter.isCompleted) {
-        // if cancelled, delete any temp files created so far
-        await _cleanupTempFiles(tempFiles);
-        return 0;
-      }
-
-      final localId = (asset is LocalAsset)
-          ? asset.id
-          : asset is RemoteAsset
-          ? asset.localId
-          : null;
-      if (localId != null && !asset.isEdited) {
-        File? f = await AssetEntity(id: localId, width: 1, height: 1, typeInt: 0).originFile;
-        downloadedXFiles.add(XFile(f!.path));
-        if (CurrentPlatform.isIOS) {
-          tempFiles.add(f);
-        }
-      } else {
-        final remoteId = (asset is RemoteAsset) ? asset.id : asset.remoteId;
-        if (remoteId == null) {
-          _log.warning("Asset has no remote ID for sharing: $asset");
-          continue;
-        }
-
-        final tempDir = await getTemporaryDirectory();
-        final name = asset.name;
-        final tempFile = await File('${tempDir.path}/$name').create();
-        final res = await _assetApiRepository.downloadAsset(remoteId, edited: true);
-
-        if (res.statusCode != 200) {
-          _log.severe("Download for $name failed", res.toLoggerString());
-          continue;
-        }
-
-        await tempFile.writeAsBytes(res.bodyBytes);
-        downloadedXFiles.add(XFile(tempFile.path));
-        tempFiles.add(tempFile);
-      }
+  void activateSession() {
+    if (!_disposed) {
+      _acceptingShares = true;
     }
-
-    if (downloadedXFiles.isEmpty) {
-      _log.warning("No asset can be retrieved for share");
-      return 0;
-    }
-
-    if (cancelCompleter != null && cancelCompleter.isCompleted) {
-      await _cleanupTempFiles(tempFiles);
-      return 0;
-    }
-
-    // we dont want to await the share result since the
-    // "preparing" dialog will not disappear until
-    final size = context.sizeData;
-    unawaited(
-      Share.shareXFiles(
-        downloadedXFiles,
-        sharePositionOrigin: Rect.fromPoints(Offset.zero, Offset(size.width / 3, size.height)),
-      ).then((result) async {
-        await _cleanupTempFiles(tempFiles);
-      }),
-    );
-
-    return downloadedXFiles.length;
   }
+
+  Future<void> dispose() async {
+    _disposed = true;
+    await cancelAll();
+  }
+}
+
+final class _AssetShareOperation implements ShareOperation {
+  _AssetShareOperation({
+    required this.assets,
+    required this.anchor,
+    required LocalOriginalExportPort localExporter,
+    required RemoteOriginalExportPort remoteExporter,
+    required ShareSheetPort shareSheet,
+    required RemoteOriginalUriBuilder buildRemoteOriginalUri,
+    required void Function(_AssetShareOperation operation) onFinished,
+  }) : _localExporter = localExporter,
+       _remoteExporter = remoteExporter,
+       _shareSheet = shareSheet,
+       _buildRemoteOriginalUri = buildRemoteOriginalUri,
+       _onFinished = onFinished;
+
+  final List<BaseAsset> assets;
+  final ShareAnchor? anchor;
+  final LocalOriginalExportPort _localExporter;
+  final RemoteOriginalExportPort _remoteExporter;
+  final ShareSheetPort _shareSheet;
+  final RemoteOriginalUriBuilder _buildRemoteOriginalUri;
+  final void Function(_AssetShareOperation operation) _onFinished;
+  final Completer<ShareResult> _result = Completer();
+  final StreamController<ShareProgress> _progress = StreamController.broadcast(sync: true);
+  final List<({String assetId, TemporaryFileLease lease})> _leases = [];
+  CancellableRequest<Object?>? _activeRequest;
+  Future<void>? _cancelFuture;
+  bool _cancelled = false;
+  bool _presentationOwned = false;
+
+  bool get isPresentationOwned => _presentationOwned;
+
+  @override
+  Future<ShareResult> get result => _result.future;
+
+  @override
+  Stream<ShareProgress> get progress => _progress.stream;
+
+  void start() => unawaited(_run());
+
+  @override
+  Future<void> cancel() => _cancelFuture ??= _cancelOnce();
+
+  Future<void> _cancelOnce() async {
+    _cancelled = true;
+    if (_presentationOwned) {
+      return;
+    }
+    await _activeRequest?.cancel();
+  }
+
+  Future<void> _run() async {
+    ShareResult outcome;
+    try {
+      outcome = assets.isEmpty
+          ? const ShareResult.failure(ShareSheetFailure(error: ShareSheetError.unavailable))
+          : await _prepareAndShare();
+    } on Object {
+      outcome = ShareResult.failure(
+        ShareAssetFailure(
+          assetId: _assetIdentity(assets.first),
+          phase: SharePhase.cleanup,
+          error: OriginalExportError.writeFailed,
+        ),
+      );
+    }
+
+    final cleanupFailure = await _cleanup();
+    if (_cancelled && _presentationOwned && assets.isNotEmpty) {
+      outcome = _cancelledResult(assets.first, SharePhase.cleanup);
+    } else if (cleanupFailure != null) {
+      outcome = ShareResult.failure(cleanupFailure);
+    } else if (_cancelled && assets.isNotEmpty) {
+      outcome = ShareResult.failure(
+        ShareAssetFailure(
+          assetId: _assetIdentity(assets.first),
+          phase: SharePhase.cleanup,
+          error: OriginalExportError.cancelled,
+        ),
+      );
+    }
+    _result.complete(outcome);
+    await _progress.close();
+    _onFinished(this);
+  }
+
+  Future<ShareResult> _prepareAndShare() async {
+    for (final (index, asset) in assets.indexed) {
+      if (_cancelled) {
+        return _cancelledResult(asset, _phaseFor(asset));
+      }
+      final phase = _phaseFor(asset);
+      _publish(phase, index);
+      final request = _export(asset);
+      _activeRequest = request;
+      final exportResult = await request.result;
+      _activeRequest = null;
+      if (exportResult case OriginalExportFailure(:final error)) {
+        return ShareResult.failure(ShareAssetFailure(assetId: _assetIdentity(asset), phase: phase, error: error));
+      }
+      final lease = (exportResult as OriginalExportSuccess).lease;
+      _leases.add((assetId: _assetIdentity(asset), lease: lease));
+      if (_cancelled) {
+        return _cancelledResult(asset, phase);
+      }
+      _publish(phase, index + 1);
+    }
+
+    _publish(SharePhase.presentation, assets.length);
+    final presentation = _shareSheet.share(
+      ShareSheetRequest(paths: _leases.map((entry) => entry.lease.path), anchor: anchor),
+    );
+    _presentationOwned = true;
+    _activeRequest = presentation;
+    final result = await presentation.result;
+    _activeRequest = null;
+    return result;
+  }
+
+  CancellableRequest<OriginalExportResult> _export(BaseAsset asset) {
+    final localId = asset.localId;
+    if (localId != null && !asset.isEdited) {
+      return _localExporter.export(
+        LocalOriginalExportRequest(
+          assetId: localId,
+          suggestedFilename: asset.name,
+          policy: LocalOriginalExportPolicy.allowICloud,
+        ),
+      );
+    }
+
+    final remoteId = asset.remoteId;
+    final resource = remoteId == null ? null : _buildRemoteOriginalUri(remoteId, edited: asset.isEdited);
+    if (remoteId == null || resource == null) {
+      return const _CompletedOriginalExportRequest(OriginalExportResult.failure(OriginalExportError.assetMissing));
+    }
+    return _remoteExporter.export(RemoteOriginalExportRequest(resource: resource, suggestedFilename: asset.name));
+  }
+
+  SharePhase _phaseFor(BaseAsset asset) {
+    return asset.localId != null && !asset.isEdited ? SharePhase.localExport : SharePhase.remoteExport;
+  }
+
+  Future<ShareAssetFailure?> _cleanup() async {
+    if (assets.isNotEmpty) {
+      _publish(SharePhase.cleanup, assets.length);
+    }
+    ShareAssetFailure? firstFailure;
+    for (final entry in _leases) {
+      try {
+        await entry.lease.release();
+      } on Object {
+        firstFailure ??= ShareAssetFailure(
+          assetId: entry.assetId,
+          phase: SharePhase.cleanup,
+          error: OriginalExportError.cleanupFailed,
+        );
+      }
+    }
+    return firstFailure;
+  }
+
+  void _publish(SharePhase phase, int completedCount) {
+    if (!_progress.isClosed) {
+      _progress.add(ShareProgress(phase: phase, completedCount: completedCount, totalCount: assets.length));
+    }
+  }
+
+  ShareResult _cancelledResult(BaseAsset asset, SharePhase phase) {
+    return ShareResult.failure(
+      ShareAssetFailure(assetId: _assetIdentity(asset), phase: phase, error: OriginalExportError.cancelled),
+    );
+  }
+
+  static String _assetIdentity(BaseAsset asset) => asset.localId ?? asset.remoteId ?? asset.name;
+}
+
+final class _RejectedShareOperation implements ShareOperation {
+  const _RejectedShareOperation();
+
+  @override
+  Stream<ShareProgress> get progress => const Stream.empty();
+
+  @override
+  Future<ShareResult> get result => Future.value(
+    ShareResult.failure(
+      ShareAssetFailure(assetId: 'share-session', phase: SharePhase.cleanup, error: OriginalExportError.cancelled),
+    ),
+  );
+
+  @override
+  Future<void> cancel() async {}
+}
+
+final class _CompletedOriginalExportRequest implements CancellableRequest<OriginalExportResult> {
+  const _CompletedOriginalExportRequest(this.value);
+
+  final OriginalExportResult value;
+
+  @override
+  Future<OriginalExportResult> get result => Future.value(value);
+
+  @override
+  Future<void> cancel() async {}
 }

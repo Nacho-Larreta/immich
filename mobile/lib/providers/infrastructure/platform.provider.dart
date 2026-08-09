@@ -8,6 +8,7 @@ import 'package:immich_mobile/platform/connectivity_api.g.dart';
 import 'package:immich_mobile/platform/native_sync_api.g.dart';
 import 'package:immich_mobile/platform/local_image_api.g.dart';
 import 'package:immich_mobile/platform/network_api.g.dart';
+import 'package:immich_mobile/platform/original_export_api.g.dart';
 import 'package:immich_mobile/platform/remote_image_api.g.dart';
 
 final backgroundWorkerFgServiceProvider = Provider((_) => BackgroundWorkerFgService(BackgroundWorkerFgHostApi()));
@@ -29,5 +30,7 @@ final localImageApiProvider = Provider<LocalImageApi>((_) => localImageApi);
 final remoteImageApi = RemoteImageApi();
 
 final remoteImageApiProvider = Provider<RemoteImageApi>((_) => remoteImageApi);
+
+final originalExportApiProvider = Provider<OriginalExportApi>((_) => OriginalExportApi());
 
 final networkApi = NetworkApi();

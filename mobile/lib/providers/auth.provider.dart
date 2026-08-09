@@ -22,6 +22,7 @@ import 'package:immich_mobile/providers/server_reachability.provider.dart';
 import 'package:immich_mobile/providers/session_mutation.provider.dart';
 import 'package:immich_mobile/providers/backup/drift_backup.provider.dart';
 import 'package:immich_mobile/providers/websocket.provider.dart';
+import 'package:immich_mobile/repositories/asset_media.repository.dart';
 import 'package:immich_mobile/services/api.service.dart';
 import 'package:immich_mobile/services/auth.service.dart';
 import 'package:immich_mobile/services/foreground_upload.service.dart';
@@ -49,6 +50,8 @@ final authProvider = StateNotifierProvider<AuthNotifier, AuthState>((ref) {
     invalidateSession: ref.read(serverReachabilityCoordinatorProvider).logout,
     cancelLocalMedia: ref.read(localMediaProvider).cancelAll,
     cancelRemoteMedia: ref.read(remoteMediaProvider).cancelAll,
+    cancelShares: ref.read(assetMediaRepositoryProvider).cancelAll,
+    activateShares: ref.read(assetMediaRepositoryProvider).activateSession,
     stopBackup: ref.read(driftBackupProvider.notifier).stopForegroundBackup,
     disconnectWebsocket: ref.read(websocketProvider.notifier).disconnect,
   );
@@ -69,6 +72,8 @@ class AuthNotifier extends StateNotifier<AuthState> {
   final Future<void> Function() _invalidateSession;
   final Future<void> Function() _cancelLocalMedia;
   final Future<void> Function() _cancelRemoteMedia;
+  final Future<void> Function() _cancelShares;
+  final void Function() _activateShares;
   final void Function() _stopBackup;
   final void Function() _disconnectWebsocket;
   final _log = Logger("AuthenticationNotifier");
@@ -91,12 +96,16 @@ class AuthNotifier extends StateNotifier<AuthState> {
     required Future<void> Function() invalidateSession,
     required Future<void> Function() cancelLocalMedia,
     required Future<void> Function() cancelRemoteMedia,
+    Future<void> Function()? cancelShares,
+    void Function()? activateShares,
     required void Function() stopBackup,
     required void Function() disconnectWebsocket,
   }) : _cachedSessionReader = cachedSessionReader,
        _invalidateSession = invalidateSession,
        _cancelLocalMedia = cancelLocalMedia,
        _cancelRemoteMedia = cancelRemoteMedia,
+       _cancelShares = cancelShares ?? _noAsyncWork,
+       _activateShares = activateShares ?? _noWork,
        _stopBackup = stopBackup,
        _disconnectWebsocket = disconnectWebsocket,
        super(
@@ -126,6 +135,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
       name: user.name,
       isAdmin: user.isAdmin,
     );
+    _activateShares();
     return true;
   }
 
@@ -147,6 +157,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
   Future<LoginResponse> login(String email, String password) async {
     final response = await _authService.login(email, password);
     await saveAuthInfo(accessToken: response.accessToken);
+    _activateShares();
     return response;
   }
 
@@ -168,6 +179,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
     await invalidate(_invalidateSession);
     await invalidate(_cancelLocalMedia);
     await invalidate(_cancelRemoteMedia);
+    await invalidate(_cancelShares);
     await invalidate(_stopBackup);
     await invalidate(_disconnectWebsocket);
     await _sessionMutationMutex.protect(_logout);
@@ -175,6 +187,10 @@ class AuthNotifier extends StateNotifier<AuthState> {
       Error.throwWithStackTrace(invalidationError!, invalidationStackTrace!);
     }
   }
+
+  static Future<void> _noAsyncWork() async {}
+
+  static void _noWork() {}
 
   Future<void> _logout() async {
     Object? operationError;

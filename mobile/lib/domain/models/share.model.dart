@@ -6,6 +6,29 @@ enum SharePhase { localExport, remoteExport, presentation, cleanup }
 
 enum ShareSheetError { unavailable, presentationFailed }
 
+final class ShareProgress {
+  ShareProgress({required this.phase, required this.completedCount, required this.totalCount}) {
+    if (completedCount < 0 || totalCount <= 0 || completedCount > totalCount) {
+      throw ArgumentError('Share progress must satisfy 0 <= completedCount <= totalCount');
+    }
+  }
+
+  final SharePhase phase;
+  final int completedCount;
+  final int totalCount;
+
+  @override
+  bool operator ==(Object other) {
+    return other is ShareProgress &&
+        other.phase == phase &&
+        other.completedCount == completedCount &&
+        other.totalCount == totalCount;
+  }
+
+  @override
+  int get hashCode => Object.hash(phase, completedCount, totalCount);
+}
+
 final class ShareAnchor {
   ShareAnchor({required this.x, required this.y, required this.width, required this.height}) {
     _validateFinite(x, 'x');

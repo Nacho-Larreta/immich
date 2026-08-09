@@ -64,6 +64,7 @@ void main() {
       final secureStorage = _MockSecureStorageService();
       final widgetService = _MockWidgetService();
       final reader = _MockCachedSessionReader();
+      var shareActivations = 0;
       when(reader.read).thenReturn(
         CachedSession(
           accessToken: 'cached-token',
@@ -86,6 +87,7 @@ void main() {
         invalidateSession: () async {},
         cancelLocalMedia: () async {},
         cancelRemoteMedia: () async {},
+        activateShares: () => shareActivations++,
         stopBackup: () {},
         disconnectWebsocket: () {},
       );
@@ -99,6 +101,7 @@ void main() {
       expect(notifier.state.name, UserStub.admin.name);
       expect(notifier.state.isAdmin, isTrue);
       expect(notifier.state.deviceId, 'cached-device');
+      expect(shareActivations, 1);
       verify(reader.read).called(1);
       verifyNever(apiService.updateHeaders);
       verifyNever(userService.refreshMyUser);
@@ -134,6 +137,19 @@ void main() {
   });
 
   group('AuthNotifier.logout', () {
+    test('cancels active shares before clearing the session', () async {
+      final events = <String>[];
+      final auth = _LogoutFixture(
+        mutex: SessionMutationMutex(),
+        cancelShares: () async => events.add('share.cancelAll'),
+        onRemoteLogout: () => events.add('remote.logout'),
+      );
+
+      await auth.notifier.logout();
+
+      expect(events, containsAllInOrder(['share.cancelAll', 'remote.logout']));
+    });
+
     test('invalidates reachability before waiting for the session mutation mutex', () async {
       final mutex = SessionMutationMutex();
       final mutexEntered = Completer<void>();
@@ -476,6 +492,8 @@ final class _LogoutFixture {
     Future<void> Function()? invalidateSession,
     Future<void> Function()? cancelLocalMedia,
     Future<void> Function()? cancelRemoteMedia,
+    Future<void> Function()? cancelShares,
+    void Function()? activateShares,
     void Function()? stopBackup,
     void Function()? disconnectWebsocket,
     Object? apiGraphPurgeError,
@@ -508,6 +526,8 @@ final class _LogoutFixture {
       invalidateSession: invalidateSession ?? () async {},
       cancelLocalMedia: cancelLocalMedia ?? () async {},
       cancelRemoteMedia: cancelRemoteMedia ?? () async {},
+      cancelShares: cancelShares ?? () async {},
+      activateShares: activateShares ?? () {},
       stopBackup: stopBackup ?? () {},
       disconnectWebsocket: disconnectWebsocket ?? () {},
     );

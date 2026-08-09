@@ -4,8 +4,10 @@ import 'package:auto_route/auto_route.dart';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/constants/enums.dart';
+import 'package:immich_mobile/domain/interfaces/share_operation.interface.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/asset_edit.model.dart';
+import 'package:immich_mobile/domain/models/share.model.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/extensions/platform_extensions.dart';
@@ -232,8 +234,8 @@ class ActionService {
     await _remoteAssetRepository.unStack(stackIds);
   }
 
-  Future<int> shareAssets(List<BaseAsset> assets, BuildContext context, {Completer<void>? cancelCompleter}) {
-    return _assetMediaRepository.shareAssets(assets, context, cancelCompleter: cancelCompleter);
+  ShareOperation shareAssets(List<BaseAsset> assets, {ShareAnchor? anchor}) {
+    return _assetMediaRepository.shareAssets(assets, anchor: anchor);
   }
 
   Future<List<bool>> downloadAll(List<RemoteAsset> assets) {

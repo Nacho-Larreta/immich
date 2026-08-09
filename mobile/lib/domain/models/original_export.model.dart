@@ -16,6 +16,8 @@ enum OriginalExportError {
   storageUnavailable,
   writeFailed,
   cleanupFailed,
+  leaseNotFound,
+  platformUnsupported,
 }
 
 final class LocalOriginalExportRequest {

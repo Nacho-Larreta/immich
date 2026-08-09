@@ -109,6 +109,8 @@ void main() {
         OriginalExportError.storageUnavailable,
         OriginalExportError.writeFailed,
         OriginalExportError.cleanupFailed,
+        OriginalExportError.leaseNotFound,
+        OriginalExportError.platformUnsupported,
       ]);
     });
   });
