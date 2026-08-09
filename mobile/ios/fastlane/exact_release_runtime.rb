@@ -94,11 +94,11 @@ module ExactReleaseRuntime
       prepare!(ipa_path)
       bundle_path = extracted_bundle_path(archive_bundle_path)
       prefix = File.join(@directory, "certificate-#{Digest::SHA256.hexdigest(archive_bundle_path)}-")
-      run!([CODESIGN, "-d", "--extract-certificates", prefix, bundle_path])
+      run!([CODESIGN, "-d", "--extract-certificates=#{prefix}", bundle_path])
       certificate_path = "#{prefix}0"
       digest_regular_file(certificate_path, "Extracted signing certificate")
     ensure
-      remove_extracted_certificate(certificate_path)
+      remove_extracted_certificates(prefix)
     end
 
     def provisioning_profile_uuid(ipa_path, archive_bundle_path)
@@ -245,8 +245,17 @@ module ExactReleaseRuntime
       raise Error, "#{description} is unavailable"
     end
 
-    def remove_extracted_certificate(path)
-      File.unlink(path) if path && File.file?(path) && !File.symlink?(path)
+    def remove_extracted_certificates(prefix)
+      return unless prefix
+
+      directory = File.dirname(prefix)
+      basename = File.basename(prefix)
+      Dir.each_child(directory) do |entry|
+        next unless entry.match?(/\A#{Regexp.escape(basename)}\d+\z/)
+
+        path = File.join(directory, entry)
+        File.unlink(path) if File.file?(path) || File.symlink?(path)
+      end
     rescue StandardError
       nil
     end

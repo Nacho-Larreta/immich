@@ -20,19 +20,23 @@ class ExactReleaseRuntimeTest < Minitest::Test
   ProfilePlan = Struct.new(:profiles, :signing_certificate_sha256, keyword_init: true)
 
   class FakeArtifactRunner
-    attr_reader :calls
+    attr_reader :calls, :certificate_paths
 
     def initialize(contract)
       @contract = contract
       @calls = []
+      @certificate_paths = []
     end
 
     def call(argv)
       @calls << argv
       if argv[0..2] == ["/usr/bin/ditto", "-x", "-k"]
         extract_contract_bundles(argv.fetch(4))
-      elsif argv[0..2] == ["/usr/bin/codesign", "-d", "--extract-certificates"]
-        File.binwrite("#{argv.fetch(3)}0", CERTIFICATE_BYTES)
+      elsif argv[0..1] == ["/usr/bin/codesign", "-d"] && argv.fetch(2).start_with?("--extract-certificates=")
+        prefix = argv.fetch(2).delete_prefix("--extract-certificates=")
+        @certificate_paths.concat(["#{prefix}0", "#{prefix}1"])
+        File.binwrite(@certificate_paths[-2], CERTIFICATE_BYTES)
+        File.binwrite(@certificate_paths[-1], "intermediate certificate bytes")
       end
 
       stdout = case argv[0..3]
@@ -135,6 +139,30 @@ class ExactReleaseRuntimeTest < Minitest::Test
       "MARKETING_VERSION=1.142.0",
       "CURRENT_PROJECT_VERSION=42"
     ], Shellwords.split(arguments)
+  end
+
+  def test_signing_certificate_uses_single_codesign_option_and_removes_extracted_output
+    Dir.mktmpdir do |directory|
+      ipa = File.join(directory, "release.ipa")
+      create_ipa(ipa)
+      runner = FakeArtifactRunner.new(contract)
+      inspection = ExactReleaseRuntime::IpaInspection.new(contract: contract, argv_runner: runner)
+      bundle = contract.bundles.first
+
+      assert_equal CERTIFICATE_SHA256, inspection.signing_certificate_sha256(ipa, bundle.archive_path)
+
+      certificate_path = runner.certificate_paths.fetch(0)
+      prefix = certificate_path.delete_suffix("0")
+      assert_equal [
+        "/usr/bin/codesign",
+        "-d",
+        "--extract-certificates=#{prefix}",
+        File.join(File.dirname(prefix), bundle.archive_path)
+      ], runner.calls.last
+      runner.certificate_paths.each { |path| refute_path_exists path }
+    ensure
+      inspection&.cleanup!
+    end
   end
 
   def test_profile_selection_uses_distinct_uuids_even_when_all_names_are_duplicate
