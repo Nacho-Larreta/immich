@@ -2,11 +2,12 @@ import 'package:auto_route/auto_route.dart';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/domain/models/media_request.model.dart';
 import 'package:immich_mobile/domain/models/person.model.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/extensions/theme_extensions.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
-import 'package:immich_mobile/presentation/widgets/images/remote_image_provider.dart';
+import 'package:immich_mobile/providers/remote_media.provider.dart';
 import 'package:immich_mobile/presentation/widgets/people/person_edit_name_modal.widget.dart';
 import 'package:immich_mobile/providers/infrastructure/people.provider.dart';
 import 'package:immich_mobile/providers/routes.provider.dart';
@@ -93,7 +94,7 @@ class PeopleDetails extends ConsumerWidget {
   }
 }
 
-class _Avatar extends StatelessWidget {
+class _Avatar extends ConsumerWidget {
   final DriftPerson person;
   final DateTime assetFileCreatedAt;
   final VoidCallback? onTap;
@@ -103,7 +104,7 @@ class _Avatar extends StatelessWidget {
   const _Avatar({required this.person, required this.assetFileCreatedAt, this.onTap, this.onNameTap});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     return ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 96),
       child: Padding(
@@ -121,7 +122,9 @@ class _Avatar extends StatelessWidget {
                   elevation: 3,
                   child: CircleAvatar(
                     maxRadius: imageSize / 2,
-                    backgroundImage: RemoteImageProvider(url: getFaceThumbnailUrl(person.id)),
+                    backgroundImage: ref
+                        .watch(remoteImageProviderFactoryProvider)
+                        .image(url: getFaceThumbnailUrl(person.id), edited: true, kind: MediaRequestKind.thumbnail),
                   ),
                 ),
               ),

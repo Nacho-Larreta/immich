@@ -3,6 +3,7 @@ import 'package:immich_mobile/domain/interfaces/local_media.interface.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/media_request.model.dart';
 import 'package:immich_mobile/presentation/widgets/images/image_provider.dart';
+import 'package:immich_mobile/presentation/widgets/images/remote_image_provider.dart';
 import 'package:immich_mobile/widgets/asset_grid/thumbnail_placeholder.dart';
 import 'package:octo_image/octo_image.dart';
 
@@ -12,6 +13,7 @@ class FullImage extends StatelessWidget {
     required this.size,
     required this.localMedia,
     required this.localPolicy,
+    required this.remoteImages,
     this.fit = BoxFit.cover,
     this.placeholder = const ThumbnailPlaceholder(),
     super.key,
@@ -21,12 +23,19 @@ class FullImage extends StatelessWidget {
   final Size size;
   final LocalMediaPort<OwnedLocalMediaPayload> localMedia;
   final LocalMediaPolicy localPolicy;
+  final RemoteImageProviderFactory remoteImages;
   final Widget? placeholder;
   final BoxFit fit;
 
   @override
   Widget build(BuildContext context) {
-    final provider = getFullImageProvider(asset, localMedia: localMedia, localPolicy: localPolicy, size: size);
+    final provider = getFullImageProvider(
+      asset,
+      localMedia: localMedia,
+      localPolicy: localPolicy,
+      remoteImages: remoteImages,
+      size: size,
+    );
     return OctoImage(
       fadeInDuration: const Duration(milliseconds: 0),
       fadeOutDuration: const Duration(milliseconds: 100),
@@ -36,6 +45,9 @@ class FullImage extends StatelessWidget {
       height: size.height,
       fit: fit,
       errorBuilder: (context, error, stackTrace) {
+        if (isRemoteMediaCacheMiss(error)) {
+          return placeholder ?? const SizedBox.shrink();
+        }
         provider.evict();
         return const Icon(Icons.image_not_supported_outlined, size: 32);
       },

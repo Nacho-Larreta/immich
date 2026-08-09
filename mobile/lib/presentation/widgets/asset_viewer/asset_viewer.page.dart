@@ -5,6 +5,7 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:immich_mobile/providers/remote_media.provider.dart';
 import 'package:immich_mobile/domain/models/album/album.model.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/events.model.dart';
@@ -85,6 +86,7 @@ class _AssetViewerState extends ConsumerState<AssetViewer> {
     timelineService: ref.read(timelineServiceProvider),
     mounted: () => mounted,
     localMedia: ref.read(localMediaProvider),
+    readRemoteImages: () => ref.read(remoteImageProviderFactoryProvider),
   );
 
   late int _currentPage = widget.initialIndex;

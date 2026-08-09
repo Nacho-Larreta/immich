@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:auto_route/auto_route.dart';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:immich_mobile/providers/remote_media.provider.dart';
 import 'package:immich_mobile/constants/enums.dart';
 import 'package:immich_mobile/domain/models/asset_edit.model.dart';
 import 'package:immich_mobile/domain/models/media_request.model.dart';
@@ -40,6 +41,7 @@ class EditImageActionButton extends ConsumerWidget {
         currentAsset,
         localMedia: ref.read(localMediaProvider),
         localPolicy: LocalMediaPolicy.allowICloud,
+        remoteImages: ref.watch(remoteImageProviderFactoryProvider),
         edited: false,
       );
 

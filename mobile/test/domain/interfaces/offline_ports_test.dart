@@ -128,6 +128,9 @@ final class _RemoteMediaPort implements RemoteMediaPort<String> {
   CancellableMediaRequest<String> request(RemoteMediaRequest request) {
     throw UnimplementedError();
   }
+
+  @override
+  Future<void> cancelAll() async {}
 }
 
 final class _TemporaryFilesPort implements TemporaryFilesPort<String> {

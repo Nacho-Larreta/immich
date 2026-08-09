@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:immich_mobile/providers/remote_media.provider.dart';
 import 'package:immich_mobile/domain/models/album/album.model.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/extensions/theme_extensions.dart';
@@ -45,6 +46,7 @@ class AlbumTile extends ConsumerWidget {
                     child: Thumbnail.remote(
                       remoteId: album.thumbnailAssetId!,
                       thumbhash: snapshot.data!.thumbHash ?? "",
+                      remoteImages: ref.watch(remoteImageProviderFactoryProvider),
                     ),
                   ),
                 )

@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:immich_mobile/domain/models/media_request.model.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/models/user.model.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
-import 'package:immich_mobile/presentation/widgets/images/remote_image_provider.dart';
+import 'package:immich_mobile/providers/remote_media.provider.dart';
 
 // ignore: must_be_immutable
 class UserCircleAvatar extends ConsumerWidget {
@@ -47,7 +48,9 @@ class UserCircleAvatar extends ConsumerWidget {
                     fit: BoxFit.cover,
                     width: size,
                     height: size,
-                    image: RemoteImageProvider(url: profileImageUrl),
+                    image: ref
+                        .watch(remoteImageProviderFactoryProvider)
+                        .image(url: profileImageUrl, edited: true, kind: MediaRequestKind.thumbnail),
                     errorBuilder: (context, error, stackTrace) => textIcon,
                     color: Colors.white.withValues(alpha: opacity),
                     colorBlendMode: BlendMode.modulate,

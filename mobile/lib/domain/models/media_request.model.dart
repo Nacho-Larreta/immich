@@ -33,8 +33,13 @@ final class LocalMediaOriginalEncodedRendition extends LocalMediaRendition {
 }
 
 final class RemoteMediaRequest {
-  RemoteMediaRequest({required this.requestId, required this.resource, required this.policy, required this.kind})
-    : origin = resource.originUri {
+  RemoteMediaRequest({
+    required this.requestId,
+    required this.resource,
+    required this.policy,
+    required this.kind,
+    required this.preferEncoded,
+  }) : origin = resource.originUri {
     if (requestId < 0) {
       throw ArgumentError.value(requestId, 'requestId', 'Must not be negative');
     }
@@ -46,6 +51,7 @@ final class RemoteMediaRequest {
   final Uri origin;
   final RemoteMediaPolicy policy;
   final MediaRequestKind kind;
+  final bool preferEncoded;
 }
 
 final class LocalMediaRequest {

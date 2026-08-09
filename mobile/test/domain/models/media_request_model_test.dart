@@ -16,6 +16,7 @@ void main() {
       resource: resource,
       policy: RemoteMediaPolicy.cacheOnly,
       kind: MediaRequestKind.thumbnail,
+      preferEncoded: false,
     );
 
     expect(request.resource, resource);
@@ -82,6 +83,7 @@ void main() {
         resource: Uri.parse('file:///tmp/image.jpg'),
         policy: RemoteMediaPolicy.cacheOnly,
         kind: MediaRequestKind.thumbnail,
+        preferEncoded: false,
       ),
       throwsA(isA<ArgumentError>()),
     );

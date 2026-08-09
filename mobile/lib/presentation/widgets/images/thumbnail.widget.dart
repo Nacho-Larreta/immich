@@ -26,16 +26,18 @@ class Thumbnail extends StatefulWidget {
   Thumbnail.remote({
     required String remoteId,
     required String thumbhash,
+    required RemoteImageProviderFactory remoteImages,
     this.fit = BoxFit.cover,
     Size size = kThumbnailResolution,
     super.key,
-  }) : imageProvider = RemoteImageProvider.thumbnail(assetId: remoteId, thumbhash: thumbhash),
+  }) : imageProvider = remoteImages.thumbnail(assetId: remoteId, thumbhash: thumbhash, edited: true),
        thumbhashProvider = null;
 
   Thumbnail.fromAsset({
     required BaseAsset? asset,
     required LocalMediaPort<OwnedLocalMediaPayload> localMedia,
     required LocalMediaPolicy localPolicy,
+    required RemoteImageProviderFactory remoteImages,
     this.fit = BoxFit.cover,
 
     /// The logical UI size of the thumbnail. This is only used to determine the ideal image resolution and does not affect the widget size.
@@ -49,7 +51,13 @@ class Thumbnail extends StatefulWidget {
        },
        imageProvider = asset == null
            ? null
-           : getThumbnailImageProvider(asset, localMedia: localMedia, localPolicy: localPolicy, size: size);
+           : getThumbnailImageProvider(
+               asset,
+               localMedia: localMedia,
+               localPolicy: localPolicy,
+               remoteImages: remoteImages,
+               size: size,
+             );
 
   @override
   State<Thumbnail> createState() => _ThumbnailState();
@@ -148,7 +156,9 @@ class _ThumbnailState extends State<Thumbnail> with SingleTickerProviderStateMix
         });
       },
       onError: (exception, stackTrace) {
-        log.severe('Error loading image: $exception', exception, stackTrace);
+        if (!isRemoteMediaCacheMiss(exception)) {
+          log.severe('Error loading image: $exception', exception, stackTrace);
+        }
         _stopListeningToImageStream();
       },
     );

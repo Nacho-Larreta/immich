@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:immich_mobile/providers/remote_media.provider.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/media_request.model.dart';
 import 'package:immich_mobile/domain/models/events.model.dart';
@@ -415,6 +416,7 @@ class _RandomAssetBackgroundState extends ConsumerState<_RandomAssetBackground> 
                           _currentAsset!,
                           localMedia: ref.read(localMediaProvider),
                           localPolicy: LocalMediaPolicy.localOnly,
+                          remoteImages: ref.watch(remoteImageProviderFactoryProvider),
                         ),
                         fit: BoxFit.cover,
                         frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
@@ -446,6 +448,7 @@ class _RandomAssetBackgroundState extends ConsumerState<_RandomAssetBackground> 
                           _nextAsset!,
                           localMedia: ref.read(localMediaProvider),
                           localPolicy: LocalMediaPolicy.localOnly,
+                          remoteImages: ref.watch(remoteImageProviderFactoryProvider),
                         ),
                         fit: BoxFit.cover,
                         frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {

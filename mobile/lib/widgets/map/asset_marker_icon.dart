@@ -1,16 +1,18 @@
 import 'package:flutter/material.dart';
+import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:immich_mobile/domain/models/media_request.model.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
-import 'package:immich_mobile/presentation/widgets/images/remote_image_provider.dart';
+import 'package:immich_mobile/providers/remote_media.provider.dart';
 import 'package:immich_mobile/utils/image_url_builder.dart';
 
-class AssetMarkerIcon extends StatelessWidget {
+class AssetMarkerIcon extends ConsumerWidget {
   const AssetMarkerIcon({required this.id, required this.thumbhash, super.key});
 
   final String id;
   final String thumbhash;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final imageUrl = getThumbnailUrlForRemoteId(id);
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -42,7 +44,9 @@ class AssetMarkerIcon extends StatelessWidget {
                   backgroundColor: context.colorScheme.onSurface,
                   child: CircleAvatar(
                     radius: constraints.maxHeight * 0.37,
-                    backgroundImage: RemoteImageProvider(url: imageUrl),
+                    backgroundImage: ref
+                        .watch(remoteImageProviderFactoryProvider)
+                        .image(url: imageUrl, edited: true, kind: MediaRequestKind.thumbnail),
                   ),
                 ),
               ),

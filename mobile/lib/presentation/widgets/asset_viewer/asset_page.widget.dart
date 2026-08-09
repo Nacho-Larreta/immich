@@ -5,6 +5,7 @@ import 'package:auto_route/auto_route.dart';
 import 'package:flutter/gestures.dart' show Drag, kTouchSlop;
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:immich_mobile/providers/remote_media.provider.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/media_request.model.dart';
 import 'package:immich_mobile/domain/models/events.model.dart';
@@ -299,6 +300,7 @@ class _AssetPageState extends ConsumerState<AssetPage> {
           asset,
           localMedia: ref.read(localMediaProvider),
           localPolicy: LocalMediaPolicy.allowICloud,
+          remoteImages: ref.watch(remoteImageProviderFactoryProvider),
           size: size,
         ),
         heroAttributes: heroAttributes,
@@ -323,6 +325,7 @@ class _AssetPageState extends ConsumerState<AssetPage> {
             asset: asset,
             localMedia: ref.read(localMediaProvider),
             localPolicy: LocalMediaPolicy.allowICloud,
+            remoteImages: ref.watch(remoteImageProviderFactoryProvider),
             fit: BoxFit.contain,
           ),
         ),
@@ -358,6 +361,7 @@ class _AssetPageState extends ConsumerState<AssetPage> {
             asset,
             localMedia: ref.read(localMediaProvider),
             localPolicy: LocalMediaPolicy.allowICloud,
+            remoteImages: ref.watch(remoteImageProviderFactoryProvider),
             size: size,
           ),
           fit: BoxFit.contain,

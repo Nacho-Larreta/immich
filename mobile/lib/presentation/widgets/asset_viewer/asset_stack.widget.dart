@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:immich_mobile/providers/remote_media.provider.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/media_request.model.dart';
 import 'package:immich_mobile/providers/asset_viewer/asset_viewer.provider.dart';
@@ -86,6 +87,7 @@ class _StackItemState extends ConsumerState<_StackItem> {
       asset: widget.asset,
       localMedia: ref.read(localMediaProvider),
       localPolicy: LocalMediaPolicy.localOnly,
+      remoteImages: ref.watch(remoteImageProviderFactoryProvider),
       size: const Size(60, 40),
     );
     if (widget.asset.isVideo) {

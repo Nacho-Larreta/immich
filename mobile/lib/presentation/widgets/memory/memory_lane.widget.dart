@@ -1,6 +1,7 @@
 import 'package:auto_route/auto_route.dart';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:immich_mobile/providers/remote_media.provider.dart';
 import 'package:immich_mobile/domain/models/memory.model.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
 import 'package:immich_mobile/presentation/pages/drift_memory.page.dart';
@@ -63,6 +64,7 @@ class DriftMemoryCard extends ConsumerWidget {
               child: Thumbnail.remote(
                 remoteId: memory.assets[0].id,
                 thumbhash: memory.assets[0].thumbHash ?? "",
+                remoteImages: ref.watch(remoteImageProviderFactoryProvider),
                 fit: BoxFit.cover,
               ),
             ),

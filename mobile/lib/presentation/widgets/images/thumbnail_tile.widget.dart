@@ -1,6 +1,7 @@
 import 'package:auto_route/auto_route.dart';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:immich_mobile/providers/remote_media.provider.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/setting.model.dart';
 import 'package:immich_mobile/domain/models/media_request.model.dart';
@@ -113,6 +114,7 @@ class _ThumbnailTileState extends ConsumerState<ThumbnailTile> {
                       asset: asset,
                       localMedia: ref.read(localMediaProvider),
                       localPolicy: LocalMediaPolicy.localOnly,
+                      remoteImages: ref.watch(remoteImageProviderFactoryProvider),
                       size: widget.size,
                     ),
                     // Placeholderbuilder used to hide indicators on first hero animation, since flightShuttleBuilder isn't called until both source and destination hero exist in widget tree.

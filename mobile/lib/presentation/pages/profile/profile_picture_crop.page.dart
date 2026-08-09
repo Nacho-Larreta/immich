@@ -6,6 +6,7 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:immich_mobile/providers/remote_media.provider.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/media_request.model.dart';
@@ -129,6 +130,7 @@ class _ProfilePictureCropPageState extends ConsumerState<ProfilePictureCropPage>
         widget.asset,
         localMedia: ref.read(localMediaProvider),
         localPolicy: LocalMediaPolicy.allowICloud,
+        remoteImages: ref.watch(remoteImageProviderFactoryProvider),
       ),
     );
 

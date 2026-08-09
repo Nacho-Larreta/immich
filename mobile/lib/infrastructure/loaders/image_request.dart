@@ -7,10 +7,11 @@ import 'package:flutter/services.dart';
 import 'package:ffi/ffi.dart';
 import 'package:immich_mobile/domain/interfaces/cancellable_request.interface.dart';
 import 'package:immich_mobile/domain/interfaces/local_media.interface.dart';
+import 'package:immich_mobile/domain/interfaces/remote_media.interface.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/domain/models/offline_result.model.dart';
 import 'package:immich_mobile/domain/models/media_request.model.dart' as media_domain;
 import 'package:immich_mobile/platform/local_image_api.g.dart' as local_api;
-import 'package:immich_mobile/platform/remote_image_api.g.dart' as remote_api;
 import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
 
 part 'local_image_request.dart';
@@ -40,20 +41,6 @@ abstract class ImageRequest {
   }
 
   void _onCancelled();
-
-  Future<(ui.Codec, ui.ImageDescriptor)?> _codecFromEncodedPlatformImage(int address, int length) async {
-    final pointer = Pointer<Uint8>.fromAddress(address);
-    if (_isCancelled) {
-      malloc.free(pointer);
-      return null;
-    }
-
-    try {
-      return await _codecFromEncodedBytes(pointer.asTypedList(length));
-    } finally {
-      malloc.free(pointer);
-    }
-  }
 
   Future<(ui.Codec, ui.ImageDescriptor)?> _codecFromEncodedBytes(Uint8List bytes) async {
     if (_isCancelled) {
@@ -90,19 +77,6 @@ abstract class ImageRequest {
       } finally {
         buffer.dispose();
       }
-    }
-  }
-
-  Future<ui.FrameInfo?> _fromEncodedPlatformImage(int address, int length) async {
-    final pointer = Pointer<Uint8>.fromAddress(address);
-    if (_isCancelled) {
-      malloc.free(pointer);
-      return null;
-    }
-    try {
-      return await _fromEncodedBytes(pointer.asTypedList(length));
-    } finally {
-      malloc.free(pointer);
     }
   }
 

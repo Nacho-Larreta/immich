@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:async/async.dart';
@@ -5,6 +6,7 @@ import 'package:flutter/widgets.dart';
 import 'package:immich_mobile/domain/interfaces/local_media.interface.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/media_request.model.dart';
+import 'package:immich_mobile/domain/models/offline_result.model.dart';
 import 'package:immich_mobile/domain/models/setting.model.dart';
 import 'package:immich_mobile/domain/services/setting.service.dart';
 import 'package:immich_mobile/infrastructure/loaders/image_request.dart';
@@ -45,10 +47,18 @@ mixin CancellableImageProviderMixin<T extends Object> on CancellableImageProvide
       return cachedImage;
     }
 
-    completer.operation.valueOrCancellation().whenComplete(() {
-      cachedStream.removeListener(listener);
-      cachedOperation = null;
-    });
+    unawaited(
+      completer.operation.valueOrCancellation().then<void>(
+        (_) {
+          cachedStream.removeListener(listener);
+          cachedOperation = null;
+        },
+        onError: (Object _, StackTrace __) {
+          cachedStream.removeListener(listener);
+          cachedOperation = null;
+        },
+      ),
+    );
     cachedOperation = completer.operation;
     return null;
   }
@@ -71,9 +81,16 @@ mixin CancellableImageProviderMixin<T extends Object> on CancellableImageProvide
       if (isCancelled) {
         return;
       }
+      if (isRemoteMediaCacheMiss(e)) {
+        if (isFinal) {
+          isFinished = true;
+        }
+        scheduleMicrotask(() => PaintingBinding.instance.imageCache.evict(this));
+        rethrow;
+      }
       if (isFinal) {
         isFinished = true;
-        PaintingBinding.instance.imageCache.evict(this);
+        scheduleMicrotask(() => PaintingBinding.instance.imageCache.evict(this));
         rethrow;
       }
       _log.warning('Non-fatal image load error', e, stack);
@@ -97,6 +114,13 @@ mixin CancellableImageProviderMixin<T extends Object> on CancellableImageProvide
       isFinished = isFinal;
       return codec;
     } catch (e) {
+      if (isRemoteMediaCacheMiss(e)) {
+        if (isFinal) {
+          isFinished = true;
+        }
+        PaintingBinding.instance.imageCache.evict(this);
+        rethrow;
+      }
       if (isFinal) {
         isFinished = true;
         PaintingBinding.instance.imageCache.evict(this);
@@ -120,6 +144,9 @@ mixin CancellableImageProviderMixin<T extends Object> on CancellableImageProvide
         yield cachedImage;
       }
     } catch (e, stack) {
+      if (isRemoteMediaCacheMiss(e)) {
+        return;
+      }
       _log.severe('Error loading initial image', e, stack);
     } finally {
       this.cachedOperation = null;
@@ -149,10 +176,14 @@ mixin CancellableImageProviderMixin<T extends Object> on CancellableImageProvide
   }
 }
 
+bool isRemoteMediaCacheMiss(Object error) =>
+    error is RemoteMediaLoadFailure && error.code == OfflineErrorCode.cacheMiss;
+
 ImageProvider getFullImageProvider(
   BaseAsset asset, {
   required LocalMediaPort<OwnedLocalMediaPayload> localMedia,
   required LocalMediaPolicy localPolicy,
+  required RemoteImageProviderFactory remoteImages,
   Size size = const Size(1080, 1920),
   bool edited = true,
 }) {
@@ -180,7 +211,7 @@ ImageProvider getFullImageProvider(
     } else {
       throw ArgumentError("Unsupported asset type: ${asset.runtimeType}");
     }
-    provider = RemoteFullImageProvider(
+    provider = remoteImages.full(
       assetId: assetId,
       thumbhash: thumbhash,
       assetType: asset.type,
@@ -196,6 +227,7 @@ ImageProvider? getThumbnailImageProvider(
   BaseAsset asset, {
   required LocalMediaPort<OwnedLocalMediaPayload> localMedia,
   required LocalMediaPolicy localPolicy,
+  required RemoteImageProviderFactory remoteImages,
   Size size = kThumbnailResolution,
   bool edited = true,
 }) {
@@ -206,7 +238,7 @@ ImageProvider? getThumbnailImageProvider(
 
   final assetId = asset is RemoteAsset ? asset.id : (asset as LocalAsset).remoteId;
   final thumbhash = asset is RemoteAsset ? asset.thumbHash ?? "" : "";
-  return assetId != null ? RemoteImageProvider.thumbnail(assetId: assetId, thumbhash: thumbhash, edited: edited) : null;
+  return assetId != null ? remoteImages.thumbnail(assetId: assetId, thumbhash: thumbhash, edited: edited) : null;
 }
 
 bool _shouldUseLocalAsset(BaseAsset asset) =>

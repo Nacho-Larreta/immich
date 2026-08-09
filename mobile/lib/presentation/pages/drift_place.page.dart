@@ -7,6 +7,7 @@ import 'package:immich_mobile/extensions/translate_extensions.dart';
 import 'package:immich_mobile/pages/common/large_leading_tile.dart';
 import 'package:immich_mobile/presentation/widgets/images/thumbnail.widget.dart';
 import 'package:immich_mobile/providers/infrastructure/asset.provider.dart';
+import 'package:immich_mobile/providers/remote_media.provider.dart';
 import 'package:immich_mobile/routing/router.dart';
 import 'package:immich_mobile/widgets/common/search_field.dart';
 import 'package:immich_mobile/widgets/map/map_thumbnail.dart';
@@ -152,13 +153,13 @@ class _PlaceList extends ConsumerWidget {
   }
 }
 
-class _PlaceTile extends StatelessWidget {
+class _PlaceTile extends ConsumerWidget {
   const _PlaceTile({required this.place});
 
   final (String, String) place;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     return LargeLeadingTile(
       onTap: () => context.pushRoute(DriftPlaceDetailRoute(place: place.$1)),
       title: Text(place.$1, style: context.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w500)),
@@ -167,7 +168,12 @@ class _PlaceTile extends StatelessWidget {
         child: SizedBox(
           width: 80,
           height: 80,
-          child: Thumbnail.remote(remoteId: place.$2, fit: BoxFit.cover, thumbhash: ""),
+          child: Thumbnail.remote(
+            remoteId: place.$2,
+            fit: BoxFit.cover,
+            thumbhash: "",
+            remoteImages: ref.watch(remoteImageProviderFactoryProvider),
+          ),
         ),
       ),
     );

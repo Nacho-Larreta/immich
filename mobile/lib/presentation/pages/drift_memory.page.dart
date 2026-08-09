@@ -4,6 +4,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:immich_mobile/providers/remote_media.provider.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/media_request.model.dart';
 import 'package:immich_mobile/domain/models/memory.model.dart';
@@ -154,6 +155,7 @@ class DriftMemoryPage extends HookConsumerWidget {
           asset,
           localMedia: ref.read(localMediaProvider),
           localPolicy: LocalMediaPolicy.localOnly,
+          remoteImages: ref.watch(remoteImageProviderFactoryProvider),
           size: Size(size.width, size.height),
         ),
         context,

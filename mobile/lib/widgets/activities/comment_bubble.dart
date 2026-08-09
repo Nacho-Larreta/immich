@@ -4,10 +4,10 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/extensions/datetime_extensions.dart';
 import 'package:immich_mobile/models/activities/activity.model.dart';
-import 'package:immich_mobile/presentation/widgets/images/remote_image_provider.dart';
 import 'package:immich_mobile/providers/activity.provider.dart';
 import 'package:immich_mobile/providers/activity_service.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/current_album.provider.dart';
+import 'package:immich_mobile/providers/remote_media.provider.dart';
 import 'package:immich_mobile/providers/user.provider.dart';
 import 'package:immich_mobile/widgets/activities/dismissible_activity.dart';
 import 'package:immich_mobile/widgets/common/user_circle_avatar.dart';
@@ -56,7 +56,9 @@ class CommentBubble extends ConsumerWidget {
               child: ClipRRect(
                 borderRadius: const BorderRadius.all(Radius.circular(10)),
                 child: Image(
-                  image: RemoteImageProvider.thumbnail(assetId: activity.assetId!, thumbhash: ""),
+                  image: ref
+                      .watch(remoteImageProviderFactoryProvider)
+                      .thumbnail(assetId: activity.assetId!, thumbhash: "", edited: true),
                   fit: BoxFit.cover,
                 ),
               ),
