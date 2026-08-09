@@ -2,11 +2,13 @@ import 'package:auto_route/auto_route.dart';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/domain/models/media_request.model.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
 import 'package:immich_mobile/presentation/widgets/images/thumbnail.widget.dart';
 import 'package:immich_mobile/providers/backup/drift_backup.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/asset.provider.dart';
+import 'package:immich_mobile/providers/local_media.provider.dart';
 import 'package:immich_mobile/utils/bytes_units.dart';
 import 'package:path/path.dart' as path;
 
@@ -518,7 +520,13 @@ class _CurrentUploadThumbnail extends ConsumerWidget {
             ),
             clipBehavior: Clip.antiAlias,
             child: snapshot.data != null
-                ? Thumbnail.fromAsset(asset: snapshot.data!, size: const Size(48, 48), fit: BoxFit.cover)
+                ? Thumbnail.fromAsset(
+                    asset: snapshot.data!,
+                    localMedia: ref.read(localMediaProvider),
+                    localPolicy: LocalMediaPolicy.localOnly,
+                    size: const Size(48, 48),
+                    fit: BoxFit.cover,
+                  )
                 : Icon(Icons.image, size: 24, color: context.colorScheme.primary),
           ),
         );
@@ -585,7 +593,13 @@ class FileDetailDialog extends ConsumerWidget {
                           borderRadius: const BorderRadius.all(Radius.circular(12)),
                         ),
                         child: asset != null
-                            ? Thumbnail.fromAsset(asset: asset, size: const Size(128, 128), fit: BoxFit.cover)
+                            ? Thumbnail.fromAsset(
+                                asset: asset,
+                                localMedia: ref.read(localMediaProvider),
+                                localPolicy: LocalMediaPolicy.localOnly,
+                                size: const Size(128, 128),
+                                fit: BoxFit.cover,
+                              )
                             : null,
                       ),
                     ),

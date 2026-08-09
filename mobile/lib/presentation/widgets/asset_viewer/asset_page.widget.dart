@@ -6,6 +6,7 @@ import 'package:flutter/gestures.dart' show Drag, kTouchSlop;
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/domain/models/media_request.model.dart';
 import 'package:immich_mobile/domain/models/events.model.dart';
 import 'package:immich_mobile/domain/utils/event_stream.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
@@ -21,6 +22,7 @@ import 'package:immich_mobile/providers/app_settings.provider.dart';
 import 'package:immich_mobile/providers/asset_viewer/is_motion_video_playing.provider.dart';
 import 'package:immich_mobile/services/app_settings.service.dart';
 import 'package:immich_mobile/providers/infrastructure/timeline.provider.dart';
+import 'package:immich_mobile/providers/local_media.provider.dart';
 import 'package:immich_mobile/widgets/common/immich_loading_indicator.dart';
 import 'package:immich_mobile/widgets/photo_view/photo_view.dart';
 
@@ -293,7 +295,12 @@ class _AssetPageState extends ConsumerState<AssetPage> {
       return PhotoView(
         key: Key(asset.heroTag),
         index: widget.index,
-        imageProvider: getFullImageProvider(asset, size: size),
+        imageProvider: getFullImageProvider(
+          asset,
+          localMedia: ref.read(localMediaProvider),
+          localPolicy: LocalMediaPolicy.allowICloud,
+          size: size,
+        ),
         heroAttributes: heroAttributes,
         loadingBuilder: (context, progress, index) => const Center(child: ImmichLoadingIndicator()),
         gaplessPlayback: true,
@@ -312,7 +319,12 @@ class _AssetPageState extends ConsumerState<AssetPage> {
         errorBuilder: (_, __, ___) => SizedBox(
           width: size.width,
           height: size.height,
-          child: Thumbnail.fromAsset(asset: asset, fit: BoxFit.contain),
+          child: Thumbnail.fromAsset(
+            asset: asset,
+            localMedia: ref.read(localMediaProvider),
+            localPolicy: LocalMediaPolicy.allowICloud,
+            fit: BoxFit.contain,
+          ),
         ),
       );
     }
@@ -342,7 +354,12 @@ class _AssetPageState extends ConsumerState<AssetPage> {
         asset: asset,
         isCurrent: isCurrent,
         image: Image(
-          image: getFullImageProvider(asset, size: size),
+          image: getFullImageProvider(
+            asset,
+            localMedia: ref.read(localMediaProvider),
+            localPolicy: LocalMediaPolicy.allowICloud,
+            size: size,
+          ),
           fit: BoxFit.contain,
           alignment: Alignment.center,
         ),

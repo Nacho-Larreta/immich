@@ -1,7 +1,9 @@
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:immich_mobile/domain/interfaces/local_media.interface.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/domain/models/media_request.model.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/extensions/theme_extensions.dart';
 import 'package:immich_mobile/presentation/widgets/images/image_provider.dart';
@@ -32,6 +34,8 @@ class Thumbnail extends StatefulWidget {
 
   Thumbnail.fromAsset({
     required BaseAsset? asset,
+    required LocalMediaPort<OwnedLocalMediaPayload> localMedia,
+    required LocalMediaPolicy localPolicy,
     this.fit = BoxFit.cover,
 
     /// The logical UI size of the thumbnail. This is only used to determine the ideal image resolution and does not affect the widget size.
@@ -43,7 +47,9 @@ class Thumbnail extends StatefulWidget {
          ),
          _ => null,
        },
-       imageProvider = asset == null ? null : getThumbnailImageProvider(asset, size: size);
+       imageProvider = asset == null
+           ? null
+           : getThumbnailImageProvider(asset, localMedia: localMedia, localPolicy: localPolicy, size: size);
 
   @override
   State<Thumbnail> createState() => _ThumbnailState();

@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/media_request.model.dart';
 
 void main() {
@@ -27,10 +28,43 @@ void main() {
       () => LocalMediaRequest(
         requestId: 1,
         assetId: '',
+        assetType: AssetType.image,
         policy: LocalMediaPolicy.localOnly,
-        kind: MediaRequestKind.thumbnail,
+        rendition: LocalMediaRendition.thumbnail(widthPx: 100, heightPx: 100),
       ),
       throwsA(isA<ArgumentError>()),
+    );
+  });
+
+  test('local request preserves an explicit valid thumbnail rendition', () {
+    final request = LocalMediaRequest(
+      requestId: 7,
+      assetId: 'asset-1',
+      assetType: AssetType.video,
+      policy: LocalMediaPolicy.localOnly,
+      rendition: LocalMediaRendition.thumbnail(widthPx: 320, heightPx: 180),
+    );
+
+    expect(request.assetType, AssetType.video);
+    expect(request.policy, LocalMediaPolicy.localOnly);
+    expect(request.rendition, isA<LocalMediaThumbnailRendition>());
+  });
+
+  test('local thumbnail rendition rejects zero dimensions without a sentinel', () {
+    expect(() => LocalMediaRendition.thumbnail(widthPx: 0, heightPx: 100), throwsArgumentError);
+    expect(() => LocalMediaRendition.thumbnail(widthPx: 100, heightPx: 0), throwsArgumentError);
+  });
+
+  test('local request only accepts image or video assets', () {
+    expect(
+      () => LocalMediaRequest(
+        requestId: 1,
+        assetId: 'asset-1',
+        assetType: AssetType.audio,
+        policy: LocalMediaPolicy.allowICloud,
+        rendition: const LocalMediaRendition.originalEncoded(),
+      ),
+      throwsArgumentError,
     );
   });
 

@@ -6,6 +6,7 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/domain/models/media_request.model.dart';
 import 'package:immich_mobile/domain/models/events.model.dart';
 import 'package:immich_mobile/domain/models/person.model.dart';
 import 'package:immich_mobile/domain/services/timeline.service.dart';
@@ -14,6 +15,7 @@ import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
 import 'package:immich_mobile/presentation/widgets/images/image_provider.dart';
 import 'package:immich_mobile/providers/infrastructure/timeline.provider.dart';
+import 'package:immich_mobile/providers/local_media.provider.dart';
 import 'package:immich_mobile/presentation/widgets/images/remote_image_provider.dart';
 import 'package:immich_mobile/providers/timeline/multiselect.provider.dart';
 import 'package:immich_mobile/utils/people.utils.dart';
@@ -352,16 +354,16 @@ class _ItemCountTextState extends ConsumerState<_ItemCountText> {
   }
 }
 
-class _RandomAssetBackground extends StatefulWidget {
+class _RandomAssetBackground extends ConsumerStatefulWidget {
   final TimelineService timelineService;
 
   const _RandomAssetBackground({required this.timelineService});
 
   @override
-  State<_RandomAssetBackground> createState() => _RandomAssetBackgroundState();
+  ConsumerState<_RandomAssetBackground> createState() => _RandomAssetBackgroundState();
 }
 
-class _RandomAssetBackgroundState extends State<_RandomAssetBackground> with TickerProviderStateMixin {
+class _RandomAssetBackgroundState extends ConsumerState<_RandomAssetBackground> with TickerProviderStateMixin {
   late AnimationController _zoomController;
   late AnimationController _crossFadeController;
   late Animation<double> _zoomAnimation;
@@ -512,7 +514,11 @@ class _RandomAssetBackgroundState extends State<_RandomAssetBackground> with Tic
                       height: double.infinity,
                       child: Image(
                         alignment: Alignment.topRight,
-                        image: getFullImageProvider(_currentAsset!),
+                        image: getFullImageProvider(
+                          _currentAsset!,
+                          localMedia: ref.read(localMediaProvider),
+                          localPolicy: LocalMediaPolicy.localOnly,
+                        ),
                         fit: BoxFit.cover,
                         frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
                           if (wasSynchronouslyLoaded || frame != null) {
@@ -539,7 +545,11 @@ class _RandomAssetBackgroundState extends State<_RandomAssetBackground> with Tic
                       height: double.infinity,
                       child: Image(
                         alignment: Alignment.topRight,
-                        image: getFullImageProvider(_nextAsset!),
+                        image: getFullImageProvider(
+                          _nextAsset!,
+                          localMedia: ref.read(localMediaProvider),
+                          localPolicy: LocalMediaPolicy.localOnly,
+                        ),
                         fit: BoxFit.cover,
                         frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
                           if (wasSynchronouslyLoaded || frame != null) {

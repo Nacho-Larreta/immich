@@ -23,6 +23,7 @@ import 'package:immich_mobile/presentation/widgets/asset_viewer/viewer_bottom_ap
 import 'package:immich_mobile/providers/cast.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/current_album.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/timeline.provider.dart';
+import 'package:immich_mobile/providers/local_media.provider.dart';
 import 'package:immich_mobile/widgets/photo_view/photo_view.dart';
 
 @RoutePage()
@@ -80,7 +81,11 @@ class AssetViewer extends ConsumerStatefulWidget {
 class _AssetViewerState extends ConsumerState<AssetViewer> {
   late final _heroOffset = widget.heroOffset ?? TabsRouterScope.of(context)?.controller.activeIndex ?? 0;
   late final _pageController = PageController(initialPage: widget.initialIndex);
-  late final _preloader = AssetPreloader(timelineService: ref.read(timelineServiceProvider), mounted: () => mounted);
+  late final _preloader = AssetPreloader(
+    timelineService: ref.read(timelineServiceProvider),
+    mounted: () => mounted,
+    localMedia: ref.read(localMediaProvider),
+  );
 
   late int _currentPage = widget.initialIndex;
   late int _totalAssets = ref.read(timelineServiceProvider).totalAssets;

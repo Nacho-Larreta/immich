@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/domain/models/media_request.model.dart';
 import 'package:immich_mobile/domain/models/memory.model.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
 import 'package:immich_mobile/providers/asset_viewer/asset_viewer.provider.dart';
@@ -12,6 +13,7 @@ import 'package:immich_mobile/presentation/widgets/images/image_provider.dart';
 import 'package:immich_mobile/presentation/widgets/memory/memory_bottom_info.widget.dart';
 import 'package:immich_mobile/presentation/widgets/memory/memory_card.widget.dart';
 import 'package:immich_mobile/providers/haptic_feedback.provider.dart';
+import 'package:immich_mobile/providers/local_media.provider.dart';
 import 'package:immich_mobile/widgets/memories/memory_epilogue.dart';
 import 'package:immich_mobile/widgets/memories/memory_progress_indicator.dart';
 
@@ -147,7 +149,16 @@ class DriftMemoryPage extends HookConsumerWidget {
 
       // Precache the asset
       final size = MediaQuery.sizeOf(context);
-      await precacheImage(getFullImageProvider(asset, size: Size(size.width, size.height)), context, size: size);
+      await precacheImage(
+        getFullImageProvider(
+          asset,
+          localMedia: ref.read(localMediaProvider),
+          localPolicy: LocalMediaPolicy.localOnly,
+          size: Size(size.width, size.height),
+        ),
+        context,
+        size: size,
+      );
     }
 
     // Precache the next page right away if we are on the first page

@@ -1,6 +1,10 @@
+import 'dart:math';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
+import 'package:immich_mobile/domain/interfaces/local_media.interface.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/domain/models/media_request.model.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/infrastructure/loaders/image_request.dart';
@@ -14,8 +18,16 @@ class LocalThumbProvider extends CancellableImageProvider<LocalThumbProvider>
   final String id;
   final Size size;
   final AssetType assetType;
+  final LocalMediaPort<OwnedLocalMediaPayload> media;
+  final LocalMediaPolicy policy;
 
-  LocalThumbProvider({required this.id, required this.assetType, this.size = kThumbnailResolution});
+  LocalThumbProvider({
+    required this.id,
+    required this.assetType,
+    required this.media,
+    required this.policy,
+    this.size = kThumbnailResolution,
+  });
 
   @override
   Future<LocalThumbProvider> obtainKey(ImageConfiguration configuration) {
@@ -35,7 +47,16 @@ class LocalThumbProvider extends CancellableImageProvider<LocalThumbProvider>
   }
 
   Stream<ImageInfo> _codec(LocalThumbProvider key, ImageDecoderCallback decode) {
-    final request = this.request = LocalImageRequest(localId: key.id, size: key.size, assetType: key.assetType);
+    final request = this.request = LocalImageRequest(
+      media: key.media,
+      assetId: key.id,
+      assetType: key.assetType,
+      policy: key.policy,
+      rendition: LocalMediaRendition.thumbnail(
+        widthPx: max(1, key.size.width.ceil()),
+        heightPx: max(1, key.size.height.ceil()),
+      ),
+    );
     return loadRequest(request, decode, isFinal: true);
   }
 
@@ -43,13 +64,17 @@ class LocalThumbProvider extends CancellableImageProvider<LocalThumbProvider>
   bool operator ==(Object other) {
     if (identical(this, other)) return true;
     if (other is LocalThumbProvider) {
-      return id == other.id;
+      return id == other.id &&
+          size == other.size &&
+          assetType == other.assetType &&
+          policy == other.policy &&
+          identical(media, other.media);
     }
     return false;
   }
 
   @override
-  int get hashCode => id.hashCode;
+  int get hashCode => Object.hash(id, size, assetType, policy, identityHashCode(media));
 }
 
 class LocalFullImageProvider extends CancellableImageProvider<LocalFullImageProvider>
@@ -58,8 +83,17 @@ class LocalFullImageProvider extends CancellableImageProvider<LocalFullImageProv
   final Size size;
   final AssetType assetType;
   final bool isAnimated;
+  final LocalMediaPort<OwnedLocalMediaPayload> media;
+  final LocalMediaPolicy policy;
 
-  LocalFullImageProvider({required this.id, required this.assetType, required this.size, required this.isAnimated});
+  LocalFullImageProvider({
+    required this.id,
+    required this.assetType,
+    required this.size,
+    required this.isAnimated,
+    required this.media,
+    required this.policy,
+  });
 
   @override
   Future<LocalFullImageProvider> obtainKey(ImageConfiguration configuration) {
@@ -72,7 +106,9 @@ class LocalFullImageProvider extends CancellableImageProvider<LocalFullImageProv
       return AnimatedImageStreamCompleter(
         stream: _animatedCodec(key, decode),
         scale: 1.0,
-        initialImage: getInitialImage(LocalThumbProvider(id: key.id, assetType: key.assetType)),
+        initialImage: getInitialImage(
+          LocalThumbProvider(id: key.id, assetType: key.assetType, media: key.media, policy: key.policy),
+        ),
         informationCollector: () => <DiagnosticsNode>[
           DiagnosticsProperty<ImageProvider>('Image provider', this),
           DiagnosticsProperty<String>('Id', key.id),
@@ -85,7 +121,9 @@ class LocalFullImageProvider extends CancellableImageProvider<LocalFullImageProv
 
     return OneFramePlaceholderImageStreamCompleter(
       _codec(key, decode),
-      initialImage: getInitialImage(LocalThumbProvider(id: key.id, assetType: key.assetType)),
+      initialImage: getInitialImage(
+        LocalThumbProvider(id: key.id, assetType: key.assetType, media: key.media, policy: key.policy),
+      ),
       informationCollector: () => <DiagnosticsNode>[
         DiagnosticsProperty<ImageProvider>('Image provider', this),
         DiagnosticsProperty<String>('Id', key.id),
@@ -106,9 +144,14 @@ class LocalFullImageProvider extends CancellableImageProvider<LocalFullImageProv
     final loadOriginal = Store.get(StoreKey.loadOriginal, false);
     final devicePixelRatio = PlatformDispatcher.instance.views.first.devicePixelRatio;
     var request = this.request = LocalImageRequest(
-      localId: key.id,
-      size: Size(size.width * devicePixelRatio, size.height * devicePixelRatio),
+      media: key.media,
+      assetId: key.id,
       assetType: key.assetType,
+      policy: key.policy,
+      rendition: LocalMediaRendition.thumbnail(
+        widthPx: max(1, (size.width * devicePixelRatio).ceil()),
+        heightPx: max(1, (size.height * devicePixelRatio).ceil()),
+      ),
     );
     yield* loadRequest(request, decode, isFinal: !loadOriginal);
 
@@ -120,7 +163,13 @@ class LocalFullImageProvider extends CancellableImageProvider<LocalFullImageProv
       return;
     }
 
-    request = this.request = LocalImageRequest(localId: key.id, assetType: key.assetType, size: Size.zero);
+    request = this.request = LocalImageRequest(
+      media: key.media,
+      assetId: key.id,
+      assetType: key.assetType,
+      policy: key.policy,
+      rendition: const LocalMediaRendition.originalEncoded(),
+    );
 
     yield* loadRequest(request, decode, isFinal: true);
   }
@@ -133,10 +182,28 @@ class LocalFullImageProvider extends CancellableImageProvider<LocalFullImageProv
     }
 
     final devicePixelRatio = PlatformDispatcher.instance.views.first.devicePixelRatio;
+    yield* _loadAnimatedMedia(key, decode, devicePixelRatio: devicePixelRatio);
+  }
+
+  @visibleForTesting
+  Stream<Object> loadAnimatedMediaForTesting(ImageDecoderCallback decode, {double devicePixelRatio = 1.0}) {
+    return _loadAnimatedMedia(this, decode, devicePixelRatio: devicePixelRatio);
+  }
+
+  Stream<Object> _loadAnimatedMedia(
+    LocalFullImageProvider key,
+    ImageDecoderCallback decode, {
+    required double devicePixelRatio,
+  }) async* {
     final previewRequest = request = LocalImageRequest(
-      localId: key.id,
-      size: Size(size.width * devicePixelRatio, size.height * devicePixelRatio),
+      media: key.media,
+      assetId: key.id,
       assetType: key.assetType,
+      policy: key.policy,
+      rendition: LocalMediaRendition.thumbnail(
+        widthPx: max(1, (size.width * devicePixelRatio).ceil()),
+        heightPx: max(1, (size.height * devicePixelRatio).ceil()),
+      ),
     );
     yield* loadRequest(previewRequest, decode, isFinal: false);
 
@@ -145,7 +212,13 @@ class LocalFullImageProvider extends CancellableImageProvider<LocalFullImageProv
     }
 
     // always try original for animated, since previews don't support animation
-    final originalRequest = request = LocalImageRequest(localId: key.id, size: Size.zero, assetType: key.assetType);
+    final originalRequest = request = LocalImageRequest(
+      media: key.media,
+      assetId: key.id,
+      assetType: key.assetType,
+      policy: key.policy,
+      rendition: const LocalMediaRendition.originalEncoded(),
+    );
     final codec = await loadCodecRequest(originalRequest, isFinal: true);
     if (codec == null) {
       if (isCancelled) return;
@@ -158,11 +231,16 @@ class LocalFullImageProvider extends CancellableImageProvider<LocalFullImageProv
   bool operator ==(Object other) {
     if (identical(this, other)) return true;
     if (other is LocalFullImageProvider) {
-      return id == other.id && size == other.size && isAnimated == other.isAnimated;
+      return id == other.id &&
+          size == other.size &&
+          assetType == other.assetType &&
+          isAnimated == other.isAnimated &&
+          policy == other.policy &&
+          identical(media, other.media);
     }
     return false;
   }
 
   @override
-  int get hashCode => id.hashCode ^ size.hashCode ^ isAnimated.hashCode;
+  int get hashCode => Object.hash(id, size, assetType, isAnimated, policy, identityHashCode(media));
 }

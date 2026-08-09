@@ -7,11 +7,13 @@ void main() {
       OfflineErrorCode.cacheMiss,
       OfflineErrorCode.mediaNotLocal,
       OfflineErrorCode.iCloudUnavailable,
+      OfflineErrorCode.mediaUnavailable,
       OfflineErrorCode.cancelled,
       OfflineErrorCode.timeout,
       OfflineErrorCode.serverUnavailable,
       OfflineErrorCode.wrongServer,
       OfflineErrorCode.unauthorized,
+      OfflineErrorCode.credentialPurgeFailed,
     ]);
   });
 

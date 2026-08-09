@@ -2,6 +2,7 @@ enum OfflineErrorCode {
   cacheMiss,
   mediaNotLocal,
   iCloudUnavailable,
+  mediaUnavailable,
   cancelled,
   timeout,
   serverUnavailable,

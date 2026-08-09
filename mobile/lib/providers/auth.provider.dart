@@ -17,6 +17,7 @@ import 'package:immich_mobile/providers/api.provider.dart';
 import 'package:immich_mobile/providers/cached_session.dart';
 import 'package:immich_mobile/providers/infrastructure/user.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
+import 'package:immich_mobile/providers/local_media.provider.dart';
 import 'package:immich_mobile/providers/server_reachability.provider.dart';
 import 'package:immich_mobile/providers/session_mutation.provider.dart';
 import 'package:immich_mobile/providers/backup/drift_backup.provider.dart';
@@ -46,7 +47,7 @@ final authProvider = StateNotifierProvider<AuthNotifier, AuthState>((ref) {
     ref,
     cachedSessionReader: StoreCachedSessionReader(Store, userService),
     invalidateSession: ref.read(serverReachabilityCoordinatorProvider).logout,
-    cancelLocalMedia: ref.read(localImageApiProvider).cancelAll,
+    cancelLocalMedia: ref.read(localMediaProvider).cancelAll,
     cancelRemoteMedia: ref.read(remoteImageApiProvider).cancelAll,
     stopBackup: ref.read(driftBackupProvider.notifier).stopForegroundBackup,
     disconnectWebsocket: ref.read(websocketProvider.notifier).disconnect,

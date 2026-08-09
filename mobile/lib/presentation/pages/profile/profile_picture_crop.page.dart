@@ -8,10 +8,12 @@ import 'package:fluttertoast/fluttertoast.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/domain/models/media_request.model.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/presentation/widgets/images/image_provider.dart';
 import 'package:immich_mobile/providers/auth.provider.dart';
 import 'package:immich_mobile/providers/backup/backup.provider.dart';
+import 'package:immich_mobile/providers/local_media.provider.dart';
 import 'package:immich_mobile/providers/upload_profile_image.provider.dart';
 import 'package:immich_mobile/providers/user.provider.dart';
 import 'package:immich_mobile/utils/image_converter.dart';
@@ -122,7 +124,13 @@ class _ProfilePictureCropPageState extends ConsumerState<ProfilePictureCropPage>
   @override
   Widget build(BuildContext context) {
     // Create Image widget from asset
-    final image = Image(image: getFullImageProvider(widget.asset));
+    final image = Image(
+      image: getFullImageProvider(
+        widget.asset,
+        localMedia: ref.read(localMediaProvider),
+        localPolicy: LocalMediaPolicy.allowICloud,
+      ),
+    );
 
     return Scaffold(
       appBar: AppBar(

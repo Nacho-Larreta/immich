@@ -1,15 +1,17 @@
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_hooks/flutter_hooks.dart';
+import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/domain/models/media_request.model.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/presentation/widgets/asset_viewer/video_viewer.widget.dart';
 import 'package:immich_mobile/presentation/widgets/images/full_image.widget.dart';
 import 'package:immich_mobile/presentation/widgets/images/image_provider.dart';
+import 'package:immich_mobile/providers/local_media.provider.dart';
 import 'package:immich_mobile/utils/hooks/blurhash_hook.dart';
 
-class DriftMemoryCard extends StatelessWidget {
+class DriftMemoryCard extends ConsumerWidget {
   final RemoteAsset asset;
   final String title;
   final bool showTitle;
@@ -26,7 +28,7 @@ class DriftMemoryCard extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     return Card(
       color: Colors.black,
       shape: const RoundedRectangleBorder(
@@ -54,7 +56,15 @@ class DriftMemoryCard extends StatelessWidget {
                 }
               }
 
-              if (asset.isImage) return FullImage(asset, fit: fit, size: const Size(double.infinity, double.infinity));
+              if (asset.isImage) {
+                return FullImage(
+                  asset,
+                  localMedia: ref.read(localMediaProvider),
+                  localPolicy: LocalMediaPolicy.localOnly,
+                  fit: fit,
+                  size: const Size(double.infinity, double.infinity),
+                );
+              }
 
               return Center(
                 child: AspectRatio(
@@ -64,7 +74,13 @@ class DriftMemoryCard extends StatelessWidget {
                     asset: asset,
                     isCurrent: isCurrent,
                     showControls: false,
-                    image: FullImage(asset, size: context.sizeData, fit: BoxFit.contain),
+                    image: FullImage(
+                      asset,
+                      localMedia: ref.read(localMediaProvider),
+                      localPolicy: LocalMediaPolicy.localOnly,
+                      size: context.sizeData,
+                      fit: BoxFit.contain,
+                    ),
                   ),
                 ),
               );
@@ -85,13 +101,13 @@ class DriftMemoryCard extends StatelessWidget {
   }
 }
 
-class _BlurredBackdrop extends HookWidget {
+class _BlurredBackdrop extends HookConsumerWidget {
   final RemoteAsset asset;
 
   const _BlurredBackdrop({required this.asset});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final blurhash = useDriftBlurHashRef(asset).value;
     if (blurhash != null) {
       // Use a nice cheap blur hash image decoration
@@ -110,7 +126,12 @@ class _BlurredBackdrop extends HookWidget {
         child: Container(
           decoration: BoxDecoration(
             image: DecorationImage(
-              image: getFullImageProvider(asset, size: Size(context.width, context.height)),
+              image: getFullImageProvider(
+                asset,
+                localMedia: ref.read(localMediaProvider),
+                localPolicy: LocalMediaPolicy.localOnly,
+                size: Size(context.width, context.height),
+              ),
               fit: BoxFit.cover,
             ),
           ),

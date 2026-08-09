@@ -5,7 +5,10 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:ffi/ffi.dart';
+import 'package:immich_mobile/domain/interfaces/cancellable_request.interface.dart';
+import 'package:immich_mobile/domain/interfaces/local_media.interface.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/domain/models/media_request.model.dart' as media_domain;
 import 'package:immich_mobile/platform/local_image_api.g.dart' as local_api;
 import 'package:immich_mobile/platform/remote_image_api.g.dart' as remote_api;
 import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
@@ -45,55 +48,86 @@ abstract class ImageRequest {
       return null;
     }
 
-    final ui.ImmutableBuffer buffer;
     try {
-      buffer = await ImmutableBuffer.fromUint8List(pointer.asTypedList(length));
+      return await _codecFromEncodedBytes(pointer.asTypedList(length));
     } finally {
       malloc.free(pointer);
     }
+  }
 
+  Future<(ui.Codec, ui.ImageDescriptor)?> _codecFromEncodedBytes(Uint8List bytes) async {
     if (_isCancelled) {
-      buffer.dispose();
       return null;
     }
 
-    final descriptor = await ui.ImageDescriptor.encoded(buffer);
-    buffer.dispose();
-    if (_isCancelled) {
-      descriptor.dispose();
-      return null;
+    final buffer = await ImmutableBuffer.fromUint8List(bytes);
+    ui.ImageDescriptor? descriptor;
+    ui.Codec? codec;
+    var transferred = false;
+    try {
+      if (_isCancelled) {
+        return null;
+      }
+      descriptor = await ui.ImageDescriptor.encoded(buffer);
+      if (_isCancelled) {
+        return null;
+      }
+      codec = await descriptor.instantiateCodec();
+      if (_isCancelled) {
+        return null;
+      }
+      transferred = true;
+      return (codec, descriptor);
+    } finally {
+      try {
+        if (!transferred) {
+          try {
+            codec?.dispose();
+          } finally {
+            descriptor?.dispose();
+          }
+        }
+      } finally {
+        buffer.dispose();
+      }
     }
-
-    final codec = await descriptor.instantiateCodec();
-    if (_isCancelled) {
-      descriptor.dispose();
-      codec.dispose();
-      return null;
-    }
-
-    return (codec, descriptor);
   }
 
   Future<ui.FrameInfo?> _fromEncodedPlatformImage(int address, int length) async {
-    final result = await _codecFromEncodedPlatformImage(address, length);
+    final pointer = Pointer<Uint8>.fromAddress(address);
+    if (_isCancelled) {
+      malloc.free(pointer);
+      return null;
+    }
+    try {
+      return await _fromEncodedBytes(pointer.asTypedList(length));
+    } finally {
+      malloc.free(pointer);
+    }
+  }
+
+  Future<ui.FrameInfo?> _fromEncodedBytes(Uint8List bytes) async {
+    final result = await _codecFromEncodedBytes(bytes);
     if (result == null) return null;
 
     final (codec, descriptor) = result;
-    if (_isCancelled) {
-      descriptor.dispose();
-      codec.dispose();
-      return null;
+    try {
+      if (_isCancelled) {
+        return null;
+      }
+      final frame = await codec.getNextFrame();
+      if (_isCancelled) {
+        frame.image.dispose();
+        return null;
+      }
+      return frame;
+    } finally {
+      try {
+        codec.dispose();
+      } finally {
+        descriptor.dispose();
+      }
     }
-
-    final frame = await codec.getNextFrame();
-    descriptor.dispose();
-    codec.dispose();
-    if (_isCancelled) {
-      frame.image.dispose();
-      return null;
-    }
-
-    return frame;
   }
 
   Future<ui.FrameInfo?> _fromDecodedPlatformImage(int address, int width, int height, int rowBytes) async {
@@ -103,44 +137,56 @@ abstract class ImageRequest {
       return null;
     }
 
-    final size = rowBytes * height;
-    final ui.ImmutableBuffer buffer;
     try {
-      buffer = await ImmutableBuffer.fromUint8List(pointer.asTypedList(size));
+      return await _fromDecodedBytes(pointer.asTypedList(rowBytes * height), width, height, rowBytes);
     } finally {
       malloc.free(pointer);
     }
+  }
 
+  Future<ui.FrameInfo?> _fromDecodedBytes(Uint8List bytes, int width, int height, int rowBytes) async {
     if (_isCancelled) {
-      buffer.dispose();
       return null;
     }
 
-    final descriptor = ui.ImageDescriptor.raw(
-      buffer,
-      width: width,
-      height: height,
-      rowBytes: rowBytes,
-      pixelFormat: ui.PixelFormat.rgba8888,
-    );
-    buffer.dispose();
-
-    final codec = await descriptor.instantiateCodec();
-    if (_isCancelled) {
-      descriptor.dispose();
-      codec.dispose();
-      return null;
+    final buffer = await ImmutableBuffer.fromUint8List(bytes);
+    ui.ImageDescriptor? descriptor;
+    ui.Codec? codec;
+    try {
+      if (_isCancelled) {
+        return null;
+      }
+      descriptor = ui.ImageDescriptor.raw(
+        buffer,
+        width: width,
+        height: height,
+        rowBytes: rowBytes,
+        pixelFormat: ui.PixelFormat.rgba8888,
+      );
+      if (_isCancelled) {
+        return null;
+      }
+      codec = await descriptor.instantiateCodec();
+      if (_isCancelled) {
+        return null;
+      }
+      final frame = await codec.getNextFrame();
+      if (_isCancelled) {
+        frame.image.dispose();
+        return null;
+      }
+      return frame;
+    } finally {
+      try {
+        codec?.dispose();
+      } finally {
+        try {
+          descriptor?.dispose();
+        } finally {
+          buffer.dispose();
+        }
+      }
     }
-
-    final frame = await codec.getNextFrame();
-    descriptor.dispose();
-    codec.dispose();
-    if (_isCancelled) {
-      frame.image.dispose();
-      return null;
-    }
-
-    return frame;
   }
 
   void _releaseNativeBuffer(int address) {

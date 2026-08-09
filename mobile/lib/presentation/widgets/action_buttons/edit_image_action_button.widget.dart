@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/constants/enums.dart';
 import 'package:immich_mobile/domain/models/asset_edit.model.dart';
+import 'package:immich_mobile/domain/models/media_request.model.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
 import 'package:immich_mobile/presentation/pages/edit/editor.provider.dart';
 import 'package:immich_mobile/presentation/widgets/action_buttons/base_action_button.widget.dart';
@@ -12,6 +13,7 @@ import 'package:immich_mobile/presentation/widgets/images/image_provider.dart';
 import 'package:immich_mobile/providers/asset_viewer/asset_viewer.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/action.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/asset.provider.dart';
+import 'package:immich_mobile/providers/local_media.provider.dart';
 import 'package:immich_mobile/routing/router.dart';
 
 class EditImageActionButton extends ConsumerWidget {
@@ -34,7 +36,12 @@ class EditImageActionButton extends ConsumerWidget {
         return;
       }
 
-      final imageProvider = getFullImageProvider(currentAsset, edited: false);
+      final imageProvider = getFullImageProvider(
+        currentAsset,
+        localMedia: ref.read(localMediaProvider),
+        localPolicy: LocalMediaPolicy.allowICloud,
+        edited: false,
+      );
 
       final image = Image(image: imageProvider);
       final (edits, exifInfo) = await (

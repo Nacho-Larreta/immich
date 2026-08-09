@@ -114,6 +114,9 @@ final class _LocalMediaPort implements LocalMediaPort<String> {
   CancellableMediaRequest<String> request(LocalMediaRequest request) {
     throw UnimplementedError();
   }
+
+  @override
+  Future<void> cancelAll() async {}
 }
 
 final class _RemoteMediaPort implements RemoteMediaPort<String> {

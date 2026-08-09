@@ -4,10 +4,12 @@ import 'package:auto_route/auto_route.dart';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/domain/models/media_request.model.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
 import 'package:immich_mobile/presentation/widgets/images/thumbnail.widget.dart';
 import 'package:immich_mobile/providers/infrastructure/album.provider.dart';
+import 'package:immich_mobile/providers/local_media.provider.dart';
 import 'package:immich_mobile/routing/router.dart';
 import 'package:immich_mobile/widgets/album/album_action_filled_button.dart';
 
@@ -131,7 +133,11 @@ class _DriftCreateAlbumPageState extends ConsumerState<DriftCreateAlbumPage> {
           final asset = selectedAssets.elementAt(index);
           return GestureDetector(
             onTap: onBackgroundTapped,
-            child: Thumbnail.fromAsset(asset: asset),
+            child: Thumbnail.fromAsset(
+              asset: asset,
+              localMedia: ref.read(localMediaProvider),
+              localPolicy: LocalMediaPolicy.localOnly,
+            ),
           );
         }, childCount: selectedAssets.length),
       ),

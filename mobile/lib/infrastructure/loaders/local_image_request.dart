@@ -1,14 +1,20 @@
 part of 'image_request.dart';
 
 class LocalImageRequest extends ImageRequest {
-  final String localId;
-  final int width;
-  final int height;
-  final AssetType assetType;
+  LocalImageRequest({
+    required this.media,
+    required this.assetId,
+    required this.assetType,
+    required this.policy,
+    required this.rendition,
+  });
 
-  LocalImageRequest({required this.localId, required ui.Size size, required this.assetType})
-    : width = size.width.toInt(),
-      height = size.height.toInt();
+  final LocalMediaPort<OwnedLocalMediaPayload> media;
+  final String assetId;
+  final AssetType assetType;
+  final media_domain.LocalMediaPolicy policy;
+  final media_domain.LocalMediaRendition rendition;
+  CancellableMediaRequest<OwnedLocalMediaPayload>? _operation;
 
   @override
   Future<ImageInfo?> load(ImageDecoderCallback decode, {double scale = 1.0}) async {
@@ -16,35 +22,21 @@ class LocalImageRequest extends ImageRequest {
       return null;
     }
 
-    final result = await localImageApi.requestImage(
-      local_api.LocalImageRequest(
-        assetId: localId,
-        requestId: requestId,
-        width: width,
-        height: height,
-        isVideo: assetType == AssetType.video,
-        preferEncoded: false,
-        policy: local_api.LocalImagePolicy.allowICloud,
-        kind: local_api.LocalImageRequestKind.thumbnail,
-      ),
-    );
-    final payload = _payloadFrom(result);
+    final payload = await _requestPayload();
     if (payload == null) {
       return null;
     }
 
-    final frame = switch (payload) {
-      local_api.LocalImagePayload(
-        pointer: final pointer,
-        width: final width?,
-        height: final height?,
-        rowBytes: final rowBytes?,
-      )
-          when pointer > 0 && width > 0 && height > 0 && rowBytes >= width * 4 =>
-        await _fromDecodedPlatformImage(pointer, width, height, rowBytes),
-      _ => _discardMalformedPayload(payload),
-    };
-    return frame == null ? null : ImageInfo(image: frame.image, scale: scale);
+    try {
+      final frame = switch (payload) {
+        OwnedRgbaLocalMediaPayload(:final bytes, :final widthPx, :final heightPx, :final rowBytes) =>
+          await _fromDecodedBytes(bytes, widthPx, heightPx, rowBytes),
+        OwnedEncodedLocalMediaPayload(:final bytes) => await _fromEncodedBytes(bytes),
+      };
+      return frame == null ? null : ImageInfo(image: frame.image, scale: scale);
+    } finally {
+      payload.release();
+    }
   }
 
   @override
@@ -53,49 +45,56 @@ class LocalImageRequest extends ImageRequest {
       return null;
     }
 
-    final result = await localImageApi.requestImage(
-      local_api.LocalImageRequest(
-        assetId: localId,
-        requestId: requestId,
-        width: width,
-        height: height,
-        isVideo: assetType == AssetType.video,
-        preferEncoded: true,
-        policy: local_api.LocalImagePolicy.allowICloud,
-        kind: local_api.LocalImageRequestKind.original,
-      ),
-    );
-    final payload = _payloadFrom(result);
+    final payload = await _requestPayload();
     if (payload == null) {
       return null;
     }
-
-    final (codec, _) = switch (payload) {
-      local_api.LocalImagePayload(pointer: final pointer, length: final length?) when pointer > 0 && length > 0 =>
-        await _codecFromEncodedPlatformImage(pointer, length) ?? (null, null),
-      _ => (_discardMalformedPayload(payload), null),
-    };
-    return codec;
+    try {
+      if (payload is! OwnedEncodedLocalMediaPayload) {
+        return null;
+      }
+      final result = await _codecFromEncodedBytes(payload.bytes);
+      if (result == null) {
+        return null;
+      }
+      final (codec, descriptor) = result;
+      try {
+        descriptor.dispose();
+      } on Object {
+        codec.dispose();
+        rethrow;
+      }
+      return codec;
+    } finally {
+      payload.release();
+    }
   }
 
   @override
-  Future<void> _onCancelled() {
-    return localImageApi.cancelRequest(requestId);
+  Future<void> _onCancelled() async {
+    try {
+      await _operation?.cancel();
+    } on Object {
+      return;
+    }
   }
 
-  local_api.LocalImagePayload? _payloadFrom(local_api.LocalImageResult result) {
-    final payload = result.payload;
-    if (payload == null || result.error != null) {
-      if (payload != null) {
-        _releaseNativeBuffer(payload.pointer);
-      }
+  Future<OwnedLocalMediaPayload?> _requestPayload() async {
+    final operation = _operation = media.request(
+      media_domain.LocalMediaRequest(
+        requestId: requestId,
+        assetId: assetId,
+        assetType: assetType,
+        policy: policy,
+        rendition: rendition,
+      ),
+    );
+    final result = await operation.result;
+    _operation = null;
+    if (_isCancelled) {
+      result.valueOrNull?.release();
       return null;
     }
-    return payload;
-  }
-
-  Null _discardMalformedPayload(local_api.LocalImagePayload payload) {
-    _releaseNativeBuffer(payload.pointer);
-    return null;
+    return result.valueOrNull;
   }
 }
