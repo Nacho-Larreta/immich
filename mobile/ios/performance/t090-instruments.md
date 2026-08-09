@@ -56,7 +56,25 @@ successful remove. A failed cleanup intentionally leaves the interval open, maki
 the leak visible in the trace. Payload format and names are static; payload values
 are integer kind codes only.
 
-## TC-017 cold launch
+## Executable evidence
+
+The executable manifest, artifact-integrity rules, capture names, and physical
+runbook live in `mobile/ios/performance/physical_gates/README.md`. Generated
+manifests, traces, exports, fixture media, and reports stay outside Git under a
+private `/private/tmp` directory. Device slots are always `D1` and `D2`; evidence
+must not contain device names, UDIDs, accounts, URLs, IP addresses, asset IDs,
+original paths, or personal media.
+
+The first real Xcode 26.5 trace must be exported with `xctrace export --toc` to a
+private transient file outside the evidence directory. The exact XPath and reducer
+for sanitized aggregate JSON are intentionally deferred until that TOC exists; do
+not copy a schema or XPath from another Xcode version and do not hand-author reducer
+output. Until both are frozen, trace-derived evidence is unverifiable and the gate
+is `INVALID` with `trace_reducer_unavailable`. The first reviewed TOC unlocks a
+reviewed code change that pins XPath, reducer ID/version, implementation, and the
+production registry entry; manifest data and CLI arguments cannot enable a reducer.
+
+## TC-017 / T091 cold launch
 
 For each device and each condition:
 
@@ -67,25 +85,41 @@ For each device and each condition:
 5. Sort the ten durations ascending. Nearest-rank p95 is item
    `ceil(0.95 * 10)`, therefore item 10.
 
-Pass when p95 is at most 1.5 seconds. A trace without either source timestamp is
-invalid, not a pass.
+Use the canonical name `T091-D1-airplane-r00-warmup.trace` and the corresponding
+slot/condition/run names from the generated template. Airplane and controlled
+black-hole p95 must be at most 1.5 seconds. Online is a control and has no additional
+threshold.
 
-## TC-018 gallery stress
+A freeze, crash, or missing `TimelineInteractive` is a failure, not an invalid
+capture. Only `device_disconnect`, `instruments_error`, or `trace_corrupt` can mark
+acquisition invalid. Preserve and hash that trace; one `-retry1` capture is allowed.
+A second invalid acquisition leaves the gate invalid.
 
-Capture baseline Resident Size and open-temporary count after stabilization. Run
-100 mixed gallery traversals, including local, cached remote, cancellation, and
-background/resume paths.
+## TC-013 / TC-018 / T092 gallery stress
+
+Use the device with lower physical memory. Only when physical memory is equal, use
+the device with the lower 30-second measured memory margin. Under controlled
+black-hole, capture one continuous run of exactly 100 fixture-only traversals. Take
+baseline after 30 seconds idle on the loaded timeline and final readings after
+another 30 seconds idle. Every tenth traversal backgrounds the app for at least five
+seconds before resume. Run separate controls of five online traversals, five
+airplane traversals, and five iCloud-only local requests.
+
+The iCloud-only oracle is a Photos cloud-badge asset requested through the local-only
+path: terminal `iCloudUnavailable` within one second, zero network bytes, followed
+immediately by a known-local thumbnail completing within one second.
 
 Pass only when:
 
 - no freeze or crash occurs;
 - active request intervals return to zero;
-- no more than four `LocalThumbnailPermit` and two original permit intervals
-  overlap;
+- `LocalThumbnailPermit` overlap is at most four;
+- `LocalOriginalPermit` overlap is at most two;
+- `OriginalExportPermit` overlap is at most two;
 - open `OriginalExportTemporary` intervals return to baseline;
 - final Resident Size is at most baseline plus 64 MiB.
 
-## TC-026 original share
+## TC-026 / T093 original share
 
 Use synthetic, non-personal 256 MiB and 1 GiB originals. Capture each fixture from
 request start until the lease is released or cleanup fails.
@@ -94,7 +128,37 @@ Generate and verify the exact-size originals with
 `mobile/ios/performance/fixtures/generate_t093_fixtures.py`; generated media stays
 under `/private/tmp` by default and must not be added to Git.
 
-Pass only when peak Resident Size is at most 96 MiB, the 1 GiB delta is at most
-1.5 times the 256 MiB delta, cancellation aborts the producer, request/permit
-intervals return to zero, and temporary intervals return to baseline. An open
-temporary interval is a cleanup failure and fails the run.
+On the limiting device, execute success 256 MiB, success 1 GiB, and cancel 1 GiB for
+both local PhotoKit and remote URLSession adapters. Cancel between 25% and 50%.
+
+Pass only when absolute peak Resident Size is at most 96 MiB, each adapter's 1 GiB
+success delta is at most 1.5 times its 256 MiB success delta, request/permit intervals
+return to zero, and temporary intervals return exactly to baseline. An open temporary
+interval is a cleanup failure and fails the run.
+
+For remote cancellation, Network Connections must show cumulative bytes unchanged
+for at least two seconds after cancellation and still below the exact 1 GiB
+Content-Length. Missing Network Connections evidence makes the gate invalid; bytes
+that continue or reach Content-Length fail it. Local cancellation uses prompt
+request/permit closure plus the focused native cancellation tests as its producer
+oracle.
+
+Local cancellation additionally requires a sanitized result from the focused
+`RunnerTests/LocalOriginalExporterTests` XCTest invocation, bound to the installed
+build's source revision and real exit code. Raw XCTest output stays in a mode-`0600`
+transient file outside evidence and is deleted after sanitization; manual booleans
+and opaque hashes are not proof.
+
+## TC-005 / TC-006 / TC-007 / T094 composite evidence
+
+Focused coordinator, reconciliation, lifecycle, and auth tests prove exactly one
+reconciliation, at most one coalesced rerun, and rejection of old-session
+completions. Physical traces prove black-hole to online, background/resume, and
+logout/login remain responsive and never visibly publish stale state on the primary
+device, with directed smoke on the second device. Do not add epoch or generation
+telemetry solely for this gate.
+
+Run the four exact Flutter test paths listed in `physical_gates/README.md` with
+`--machine`, but redirect raw JSONL to a mode-`0600` transient file outside evidence.
+Persist only the sanitizer's allowlisted JSON summary containing command identity,
+source revision, real exit code, and per-suite counts.
