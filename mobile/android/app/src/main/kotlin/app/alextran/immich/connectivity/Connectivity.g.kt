@@ -196,8 +196,9 @@ class FlutterError (
 ) : RuntimeException()
 
 enum class ConnectivityTransportAvailability(val raw: Int) {
-  UNAVAILABLE(0),
-  AVAILABLE(1);
+  UNKNOWN(0),
+  UNAVAILABLE(1),
+  AVAILABLE(2);
 
   companion object {
     fun ofRaw(raw: Int): ConnectivityTransportAvailability? {

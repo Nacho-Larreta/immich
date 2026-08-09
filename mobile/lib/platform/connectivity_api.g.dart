@@ -96,7 +96,7 @@ int _deepHash(Object? value) {
   return value.hashCode;
 }
 
-enum ConnectivityTransportAvailability { unavailable, available }
+enum ConnectivityTransportAvailability { unknown, unavailable, available }
 
 enum ConnectivityNetworkCapability { cellular, wifi, vpn, unmetered }
 

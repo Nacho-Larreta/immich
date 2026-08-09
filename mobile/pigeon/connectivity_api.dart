@@ -11,7 +11,7 @@ import 'package:pigeon/pigeon.dart';
     dartPackageName: 'immich_mobile',
   ),
 )
-enum ConnectivityTransportAvailability { unavailable, available }
+enum ConnectivityTransportAvailability { unknown, unavailable, available }
 
 enum ConnectivityNetworkCapability { cellular, wifi, vpn, unmetered }
 

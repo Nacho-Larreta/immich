@@ -161,8 +161,9 @@ func deepHashConnectivity(value: Any?, hasher: inout Hasher) {
 
 
 enum ConnectivityTransportAvailability: Int {
-  case unavailable = 0
-  case available = 1
+  case unknown = 0
+  case unavailable = 1
+  case available = 2
 }
 
 enum ConnectivityNetworkCapability: Int {

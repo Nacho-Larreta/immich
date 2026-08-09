@@ -1,60 +1,128 @@
 import Foundation
 import Network
 
-final class ConnectivityApiImpl: ConnectivityApi {
-  private let flutterApi: ConnectivityFlutterApi
-  private let queue = DispatchQueue(label: "ConnectivityMonitor")
-  private let lock = NSLock()
-  private var monitor: NWPathMonitor?
-  private var currentPath: NWPath?
+enum ConnectivityPathStatus {
+  case satisfied
+  case unsatisfied
+  case requiresConnection
+  case unknown
+}
 
-  init(flutterApi: ConnectivityFlutterApi) {
+struct ConnectivityPathValue {
+  let status: ConnectivityPathStatus
+  let usesCellular: Bool
+  let usesWifi: Bool
+  let usesOther: Bool
+  let isExpensive: Bool
+  let isConstrained: Bool
+}
+
+protocol ConnectivityPathMonitoring: AnyObject {
+  var pathUpdateHandler: ((ConnectivityPathValue) -> Void)? { get set }
+
+  func start(queue: DispatchQueue)
+  func cancel()
+}
+
+final class NetworkConnectivityPathMonitor: ConnectivityPathMonitoring {
+  private let monitor = NWPathMonitor()
+
+  var pathUpdateHandler: ((ConnectivityPathValue) -> Void)? {
+    didSet {
+      monitor.pathUpdateHandler = { [weak self] path in
+        self?.pathUpdateHandler?(ConnectivityPathValue(path))
+      }
+    }
+  }
+
+  func start(queue: DispatchQueue) {
+    monitor.start(queue: queue)
+  }
+
+  func cancel() {
+    monitor.cancel()
+  }
+}
+
+final class ConnectivityApiImpl: ConnectivityApi {
+  private let flutterApi: ConnectivityFlutterApiProtocol
+  private let monitorFactory: () -> ConnectivityPathMonitoring
+  private let lifecycleQueue = DispatchQueue(label: "ConnectivityMonitor.Lifecycle")
+  private let updateQueue = DispatchQueue(label: "ConnectivityMonitor.Updates")
+  private let lock = NSLock()
+  private var monitor: ConnectivityPathMonitoring?
+  private var currentPath: ConnectivityPathValue?
+  private var monitorRevision = 0
+
+  init(
+    flutterApi: ConnectivityFlutterApiProtocol,
+    monitorFactory: @escaping () -> ConnectivityPathMonitoring = {
+      NetworkConnectivityPathMonitor()
+    }
+  ) {
     self.flutterApi = flutterApi
+    self.monitorFactory = monitorFactory
   }
 
   deinit {
-    stop()
+    try? stop()
   }
 
-  func getSnapshot() -> ConnectivityTransportSnapshot {
+  func getSnapshot() throws -> ConnectivityTransportSnapshot {
     lock.lock()
     let path = currentPath
     lock.unlock()
     return Self.snapshot(for: path)
   }
 
-  func start() {
-    lock.lock()
-    guard monitor == nil else {
+  func start() throws {
+    lifecycleQueue.sync {
+      lock.lock()
+      guard monitor == nil else {
+        lock.unlock()
+        return
+      }
+
+      monitorRevision &+= 1
+      let revision = monitorRevision
+      let monitor = monitorFactory()
+      let monitorIdentifier = ObjectIdentifier(monitor)
+      monitor.pathUpdateHandler = { [weak self] path in
+        self?.receive(path, from: monitorIdentifier, revision: revision)
+      }
+      self.monitor = monitor
       lock.unlock()
-      return
+      monitor.start(queue: updateQueue)
     }
+  }
 
-    let monitor = NWPathMonitor()
-    monitor.pathUpdateHandler = { [weak self] path in
-      self?.receive(path)
+  func stop() throws {
+    lifecycleQueue.sync {
+      lock.lock()
+      monitorRevision &+= 1
+      let monitor = monitor
+      self.monitor = nil
+      currentPath = nil
+      lock.unlock()
+      monitor?.cancel()
     }
-    self.monitor = monitor
-    lock.unlock()
-    monitor.start(queue: queue)
   }
 
-  func stop() {
+  func dispose() throws {
+    try stop()
+  }
+
+  private func receive(
+    _ path: ConnectivityPathValue,
+    from monitorIdentifier: ObjectIdentifier,
+    revision: Int
+  ) {
     lock.lock()
-    let monitor = monitor
-    self.monitor = nil
-    currentPath = nil
-    lock.unlock()
-    monitor?.cancel()
-  }
-
-  func dispose() {
-    stop()
-  }
-
-  private func receive(_ path: NWPath) {
-    lock.lock()
-    guard monitor != nil else {
+    guard
+      let activeMonitor = monitor,
+      ObjectIdentifier(activeMonitor) == monitorIdentifier,
+      monitorRevision == revision
+    else {
       lock.unlock()
       return
     }
@@ -64,37 +132,59 @@ final class ConnectivityApiImpl: ConnectivityApi {
     flutterApi.onTransportChanged(snapshot: Self.snapshot(for: path)) { _ in }
   }
 
-  private static func snapshot(for path: NWPath?) -> ConnectivityTransportSnapshot {
-    guard let path, path.status == .satisfied else {
+  private static func snapshot(for path: ConnectivityPathValue?) -> ConnectivityTransportSnapshot {
+    guard let path else {
+      return ConnectivityTransportSnapshot(availability: .unknown, capabilities: [])
+    }
+    switch path.status {
+    case .unknown, .requiresConnection:
+      return ConnectivityTransportSnapshot(availability: .unknown, capabilities: [])
+    case .unsatisfied:
+      return ConnectivityTransportSnapshot(availability: .unavailable, capabilities: [])
+    case .satisfied:
       return ConnectivityTransportSnapshot(
-        availability: .unavailable,
-        capabilities: []
+        availability: .available,
+        capabilities: capabilities(for: path)
       )
     }
-
-    return ConnectivityTransportSnapshot(
-      availability: .available,
-      capabilities: capabilities(for: path)
-    )
   }
 
-  private static func capabilities(for path: NWPath) -> [ConnectivityNetworkCapability] {
+  private static func capabilities(
+    for path: ConnectivityPathValue
+  ) -> [ConnectivityNetworkCapability] {
     var capabilities: [ConnectivityNetworkCapability] = []
-    let isOnWifi = path.usesInterfaceType(.wifi)
-    let isOnCellular = path.usesInterfaceType(.cellular)
-
-    if isOnCellular {
+    if path.usesCellular {
       capabilities.append(.cellular)
     }
-    if isOnWifi {
+    if path.usesWifi {
       capabilities.append(.wifi)
     }
-    if path.usesInterfaceType(.other) {
+    if path.usesOther {
       capabilities.append(.vpn)
     }
-    if isOnWifi && !isOnCellular && !path.isExpensive && !path.isConstrained {
+    if path.usesWifi && !path.usesCellular && !path.isExpensive && !path.isConstrained {
       capabilities.append(.unmetered)
     }
     return capabilities
+  }
+}
+
+extension ConnectivityPathValue {
+  fileprivate init(_ path: NWPath) {
+    switch path.status {
+    case .satisfied:
+      status = .satisfied
+    case .unsatisfied:
+      status = .unsatisfied
+    case .requiresConnection:
+      status = .requiresConnection
+    @unknown default:
+      status = .unknown
+    }
+    usesCellular = path.usesInterfaceType(.cellular)
+    usesWifi = path.usesInterfaceType(.wifi)
+    usesOther = path.usesInterfaceType(.other)
+    isExpensive = path.isExpensive
+    isConstrained = path.isConstrained
   }
 }
