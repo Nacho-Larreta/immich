@@ -5,7 +5,7 @@ import 'package:immich_mobile/domain/services/store.service.dart';
 import 'package:immich_mobile/domain/services/user.service.dart';
 
 final class CachedSession {
-  CachedSession({required this.accessToken, required this.apiEndpoint, required this.user, this.deviceId});
+  const CachedSession({required this.accessToken, required this.apiEndpoint, required this.user, this.deviceId});
 
   final String accessToken;
   final Uri apiEndpoint;
@@ -18,7 +18,7 @@ abstract interface class CachedSessionReader {
 }
 
 final class StoreCachedSessionReader implements CachedSessionReader {
-  StoreCachedSessionReader(this._store, this._userService);
+  const StoreCachedSessionReader(this._store, this._userService);
 
   final StoreService _store;
   final UserService _userService;

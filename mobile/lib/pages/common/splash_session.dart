@@ -3,7 +3,7 @@ import 'dart:async';
 enum SplashDestination { timeline, login }
 
 final class SplashSessionBootstrap {
-  SplashSessionBootstrap({
+  const SplashSessionBootstrap({
     required bool Function() hydrateCachedSession,
     required Future<void> Function(SplashDestination destination) navigate,
     Future<void> Function()? triggerPostNavigationWork,
