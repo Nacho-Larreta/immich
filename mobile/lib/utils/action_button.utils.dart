@@ -46,6 +46,7 @@ class ActionButtonContext {
   final TimelineOrigin timelineOrigin;
   final ThemeData? originalTheme;
   final int selectedCount;
+  final bool canMutate;
 
   const ActionButtonContext({
     required this.asset,
@@ -61,6 +62,7 @@ class ActionButtonContext {
     this.timelineOrigin = TimelineOrigin.main,
     this.originalTheme,
     this.selectedCount = 1,
+    this.canMutate = true,
   });
 }
 
@@ -90,6 +92,9 @@ enum ActionButtonType {
   advancedInfo;
 
   bool shouldShow(ActionButtonContext context) {
+    if (!context.canMutate && _requiresRemoteMutation) {
+      return false;
+    }
     return switch (this) {
       ActionButtonType.advancedInfo => context.advancedTroubleshooting,
       ActionButtonType.share => true,
@@ -175,6 +180,24 @@ enum ActionButtonType {
       ActionButtonType.cast => context.isCasting || context.asset.hasRemote,
     };
   }
+
+  bool get _requiresRemoteMutation => switch (this) {
+    ActionButtonType.shareLink ||
+    ActionButtonType.setAlbumCover ||
+    ActionButtonType.upload ||
+    ActionButtonType.unstack ||
+    ActionButtonType.archive ||
+    ActionButtonType.unarchive ||
+    ActionButtonType.moveToLockFolder ||
+    ActionButtonType.removeFromLockFolder ||
+    ActionButtonType.removeFromAlbum ||
+    ActionButtonType.trash ||
+    ActionButtonType.deletePermanent ||
+    ActionButtonType.delete ||
+    ActionButtonType.likeActivity ||
+    ActionButtonType.setProfilePicture => true,
+    _ => false,
+  };
 
   ConsumerWidget buildButton(
     ActionButtonContext context, [

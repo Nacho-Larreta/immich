@@ -3,6 +3,7 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/domain/models/album/remote_album_scope.model.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
 import 'package:immich_mobile/models/activities/activity.model.dart';
 import 'package:immich_mobile/presentation/widgets/action_buttons/base_action_button.widget.dart';
@@ -20,10 +21,15 @@ class LikeActivityActionButton extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final album = ref.watch(currentRemoteAlbumProvider);
+    final albumScope = ref.watch(currentRemoteAlbumScopedProvider);
     final asset = ref.watch(assetViewerProvider.select((s) => s.currentAsset)) as RemoteAsset?;
     final user = ref.watch(currentUserProvider);
+    if (album == null || albumScope == null) {
+      return const SizedBox.shrink();
+    }
+    final activityScope = RemoteAlbumActivityScope(album: albumScope, assetId: asset?.id);
 
-    final activities = ref.watch(albumActivityProvider((album?.id ?? "", asset?.id)));
+    final activities = ref.watch(albumActivityProvider(activityScope));
 
     onTap(Activity? liked) async {
       if (user == null) {
@@ -31,12 +37,12 @@ class LikeActivityActionButton extends ConsumerWidget {
       }
 
       if (liked != null) {
-        await ref.read(albumActivityProvider((album?.id ?? "", asset?.id)).notifier).removeActivity(liked.id);
+        await ref.read(albumActivityProvider(activityScope).notifier).removeActivity(liked.id);
       } else {
-        await ref.read(albumActivityProvider((album?.id ?? "", asset?.id)).notifier).addLike();
+        await ref.read(albumActivityProvider(activityScope).notifier).addLike();
       }
 
-      ref.invalidate(albumActivityProvider((album?.id ?? "", asset?.id)));
+      ref.invalidate(albumActivityProvider(activityScope));
     }
 
     return activities.when(

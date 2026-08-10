@@ -8,14 +8,14 @@ class DriftPeopleRepository extends DriftDatabaseRepository {
   final Drift _db;
   const DriftPeopleRepository(this._db) : super(_db);
 
-  Future<DriftPerson?> get(String personId) async {
-    final query = _db.select(_db.personEntity)..where((row) => row.id.equals(personId));
+  Future<DriftPerson?> get(String personId, String ownerId) async {
+    final query = _db.select(_db.personEntity)..where((row) => row.id.equals(personId) & row.ownerId.equals(ownerId));
 
     final result = await query.getSingleOrNull();
     return result?.toDto();
   }
 
-  Future<List<DriftPerson>> getAssetPeople(String assetId) async {
+  Future<List<DriftPerson>> getAssetPeople(String assetId, String ownerId) async {
     final query =
         _db.select(_db.assetFaceEntity).join([
           innerJoin(_db.personEntity, _db.personEntity.id.equalsExp(_db.assetFaceEntity.personId)),
@@ -23,7 +23,8 @@ class DriftPeopleRepository extends DriftDatabaseRepository {
           _db.assetFaceEntity.assetId.equals(assetId) &
               _db.assetFaceEntity.isVisible.equals(true) &
               _db.assetFaceEntity.deletedAt.isNull() &
-              _db.personEntity.isHidden.equals(false),
+              _db.personEntity.isHidden.equals(false) &
+              _db.personEntity.ownerId.equals(ownerId),
         );
 
     return query.map((row) {
@@ -32,7 +33,7 @@ class DriftPeopleRepository extends DriftDatabaseRepository {
     }).get();
   }
 
-  Future<List<DriftPerson>> getAllPeople() async {
+  Future<List<DriftPerson>> getAllPeople(String ownerId) async {
     final people = _db.personEntity;
     final faces = _db.assetFaceEntity;
     final assets = _db.remoteAssetEntity;
@@ -44,6 +45,7 @@ class DriftPeopleRepository extends DriftDatabaseRepository {
           ])
           ..where(
             people.isHidden.equals(false) &
+                people.ownerId.equals(ownerId) &
                 assets.deletedAt.isNull() &
                 assets.visibility.equalsValue(AssetVisibility.timeline) &
                 faces.isVisible.equals(true) &
@@ -61,14 +63,14 @@ class DriftPeopleRepository extends DriftDatabaseRepository {
     }).get();
   }
 
-  Future<int> updateName(String personId, String name) {
-    final query = _db.update(_db.personEntity)..where((row) => row.id.equals(personId));
+  Future<int> updateName(String personId, String ownerId, String name) {
+    final query = _db.update(_db.personEntity)..where((row) => row.id.equals(personId) & row.ownerId.equals(ownerId));
 
     return query.write(PersonEntityCompanion(name: Value(name), updatedAt: Value(DateTime.now())));
   }
 
-  Future<int> updateBirthday(String personId, DateTime birthday) {
-    final query = _db.update(_db.personEntity)..where((row) => row.id.equals(personId));
+  Future<int> updateBirthday(String personId, String ownerId, DateTime birthday) {
+    final query = _db.update(_db.personEntity)..where((row) => row.id.equals(personId) & row.ownerId.equals(ownerId));
 
     return query.write(PersonEntityCompanion(birthDate: Value(birthday), updatedAt: Value(DateTime.now())));
   }

@@ -8,6 +8,8 @@ import 'package:immich_mobile/infrastructure/repositories/local_album.repository
 import 'package:immich_mobile/infrastructure/repositories/remote_album.repository.dart';
 import 'package:immich_mobile/providers/infrastructure/db.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/remote_album.provider.dart';
+import 'package:immich_mobile/providers/server_access.provider.dart';
+import 'package:immich_mobile/providers/user.provider.dart';
 import 'package:immich_mobile/repositories/drift_album_api_repository.dart';
 
 final localAlbumRepository = Provider<DriftLocalAlbumRepository>(
@@ -39,7 +41,7 @@ final remoteAlbumServiceProvider = Provider<RemoteAlbumService>(
 
 final remoteAlbumProvider = NotifierProvider<RemoteAlbumNotifier, RemoteAlbumState>(
   RemoteAlbumNotifier.new,
-  dependencies: [remoteAlbumServiceProvider],
+  dependencies: [remoteAlbumServiceProvider, remoteViewerScopeProvider, currentUserProvider, serverAccessProvider],
 );
 
 final albumsContainingAssetProvider = FutureProvider.family<List<RemoteAlbum>, String>(

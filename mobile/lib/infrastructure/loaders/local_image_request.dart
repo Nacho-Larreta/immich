@@ -1,5 +1,14 @@
 part of 'image_request.dart';
 
+final class LocalMediaLoadFailure implements Exception {
+  const LocalMediaLoadFailure(this.code);
+
+  final OfflineErrorCode code;
+
+  @override
+  String toString() => 'LocalMediaLoadFailure(${code.name})';
+}
+
 class LocalImageRequest extends ImageRequest {
   LocalImageRequest({
     required this.media,
@@ -80,21 +89,48 @@ class LocalImageRequest extends ImageRequest {
   }
 
   Future<OwnedLocalMediaPayload?> _requestPayload() async {
-    final operation = _operation = media.request(
-      media_domain.LocalMediaRequest(
-        requestId: requestId,
-        assetId: assetId,
-        assetType: assetType,
-        policy: policy,
-        rendition: rendition,
-      ),
-    );
-    final result = await operation.result;
-    _operation = null;
-    if (_isCancelled) {
-      result.valueOrNull?.release();
-      return null;
+    final maxAttempts =
+        policy == media_domain.LocalMediaPolicy.localOnly && rendition is media_domain.LocalMediaThumbnailRendition
+        ? 2
+        : 1;
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (_isCancelled) {
+        return null;
+      }
+
+      final operation = media.request(
+        media_domain.LocalMediaRequest(
+          requestId: requestId,
+          assetId: assetId,
+          assetType: assetType,
+          policy: policy,
+          rendition: rendition,
+        ),
+      );
+      _operation = operation;
+      final result = await operation.result;
+      if (identical(_operation, operation)) {
+        _operation = null;
+      }
+      if (_isCancelled) {
+        result.valueOrNull?.release();
+        return null;
+      }
+
+      switch (result) {
+        case OfflineSuccess<OwnedLocalMediaPayload>(:final value):
+          return value;
+        case OfflineFailure<OwnedLocalMediaPayload>(:final error):
+          if (attempt < maxAttempts && _isRetryableThumbnailFailure(error)) {
+            continue;
+          }
+          throw LocalMediaLoadFailure(error);
+      }
     }
-    return result.valueOrNull;
+
+    throw StateError('Local media request exhausted without a result');
   }
+
+  bool _isRetryableThumbnailFailure(OfflineErrorCode error) =>
+      error == OfflineErrorCode.timeout || error == OfflineErrorCode.mediaUnavailable;
 }

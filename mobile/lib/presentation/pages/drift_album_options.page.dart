@@ -7,29 +7,60 @@ import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/models/album/album.model.dart';
+import 'package:immich_mobile/domain/models/album/remote_album_scope.model.dart';
+import 'package:immich_mobile/domain/models/server_access.model.dart';
 import 'package:immich_mobile/domain/models/user.model.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/extensions/theme_extensions.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
 import 'package:immich_mobile/presentation/pages/drift_user_selection.page.dart';
-import 'package:immich_mobile/providers/auth.provider.dart';
+import 'package:immich_mobile/presentation/widgets/album/remote_album_scope_boundary.widget.dart';
+import 'package:immich_mobile/presentation/widgets/server/server_access_boundary.widget.dart';
 import 'package:immich_mobile/providers/infrastructure/album.provider.dart';
-import 'package:immich_mobile/providers/infrastructure/current_album.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/remote_album.provider.dart';
+import 'package:immich_mobile/providers/server_access.provider.dart';
+import 'package:immich_mobile/providers/server_reachability.provider.dart';
 import 'package:immich_mobile/providers/user.provider.dart';
 import 'package:immich_mobile/routing/router.dart';
 import 'package:immich_mobile/widgets/common/immich_toast.dart';
 import 'package:immich_mobile/widgets/common/user_circle_avatar.dart';
 
 @RoutePage()
-class DriftAlbumOptionsPage extends HookConsumerWidget {
+class DriftAlbumOptionsPage extends ConsumerWidget {
   final RemoteAlbum album;
   const DriftAlbumOptionsPage({super.key, required this.album});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final sharedUsersAsync = ref.watch(remoteAlbumSharedUsersProvider(album.id));
-    final userId = ref.watch(authProvider).userId;
+    final access = ref.watch(serverAccessProvider);
+    if (!access.allows(ServerCapability.cachedRead)) {
+      return _UnavailableAlbumOptions(access: access);
+    }
+
+    return RemoteAlbumScopeBoundary(
+      albumId: album.id,
+      loadingBuilder: (_) => const Scaffold(body: Center(child: CircularProgressIndicator.adaptive())),
+      unavailableBuilder: (_) => _UnavailableAlbumOptions(access: access),
+      builder: (_, scope, resolvedAlbum) => _ResolvedAlbumOptionsPage(
+        album: resolvedAlbum,
+        scope: scope,
+        canMutate: access.allows(ServerCapability.remoteMutation),
+      ),
+    );
+  }
+}
+
+class _ResolvedAlbumOptionsPage extends HookConsumerWidget {
+  const _ResolvedAlbumOptionsPage({required this.album, required this.scope, required this.canMutate});
+
+  final RemoteAlbum album;
+  final RemoteAlbumScope scope;
+  final bool canMutate;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final sharedUsersAsync = ref.watch(remoteAlbumSharedUsersProvider(scope));
+    final userId = scope.viewerId;
     final activityEnabled = useState(album.isActivityEnabled);
     final isOwner = album.ownerId == userId;
 
@@ -55,7 +86,7 @@ class DriftAlbumOptionsPage extends HookConsumerWidget {
     void removeUserFromAlbum(UserDto user) async {
       try {
         await ref.read(remoteAlbumProvider.notifier).removeUser(album.id, user.id);
-        ref.invalidate(remoteAlbumSharedUsersProvider(album.id));
+        ref.invalidate(remoteAlbumSharedUsersProvider(scope));
       } catch (_) {
         showErrorMessage();
       }
@@ -81,7 +112,7 @@ class DriftAlbumOptionsPage extends HookConsumerWidget {
           );
         }
 
-        ref.invalidate(remoteAlbumSharedUsersProvider(album.id));
+        ref.invalidate(remoteAlbumSharedUsersProvider(scope));
       } catch (e) {
         ImmichToast.show(
           context: context,
@@ -94,7 +125,7 @@ class DriftAlbumOptionsPage extends HookConsumerWidget {
     void handleUserClick(UserDto user) {
       var actions = [];
 
-      if (user.id == userId) {
+      if (canMutate && user.id == userId) {
         actions = [
           ListTile(
             leading: const Icon(Icons.exit_to_app_rounded),
@@ -104,7 +135,7 @@ class DriftAlbumOptionsPage extends HookConsumerWidget {
         ];
       }
 
-      if (isOwner) {
+      if (canMutate && isOwner) {
         actions = [
           ListTile(
             leading: const Icon(Icons.person_remove_rounded),
@@ -172,8 +203,10 @@ class DriftAlbumOptionsPage extends HookConsumerWidget {
               leading: UserCircleAvatar(user: user),
               title: Text(user.name, style: const TextStyle(fontWeight: FontWeight.w500)),
               subtitle: Text(user.email, style: TextStyle(color: context.colorScheme.onSurfaceSecondary)),
-              trailing: userId == user.id || isOwner ? const Icon(Icons.more_horiz_rounded) : const SizedBox(),
-              onTap: userId == user.id || isOwner ? () => handleUserClick(user) : null,
+              trailing: canMutate && (userId == user.id || isOwner)
+                  ? const Icon(Icons.more_horiz_rounded)
+                  : const SizedBox(),
+              onTap: canMutate && (userId == user.id || isOwner) ? () => handleUserClick(user) : null,
             );
           },
         ),
@@ -188,51 +221,67 @@ class DriftAlbumOptionsPage extends HookConsumerWidget {
       );
     }
 
-    return ProviderScope(
-      overrides: [currentRemoteAlbumScopedProvider.overrideWithValue(album)],
-      child: Scaffold(
-        appBar: AppBar(
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back_ios_new_rounded),
-            onPressed: () => context.maybePop(null),
-          ),
-          centerTitle: true,
-          title: Text("options".t(context: context)),
+    return Scaffold(
+      appBar: AppBar(
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_ios_new_rounded),
+          onPressed: () => context.maybePop(null),
         ),
-        body: ListView(
-          children: [
-            const SizedBox(height: 8),
-            if (isOwner)
-              SwitchListTile.adaptive(
-                value: activityEnabled.value,
-                onChanged: (bool value) async {
-                  activityEnabled.value = value;
-                  await ref.read(remoteAlbumProvider.notifier).setActivityStatus(album.id, value);
-                },
-                activeThumbColor: activityEnabled.value ? context.primaryColor : context.themeData.disabledColor,
-                dense: true,
-                title: Text(
-                  "comments_and_likes",
-                  style: context.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w500),
-                ).t(context: context),
-                subtitle: Text(
-                  "let_others_respond",
-                  style: context.textTheme.labelLarge?.copyWith(color: context.colorScheme.onSurfaceSecondary),
-                ).t(context: context),
-              ),
-            buildSectionTitle("shared_album_section_people_title".t(context: context)),
-            if (isOwner) ...[
-              ListTile(
-                leading: const Icon(Icons.person_add_rounded),
-                title: Text("invite_people".t(context: context)),
-                onTap: () async => addUsers(),
-              ),
-              const Divider(indent: 16),
-            ],
-            buildOwnerInfo(),
-            buildSharedUsersList(),
+        centerTitle: true,
+        title: Text("options".t(context: context)),
+      ),
+      body: ListView(
+        children: [
+          const SizedBox(height: 8),
+          if (isOwner && canMutate)
+            SwitchListTile.adaptive(
+              value: activityEnabled.value,
+              onChanged: (bool value) async {
+                activityEnabled.value = value;
+                await ref.read(remoteAlbumProvider.notifier).setActivityStatus(album.id, value);
+              },
+              activeThumbColor: activityEnabled.value ? context.primaryColor : context.themeData.disabledColor,
+              dense: true,
+              title: Text(
+                "comments_and_likes",
+                style: context.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w500),
+              ).t(context: context),
+              subtitle: Text(
+                "let_others_respond",
+                style: context.textTheme.labelLarge?.copyWith(color: context.colorScheme.onSurfaceSecondary),
+              ).t(context: context),
+            ),
+          buildSectionTitle("shared_album_section_people_title".t(context: context)),
+          if (isOwner && canMutate) ...[
+            ListTile(
+              leading: const Icon(Icons.person_add_rounded),
+              title: Text("invite_people".t(context: context)),
+              onTap: () async => addUsers(),
+            ),
+            const Divider(indent: 16),
           ],
-        ),
+          buildOwnerInfo(),
+          buildSharedUsersList(),
+        ],
+      ),
+    );
+  }
+}
+
+class _UnavailableAlbumOptions extends ConsumerWidget {
+  const _UnavailableAlbumOptions({required this.access});
+
+  final ServerAccessPolicy access;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Scaffold(
+      body: ServerAccessNotice(
+        mode: access.mode,
+        variant: ServerAccessNoticeVariant.fullPage,
+        onConnect: () => context.pushRoute(const LoginRoute()),
+        onReauthenticate: () => context.pushRoute(const LoginRoute()),
+        onRetry: () => ref.read(serverReachabilityCoordinatorProvider).activateSession(),
       ),
     );
   }

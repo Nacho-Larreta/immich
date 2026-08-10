@@ -18,8 +18,12 @@ class DriftRemoteAlbumRepository extends DriftDatabaseRepository {
   final Drift _db;
   const DriftRemoteAlbumRepository(this._db) : super(_db);
 
-  Future<List<RemoteAlbum>> getAll({Set<SortRemoteAlbumsBy> sortBy = const {SortRemoteAlbumsBy.updatedAt}}) {
+  Future<List<RemoteAlbum>> getAll(
+    String viewerId, {
+    Set<SortRemoteAlbumsBy> sortBy = const {SortRemoteAlbumsBy.updatedAt},
+  }) {
     final assetCount = _db.remoteAlbumAssetEntity.assetId.count(distinct: true);
+    final viewerMembership = _db.alias(_db.remoteAlbumUserEntity, 'viewer_membership');
 
     final query = _db.remoteAlbumEntity.select().join([
       leftOuterJoin(
@@ -35,6 +39,11 @@ class DriftRemoteAlbumRepository extends DriftDatabaseRepository {
       leftOuterJoin(
         _db.remoteAlbumUserEntity,
         _db.remoteAlbumUserEntity.albumId.equalsExp(_db.remoteAlbumEntity.id),
+        useColumns: false,
+      ),
+      innerJoin(
+        viewerMembership,
+        viewerMembership.albumId.equalsExp(_db.remoteAlbumEntity.id) & viewerMembership.userId.equals(viewerId),
         useColumns: false,
       ),
       innerJoin(
@@ -77,8 +86,9 @@ class DriftRemoteAlbumRepository extends DriftDatabaseRepository {
         .get();
   }
 
-  Future<RemoteAlbum?> get(String albumId) {
+  Future<RemoteAlbum?> get(String albumId, String viewerId) {
     final assetCount = _db.remoteAlbumAssetEntity.assetId.count(distinct: true);
+    final viewerMembership = _db.alias(_db.remoteAlbumUserEntity, 'viewer_membership');
 
     final query =
         _db.remoteAlbumEntity.select().join([
@@ -95,6 +105,11 @@ class DriftRemoteAlbumRepository extends DriftDatabaseRepository {
             leftOuterJoin(
               _db.remoteAlbumUserEntity,
               _db.remoteAlbumUserEntity.albumId.equalsExp(_db.remoteAlbumEntity.id),
+              useColumns: false,
+            ),
+            innerJoin(
+              viewerMembership,
+              viewerMembership.albumId.equalsExp(_db.remoteAlbumEntity.id) & viewerMembership.userId.equals(viewerId),
               useColumns: false,
             ),
             innerJoin(
@@ -212,48 +227,73 @@ class DriftRemoteAlbumRepository extends DriftDatabaseRepository {
     });
   }
 
-  FutureOr<(DateTime, DateTime)> getDateRange(String albumId) {
+  Future<(DateTime, DateTime)> getDateRange(String albumId, String viewerId) async {
+    final membership =
+        await (_db.remoteAlbumUserEntity.select()
+              ..where((row) => row.albumId.equals(albumId) & row.userId.equals(viewerId))
+              ..limit(1))
+            .getSingleOrNull();
+    if (membership == null) {
+      throw StateError('Album is not available to the current viewer');
+    }
+
+    final viewerMembership = _db.alias(_db.remoteAlbumUserEntity, 'viewer_membership');
     final query = _db.remoteAlbumAssetEntity.selectOnly()
       ..where(_db.remoteAlbumAssetEntity.albumId.equals(albumId))
       ..addColumns([_db.remoteAssetEntity.createdAt.min(), _db.remoteAssetEntity.createdAt.max()])
       ..join([
         innerJoin(_db.remoteAssetEntity, _db.remoteAssetEntity.id.equalsExp(_db.remoteAlbumAssetEntity.assetId)),
+        innerJoin(
+          viewerMembership,
+          viewerMembership.albumId.equalsExp(_db.remoteAlbumAssetEntity.albumId) &
+              viewerMembership.userId.equals(viewerId),
+          useColumns: false,
+        ),
       ]);
 
-    return query.map((row) {
-      final minDate = row.read(_db.remoteAssetEntity.createdAt.min());
-      final maxDate = row.read(_db.remoteAssetEntity.createdAt.max());
-      return (minDate ?? DateTime.now(), maxDate ?? DateTime.now());
-    }).getSingle();
+    final row = await query.getSingle();
+    final minDate = row.read(_db.remoteAssetEntity.createdAt.min());
+    final maxDate = row.read(_db.remoteAssetEntity.createdAt.max());
+    if (minDate == null || maxDate == null) {
+      final now = DateTime.now();
+      return (now, now);
+    }
+    return (minDate, maxDate);
   }
 
-  Future<List<UserDto>> getSharedUsers(String albumId) async {
-    final albumUserRows = await (_db.select(
-      _db.remoteAlbumUserEntity,
-    )..where((row) => row.albumId.equals(albumId) & row.role.isNotValue(AlbumUserRole.owner.index))).get();
+  Future<List<UserDto>> getSharedUsers(String albumId, String viewerId) {
+    final sharedMembership = _db.alias(_db.remoteAlbumUserEntity, 'shared_membership');
+    final viewerMembership = _db.alias(_db.remoteAlbumUserEntity, 'viewer_membership');
+    final query = _db.userEntity.select().join([
+      innerJoin(
+        sharedMembership,
+        sharedMembership.userId.equalsExp(_db.userEntity.id) &
+            sharedMembership.albumId.equals(albumId) &
+            sharedMembership.role.isNotValue(AlbumUserRole.owner.index),
+        useColumns: false,
+      ),
+      innerJoin(
+        viewerMembership,
+        viewerMembership.albumId.equalsExp(sharedMembership.albumId) & viewerMembership.userId.equals(viewerId),
+        useColumns: false,
+      ),
+    ]);
 
-    if (albumUserRows.isEmpty) {
-      return [];
-    }
-
-    final userIds = albumUserRows.map((row) => row.userId);
-
-    return (_db.select(_db.userEntity)..where((row) => row.id.isIn(userIds)))
-        .map(
-          (user) => UserDto(
-            id: user.id,
-            email: user.email,
-            name: user.name,
-            memoryEnabled: true,
-            inTimeline: false,
-            isPartnerSharedBy: false,
-            isPartnerSharedWith: false,
-            profileChangedAt: user.profileChangedAt,
-            hasProfileImage: user.hasProfileImage,
-            avatarColor: user.avatarColor,
-          ),
-        )
-        .get();
+    return query.map((row) {
+      final user = row.readTable(_db.userEntity);
+      return UserDto(
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        memoryEnabled: true,
+        inTimeline: false,
+        isPartnerSharedBy: false,
+        isPartnerSharedWith: false,
+        profileChangedAt: user.profileChangedAt,
+        hasProfileImage: user.hasProfileImage,
+        avatarColor: user.avatarColor,
+      );
+    }).get();
   }
 
   Future<AlbumUserRole?> getUserRole(String albumId, String userId) async {
@@ -265,9 +305,16 @@ class DriftRemoteAlbumRepository extends DriftDatabaseRepository {
     return result?.role;
   }
 
-  Future<List<RemoteAsset>> getAssets(String albumId) {
+  Future<List<RemoteAsset>> getAssets(String albumId, String viewerId) {
+    final viewerMembership = _db.alias(_db.remoteAlbumUserEntity, 'viewer_membership');
     final query = _db.remoteAlbumAssetEntity.select().join([
       innerJoin(_db.remoteAssetEntity, _db.remoteAssetEntity.id.equalsExp(_db.remoteAlbumAssetEntity.assetId)),
+      innerJoin(
+        viewerMembership,
+        viewerMembership.albumId.equalsExp(_db.remoteAlbumAssetEntity.albumId) &
+            viewerMembership.userId.equals(viewerId),
+        useColumns: false,
+      ),
     ])..where(_db.remoteAlbumAssetEntity.albumId.equals(albumId));
 
     return query.map((row) => row.readTable(_db.remoteAssetEntity).toDto()).get();
@@ -315,7 +362,8 @@ class DriftRemoteAlbumRepository extends DriftDatabaseRepository {
     await query.write(RemoteAlbumEntityCompanion(isActivityEnabled: Value(isEnabled)));
   }
 
-  Stream<RemoteAlbum?> watchAlbum(String albumId) {
+  Stream<RemoteAlbum?> watchAlbum(String albumId, String viewerId) {
+    final viewerMembership = _db.alias(_db.remoteAlbumUserEntity, 'viewer_membership');
     final query =
         _db.remoteAlbumEntity.select().join([
             leftOuterJoin(
@@ -331,6 +379,11 @@ class DriftRemoteAlbumRepository extends DriftDatabaseRepository {
             leftOuterJoin(
               _db.remoteAlbumUserEntity,
               _db.remoteAlbumUserEntity.albumId.equalsExp(_db.remoteAlbumEntity.id),
+              useColumns: false,
+            ),
+            innerJoin(
+              viewerMembership,
+              viewerMembership.albumId.equalsExp(_db.remoteAlbumEntity.id) & viewerMembership.userId.equals(viewerId),
               useColumns: false,
             ),
             innerJoin(

@@ -2,11 +2,16 @@ import 'package:auto_route/auto_route.dart';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/models/person.model.dart';
+import 'package:immich_mobile/domain/models/server_access.model.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/presentation/widgets/people/person_option_sheet.widget.dart';
+import 'package:immich_mobile/presentation/widgets/server/server_access_boundary.widget.dart';
 import 'package:immich_mobile/presentation/widgets/timeline/timeline.widget.dart';
 import 'package:immich_mobile/providers/infrastructure/timeline.provider.dart';
+import 'package:immich_mobile/providers/server_access.provider.dart';
+import 'package:immich_mobile/providers/server_reachability.provider.dart';
 import 'package:immich_mobile/providers/user.provider.dart';
+import 'package:immich_mobile/routing/router.dart';
 import 'package:immich_mobile/utils/people.utils.dart';
 import 'package:immich_mobile/widgets/common/person_sliver_app_bar.dart';
 
@@ -72,6 +77,27 @@ class _DriftPersonPageState extends ConsumerState<DriftPersonPage> {
 
   @override
   Widget build(BuildContext context) {
+    final access = ref.watch(serverAccessProvider);
+    final user = ref.watch(currentUserProvider);
+    final hasScopedIdentity = user != null && user.id == _person.ownerId;
+    final canReadCache = access.allows(ServerCapability.cachedRead) && hasScopedIdentity;
+    final canMutate = access.allows(ServerCapability.remoteMutation);
+
+    if (!canReadCache) {
+      final noticeMode = access.mode == ServerAccessMode.online
+          ? ServerAccessMode.reauthenticationRequired
+          : access.mode;
+      return Scaffold(
+        body: ServerAccessNotice(
+          mode: noticeMode,
+          variant: ServerAccessNoticeVariant.fullPage,
+          onConnect: () => context.pushRoute(const LoginRoute()),
+          onReauthenticate: () => context.pushRoute(const LoginRoute()),
+          onRetry: () => ref.read(serverReachabilityCoordinatorProvider).activateSession(),
+        ),
+      );
+    }
+
     return ProviderScope(
       overrides: [
         timelineServiceProvider.overrideWith((ref) {
@@ -86,11 +112,21 @@ class _DriftPersonPageState extends ConsumerState<DriftPersonPage> {
         }),
       ],
       child: Timeline(
+        topSliverWidget: !canMutate
+            ? SliverToBoxAdapter(
+                child: ServerAccessNotice(
+                  mode: access.mode,
+                  variant: ServerAccessNoticeVariant.inline,
+                  onReauthenticate: () => context.pushRoute(const LoginRoute()),
+                  onRetry: () => ref.read(serverReachabilityCoordinatorProvider).activateSession(),
+                ),
+              )
+            : null,
         appBar: PersonSliverAppBar(
           person: _person,
-          onNameTap: () => handleEditName(context),
-          onBirthdayTap: () => handleEditBirthday(context),
-          onShowOptions: () => showOptionSheet(context),
+          onNameTap: canMutate ? () => handleEditName(context) : null,
+          onBirthdayTap: canMutate ? () => handleEditBirthday(context) : null,
+          onShowOptions: canMutate ? () => showOptionSheet(context) : null,
         ),
       ),
     );

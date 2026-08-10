@@ -5,6 +5,7 @@ import 'package:immich_mobile/constants/enums.dart';
 import 'package:immich_mobile/domain/models/album/album.model.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/setting.model.dart';
+import 'package:immich_mobile/domain/models/server_access.model.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
 import 'package:immich_mobile/presentation/widgets/action_buttons/advanced_info_action_button.widget.dart';
 import 'package:immich_mobile/presentation/widgets/action_buttons/archive_action_button.widget.dart';
@@ -27,6 +28,7 @@ import 'package:immich_mobile/presentation/widgets/bottom_sheet/base_bottom_shee
 import 'package:immich_mobile/providers/infrastructure/album.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/setting.provider.dart';
 import 'package:immich_mobile/providers/server_info.provider.dart';
+import 'package:immich_mobile/providers/server_access.provider.dart';
 import 'package:immich_mobile/providers/timeline/multiselect.provider.dart';
 import 'package:immich_mobile/widgets/common/immich_toast.dart';
 
@@ -55,7 +57,10 @@ class _GeneralBottomSheetState extends ConsumerState<GeneralBottomSheet> {
   @override
   Widget build(BuildContext context) {
     final multiselect = ref.watch(multiSelectProvider);
-    final isTrashEnable = ref.watch(serverInfoProvider.select((state) => state.serverFeatures.trash));
+    final canMutate = ref.watch(
+      serverAccessProvider.select((policy) => policy.allows(ServerCapability.remoteMutation)),
+    );
+    final isTrashEnable = canMutate && ref.watch(serverInfoProvider.select((state) => state.serverFeatures.trash));
     final advancedTroubleshooting = ref.watch(settingsProvider.notifier).get(Setting.advancedTroubleshooting);
 
     Future<void> addAssetsToAlbum(RemoteAlbum album) async {
@@ -106,7 +111,7 @@ class _GeneralBottomSheetState extends ConsumerState<GeneralBottomSheet> {
           const AdvancedInfoActionButton(source: ActionSource.timeline),
         ],
         const ShareActionButton(source: ActionSource.timeline),
-        if (multiselect.hasRemote) ...[
+        if (multiselect.hasRemote && canMutate) ...[
           const ShareLinkActionButton(source: ActionSource.timeline),
           if (multiselect.onlyRemote) const DownloadActionButton(source: ActionSource.timeline),
           isTrashEnable
@@ -123,12 +128,16 @@ class _GeneralBottomSheetState extends ConsumerState<GeneralBottomSheet> {
         ],
         if (multiselect.onlyLocal || multiselect.hasMerged)
           const DeleteLocalActionButton(source: ActionSource.timeline),
-        if (multiselect.onlyLocal) const UploadActionButton(source: ActionSource.timeline),
+        if (multiselect.onlyLocal && canMutate) const UploadActionButton(source: ActionSource.timeline),
       ],
-      slivers: multiselect.hasRemote
+      slivers: multiselect.hasRemote && canMutate
           ? [
               const AddToAlbumHeader(),
-              AlbumSelector(onAlbumSelected: addAssetsToAlbum, onKeyboardExpanded: onKeyboardExpand),
+              AlbumSelector(
+                onAlbumSelected: addAssetsToAlbum,
+                onKeyboardExpanded: onKeyboardExpand,
+                canMutate: canMutate,
+              ),
             ]
           : [],
     );

@@ -10,12 +10,14 @@ import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/asset_edit.model.dart';
 import 'package:immich_mobile/domain/models/share.model.dart';
 import 'package:immich_mobile/domain/services/asset.service.dart';
+import 'package:immich_mobile/domain/services/remote_mutation_guard.dart';
 import 'package:immich_mobile/models/download/livephotos_medatada.model.dart';
 import 'package:immich_mobile/providers/asset_viewer/asset_viewer.provider.dart';
 import 'package:immich_mobile/providers/backup/asset_upload_progress.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/asset.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/asset_viewer/asset.provider.dart' show assetExifProvider;
 import 'package:immich_mobile/providers/timeline/multiselect.provider.dart';
+import 'package:immich_mobile/providers/server_access.provider.dart';
 import 'package:immich_mobile/providers/user.provider.dart';
 import 'package:immich_mobile/providers/websocket.provider.dart';
 import 'package:immich_mobile/routing/router.dart';
@@ -45,6 +47,7 @@ class ActionNotifier extends Notifier<void> {
   late ForegroundUploadService _foregroundUploadService;
   late DownloadService _downloadService;
   late AssetService _assetService;
+  late RemoteMutationGuard _remoteMutationGuard;
 
   ActionNotifier() : super();
 
@@ -54,6 +57,7 @@ class ActionNotifier extends Notifier<void> {
     _service = ref.watch(actionServiceProvider);
     _assetService = ref.watch(assetServiceProvider);
     _downloadService = ref.watch(downloadServiceProvider);
+    _remoteMutationGuard = ref.watch(remoteMutationGuardProvider);
     _downloadService.onImageDownloadStatus = _downloadImageCallback;
     _downloadService.onVideoDownloadStatus = _downloadVideoCallback;
     _downloadService.onLivePhotoDownloadStatus = _downloadLivePhotoCallback;
@@ -441,6 +445,16 @@ class ActionNotifier extends Notifier<void> {
 
   Future<ActionResult> upload(ActionSource source, {List<LocalAsset>? assets}) async {
     final assetsToUpload = assets ?? _getAssets(source).whereType<LocalAsset>().toList();
+    if (assetsToUpload.isEmpty) {
+      return const ActionResult(count: 0, success: true);
+    }
+
+    try {
+      _remoteMutationGuard.requireAllowed();
+    } catch (error, stack) {
+      _logger.severe('Manual upload requires remote mutation access', error, stack);
+      return ActionResult(count: assetsToUpload.length, success: false, error: error.toString());
+    }
 
     final progressNotifier = ref.read(assetUploadProgressProvider.notifier);
     final cancelToken = Completer<void>();

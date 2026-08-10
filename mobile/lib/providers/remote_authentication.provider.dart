@@ -1,8 +1,9 @@
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:immich_mobile/domain/models/server_access.model.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 
-enum RemoteAuthenticationPhase { unconfigured, authenticated, reauthenticationRequired }
+export 'package:immich_mobile/domain/models/server_access.model.dart' show RemoteAuthenticationPhase;
 
 final remoteAuthenticationPhaseProvider = StateProvider<RemoteAuthenticationPhase>((ref) {
   final endpoint = Store.tryGet(StoreKey.serverEndpoint);

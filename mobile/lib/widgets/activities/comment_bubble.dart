@@ -4,6 +4,7 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/extensions/datetime_extensions.dart';
 import 'package:immich_mobile/models/activities/activity.model.dart';
+import 'package:immich_mobile/domain/models/album/remote_album_scope.model.dart';
 import 'package:immich_mobile/providers/activity.provider.dart';
 import 'package:immich_mobile/providers/activity_service.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/current_album.provider.dart';
@@ -22,6 +23,7 @@ class CommentBubble extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final user = ref.watch(currentUserProvider);
     final album = ref.watch(currentRemoteAlbumProvider)!;
+    final albumScope = ref.watch(currentRemoteAlbumScopedProvider)!;
     final isOwn = activity.user.id == user?.id;
     final canDelete = isOwn || album.ownerId == user?.id;
     final showThumbnail = !isAssetActivity && activity.assetId != null && activity.assetId!.isNotEmpty;
@@ -29,7 +31,9 @@ class CommentBubble extends ConsumerWidget {
     final bgColor = isOwn ? context.colorScheme.primaryContainer : context.colorScheme.surfaceContainer;
 
     final activityNotifier = ref.read(
-      albumActivityProvider((album.id, isAssetActivity ? activity.assetId : null)).notifier,
+      albumActivityProvider(
+        RemoteAlbumActivityScope(album: albumScope, assetId: isAssetActivity ? activity.assetId : null),
+      ).notifier,
     );
 
     Future<void> openAssetViewer() async {

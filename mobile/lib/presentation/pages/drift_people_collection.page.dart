@@ -3,9 +3,14 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/models/media_request.model.dart';
+import 'package:immich_mobile/domain/models/server_access.model.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
+import 'package:immich_mobile/presentation/widgets/server/server_access_boundary.widget.dart';
 import 'package:immich_mobile/providers/infrastructure/people.provider.dart';
 import 'package:immich_mobile/providers/remote_media.provider.dart';
+import 'package:immich_mobile/providers/server_access.provider.dart';
+import 'package:immich_mobile/providers/server_reachability.provider.dart';
+import 'package:immich_mobile/providers/user.provider.dart';
 import 'package:immich_mobile/routing/router.dart';
 import 'package:immich_mobile/utils/image_url_builder.dart';
 import 'package:immich_mobile/utils/people.utils.dart';
@@ -31,7 +36,25 @@ class _DriftPeopleCollectionPageState extends ConsumerState<DriftPeopleCollectio
 
   @override
   Widget build(BuildContext context) {
-    final people = ref.watch(driftGetAllPeopleProvider);
+    final access = ref.watch(serverAccessProvider);
+    final viewerId = ref.watch(currentUserProvider.select((user) => user?.id));
+    final canReadCache = access.allows(ServerCapability.cachedRead) && viewerId != null;
+    final canMutate = access.allows(ServerCapability.remoteMutation);
+
+    if (!canReadCache) {
+      return Scaffold(
+        appBar: AppBar(title: Text('people'.tr())),
+        body: ServerAccessNotice(
+          mode: access.mode,
+          variant: ServerAccessNoticeVariant.fullPage,
+          onConnect: () => context.pushRoute(const LoginRoute()),
+          onReauthenticate: () => context.pushRoute(const LoginRoute()),
+          onRetry: () => ref.read(serverReachabilityCoordinatorProvider).activateSession(),
+        ),
+      );
+    }
+
+    final people = ref.watch(driftGetAllPeopleProvider(viewerId));
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -61,74 +84,87 @@ class _DriftPeopleCollectionPageState extends ConsumerState<DriftPeopleCollectio
             ],
           ),
           body: SafeArea(
-            child: people.when(
-              data: (people) {
-                if (_search != null) {
-                  people = people.where((person) {
-                    return person.name.toLowerCase().contains(_search!.toLowerCase());
-                  }).toList();
-                }
-                return GridView.builder(
-                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: isTablet ? 6 : 3,
-                    childAspectRatio: 0.85,
-                    mainAxisSpacing: isPortrait && isTablet ? 36 : 0,
+            child: Column(
+              children: [
+                if (!canMutate)
+                  ServerAccessNotice(
+                    mode: access.mode,
+                    variant: ServerAccessNoticeVariant.inline,
+                    onReauthenticate: () => context.pushRoute(const LoginRoute()),
+                    onRetry: () => ref.read(serverReachabilityCoordinatorProvider).activateSession(),
                   ),
-                  padding: const EdgeInsets.symmetric(vertical: 32),
-                  itemCount: people.length,
-                  itemBuilder: (context, index) {
-                    final person = people[index];
-
-                    return Column(
-                      key: ValueKey(person.id),
-                      children: [
-                        GestureDetector(
-                          onTap: () {
-                            context.pushRoute(DriftPersonRoute(person: person));
-                          },
-                          child: Material(
-                            shape: const CircleBorder(side: BorderSide.none),
-                            elevation: 3,
-                            child: CircleAvatar(
-                              key: ValueKey(person.id),
-                              maxRadius: isTablet ? 100 / 2 : 96 / 2,
-                              backgroundImage: ref
-                                  .watch(remoteImageProviderFactoryProvider)
-                                  .image(
-                                    url: getFaceThumbnailUrl(person.id),
-                                    edited: true,
-                                    kind: MediaRequestKind.thumbnail,
-                                  ),
-                            ),
-                          ),
+                Expanded(
+                  child: people.when(
+                    data: (people) {
+                      if (_search != null) {
+                        people = people.where((person) {
+                          return person.name.toLowerCase().contains(_search!.toLowerCase());
+                        }).toList();
+                      }
+                      return GridView.builder(
+                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: isTablet ? 6 : 3,
+                          childAspectRatio: 0.85,
+                          mainAxisSpacing: isPortrait && isTablet ? 36 : 0,
                         ),
-                        const SizedBox(height: 12),
-                        GestureDetector(
-                          onTap: () => showNameEditModal(context, person),
-                          child: person.name.isEmpty
-                              ? Text(
-                                  'add_a_name'.tr(),
-                                  style: context.textTheme.titleSmall?.copyWith(
-                                    fontWeight: FontWeight.w500,
-                                    color: context.colorScheme.primary,
-                                  ),
-                                )
-                              : Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                                  child: Text(
-                                    person.name,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: context.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w500),
+                        padding: const EdgeInsets.symmetric(vertical: 32),
+                        itemCount: people.length,
+                        itemBuilder: (context, index) {
+                          final person = people[index];
+
+                          return Column(
+                            key: ValueKey(person.id),
+                            children: [
+                              GestureDetector(
+                                onTap: () {
+                                  context.pushRoute(DriftPersonRoute(person: person));
+                                },
+                                child: Material(
+                                  shape: const CircleBorder(side: BorderSide.none),
+                                  elevation: 3,
+                                  child: CircleAvatar(
+                                    key: ValueKey(person.id),
+                                    maxRadius: isTablet ? 100 / 2 : 96 / 2,
+                                    backgroundImage: ref
+                                        .watch(remoteImageProviderFactoryProvider)
+                                        .image(
+                                          url: getFaceThumbnailUrl(person.id),
+                                          edited: true,
+                                          kind: MediaRequestKind.thumbnail,
+                                        ),
                                   ),
                                 ),
-                        ),
-                      ],
-                    );
-                  },
-                );
-              },
-              error: (error, stack) => const Text("error"),
-              loading: () => const Center(child: CircularProgressIndicator()),
+                              ),
+                              const SizedBox(height: 12),
+                              GestureDetector(
+                                onTap: canMutate ? () => showNameEditModal(context, person) : null,
+                                child: person.name.isEmpty
+                                    ? Text(
+                                        'add_a_name'.tr(),
+                                        style: context.textTheme.titleSmall?.copyWith(
+                                          fontWeight: FontWeight.w500,
+                                          color: context.colorScheme.primary,
+                                        ),
+                                      )
+                                    : Padding(
+                                        padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                                        child: Text(
+                                          person.name,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: context.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w500),
+                                        ),
+                                      ),
+                              ),
+                            ],
+                          );
+                        },
+                      );
+                    },
+                    error: (error, stack) => const Text("error"),
+                    loading: () => const Center(child: CircularProgressIndicator()),
+                  ),
+                ),
+              ],
             ),
           ),
         );

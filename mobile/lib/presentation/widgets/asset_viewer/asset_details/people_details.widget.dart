@@ -4,6 +4,7 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/media_request.model.dart';
 import 'package:immich_mobile/domain/models/person.model.dart';
+import 'package:immich_mobile/domain/models/server_access.model.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/extensions/theme_extensions.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
@@ -11,6 +12,8 @@ import 'package:immich_mobile/providers/remote_media.provider.dart';
 import 'package:immich_mobile/presentation/widgets/people/person_edit_name_modal.widget.dart';
 import 'package:immich_mobile/providers/infrastructure/people.provider.dart';
 import 'package:immich_mobile/providers/routes.provider.dart';
+import 'package:immich_mobile/providers/server_access.provider.dart';
+import 'package:immich_mobile/providers/user.provider.dart';
 import 'package:immich_mobile/routing/router.dart';
 import 'package:immich_mobile/utils/image_url_builder.dart';
 import 'package:immich_mobile/utils/people.utils.dart';
@@ -23,11 +26,15 @@ class PeopleDetails extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final asset = this.asset;
-    if (asset is! RemoteAsset) {
+    final access = ref.watch(serverAccessProvider);
+    final viewerId = ref.watch(currentUserProvider.select((user) => user?.id));
+    final peopleQuery = scopedAssetPeopleQuery(asset: asset, viewerId: viewerId, access: access);
+    if (peopleQuery == null || asset is! RemoteAsset) {
       return const SizedBox.shrink();
     }
 
-    final peopleFuture = ref.watch(driftPeopleAssetProvider(asset.id));
+    final canMutate = access.allows(ServerCapability.remoteMutation);
+    final peopleFuture = ref.watch(driftPeopleAssetProvider(peopleQuery));
 
     Future<void> showNameEditModal(DriftPerson person) async {
       await showDialog(
@@ -38,7 +45,7 @@ class PeopleDetails extends ConsumerWidget {
         },
       );
 
-      ref.invalidate(driftPeopleAssetProvider(asset.id));
+      ref.invalidate(driftPeopleAssetProvider(peopleQuery));
     }
 
     return peopleFuture.when(
@@ -77,7 +84,7 @@ class PeopleDetails extends ConsumerWidget {
                           ContextHelper(context).pop();
                           context.pushRoute(DriftPersonRoute(person: person));
                         },
-                        onNameTap: () => showNameEditModal(person),
+                        onNameTap: canMutate ? () => showNameEditModal(person) : null,
                       ),
                   ],
                 ),

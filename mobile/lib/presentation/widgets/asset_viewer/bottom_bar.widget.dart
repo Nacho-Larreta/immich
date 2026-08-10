@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/constants/enums.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/domain/models/server_access.model.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/presentation/widgets/action_buttons/add_action_button.widget.dart';
 import 'package:immich_mobile/presentation/widgets/action_buttons/delete_action_button.widget.dart';
@@ -13,6 +14,7 @@ import 'package:immich_mobile/providers/asset_viewer/asset_viewer.provider.dart'
 import 'package:immich_mobile/providers/infrastructure/readonly_mode.provider.dart';
 import 'package:immich_mobile/providers/routes.provider.dart';
 import 'package:immich_mobile/providers/server_info.provider.dart';
+import 'package:immich_mobile/providers/server_access.provider.dart';
 import 'package:immich_mobile/providers/user.provider.dart';
 import 'package:immich_mobile/utils/semver.dart';
 import 'package:immich_mobile/widgets/asset_viewer/video_controls.dart';
@@ -33,6 +35,9 @@ class ViewerBottomBar extends ConsumerWidget {
     final showingDetails = ref.watch(assetViewerProvider.select((s) => s.showingDetails));
     final isInLockedView = ref.watch(inLockedViewProvider);
     final serverInfo = ref.watch(serverInfoProvider);
+    final canMutate = ref.watch(
+      serverAccessProvider.select((policy) => policy.allows(ServerCapability.remoteMutation)),
+    );
 
     final originalTheme = context.themeData;
 
@@ -40,16 +45,18 @@ class ViewerBottomBar extends ConsumerWidget {
       const ShareActionButton(source: ActionSource.viewer),
 
       if (!isInLockedView) ...[
-        if (asset.isLocalOnly) const UploadActionButton(source: ActionSource.viewer),
+        if (asset.isLocalOnly && canMutate) const UploadActionButton(source: ActionSource.viewer),
         // edit sync was added in 2.6.0
-        if (asset.isEditable && serverInfo.serverVersion >= const SemVer(major: 2, minor: 6, patch: 0))
+        if (asset.isEditable && canMutate && serverInfo.serverVersion >= const SemVer(major: 2, minor: 6, patch: 0))
           const EditImageActionButton(),
         if (asset.hasRemote) AddActionButton(originalTheme: originalTheme),
 
         if (isOwner) ...[
           asset.isLocalOnly
               ? const DeleteLocalActionButton(source: ActionSource.viewer)
-              : const DeleteActionButton(source: ActionSource.viewer, showConfirmation: true),
+              : canMutate
+              ? const DeleteActionButton(source: ActionSource.viewer, showConfirmation: true)
+              : const SizedBox.shrink(),
         ],
       ],
     ];

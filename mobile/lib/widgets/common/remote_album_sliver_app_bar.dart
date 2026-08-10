@@ -185,12 +185,13 @@ class _ExpandedBackgroundState extends ConsumerState<_ExpandedBackground> with S
   Widget build(BuildContext context) {
     final timelineService = ref.watch(timelineServiceProvider);
     final currentAlbum = ref.watch(currentRemoteAlbumProvider);
+    final scope = ref.watch(currentRemoteAlbumScopedProvider);
 
-    if (currentAlbum == null) {
+    if (currentAlbum == null || scope == null) {
       return const SizedBox.shrink();
     }
 
-    final dateRange = ref.watch(remoteAlbumDateRangeProvider(currentAlbum.id));
+    final dateRange = ref.watch(remoteAlbumDateRangeProvider(scope));
     return Stack(
       fit: StackFit.expand,
       children: [

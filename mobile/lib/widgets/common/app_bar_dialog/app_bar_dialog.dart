@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:auto_route/auto_route.dart';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
@@ -16,8 +14,8 @@ import 'package:immich_mobile/providers/user.provider.dart';
 import 'package:immich_mobile/routing/router.dart';
 import 'package:immich_mobile/utils/bytes_units.dart';
 import 'package:immich_mobile/widgets/common/app_bar_dialog/app_bar_profile_info.dart';
+import 'package:immich_mobile/widgets/common/app_bar_dialog/app_bar_logout_action.dart';
 import 'package:immich_mobile/widgets/common/app_bar_dialog/app_bar_server_info.dart';
-import 'package:immich_mobile/widgets/common/confirm_dialog.dart';
 import 'package:immich_mobile/widgets/common/immich_logo.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -33,7 +31,6 @@ class ImmichAppBarDialog extends HookConsumerWidget {
     bool isHorizontal = !context.isMobile;
     final horizontalPadding = isHorizontal ? 100.0 : 20.0;
     final user = ref.watch(currentUserProvider);
-    final isLoggingOut = useState(false);
     final isReadonlyModeEnabled = ref.watch(readonlyModeProvider);
 
     useEffect(() {
@@ -104,36 +101,10 @@ class ImmichAppBarDialog extends HookConsumerWidget {
     }
 
     buildSignOutButton() {
-      return buildActionButton(
-        Icons.logout_rounded,
-        "sign_out",
-        () async {
-          if (isLoggingOut.value) {
-            return;
-          }
-
-          unawaited(
-            showDialog(
-              context: context,
-              builder: (BuildContext ctx) {
-                return ConfirmDialog(
-                  title: "app_bar_signout_dialog_title",
-                  content: "app_bar_signout_dialog_content",
-                  ok: "yes",
-                  onOk: () async {
-                    isLoggingOut.value = true;
-                    await ref.read(authProvider.notifier).logout().whenComplete(() => isLoggingOut.value = false);
-
-                    unawaited(context.replaceRoute(localShellAfterLogout()));
-                  },
-                );
-              },
-            ),
-          );
-        },
-        trailing: isLoggingOut.value
-            ? const SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2))
-            : null,
+      final router = context.router;
+      return AppBarLogoutAction(
+        logout: ref.read(authProvider.notifier).logoutWithOutcome,
+        onLoggedOut: (_) => router.replace(localShellAfterLogout()),
       );
     }
 

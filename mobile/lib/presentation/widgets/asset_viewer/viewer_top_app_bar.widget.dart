@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/constants/enums.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/domain/models/album/remote_album_scope.model.dart';
+import 'package:immich_mobile/domain/models/server_access.model.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/presentation/widgets/action_buttons/favorite_action_button.widget.dart';
 import 'package:immich_mobile/presentation/widgets/action_buttons/motion_photo_action_button.widget.dart';
@@ -13,6 +15,7 @@ import 'package:immich_mobile/providers/asset_viewer/asset_viewer.provider.dart'
 import 'package:immich_mobile/providers/infrastructure/current_album.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/readonly_mode.provider.dart';
 import 'package:immich_mobile/providers/routes.provider.dart';
+import 'package:immich_mobile/providers/server_access.provider.dart';
 import 'package:immich_mobile/providers/user.provider.dart';
 import 'package:immich_mobile/routing/router.dart';
 
@@ -27,6 +30,10 @@ class ViewerTopAppBar extends ConsumerWidget implements PreferredSizeWidget {
     }
 
     final album = ref.watch(currentRemoteAlbumProvider);
+    final albumScope = ref.watch(currentRemoteAlbumScopedProvider);
+    final serverAccess = ref.watch(serverAccessProvider);
+    final canReadRemote = serverAccess.allows(ServerCapability.remoteRead);
+    final canMutateRemote = serverAccess.allows(ServerCapability.remoteMutation);
 
     final user = ref.watch(currentUserProvider);
     final isOwner = asset is RemoteAsset && asset.ownerId == user?.id;
@@ -35,8 +42,13 @@ class ViewerTopAppBar extends ConsumerWidget implements PreferredSizeWidget {
 
     final showingDetails = ref.watch(assetViewerProvider.select((state) => state.showingDetails));
 
-    if (album != null && album.isActivityEnabled && album.isShared && asset is RemoteAsset) {
-      ref.watch(albumActivityProvider((album.id, asset.id)));
+    if (canReadRemote &&
+        album != null &&
+        albumScope != null &&
+        album.isActivityEnabled &&
+        album.isShared &&
+        asset is RemoteAsset) {
+      ref.watch(albumActivityProvider(RemoteAlbumActivityScope(album: albumScope, assetId: asset.id)));
     }
 
     final showingControls = ref.watch(assetViewerProvider.select((s) => s.showingControls));
@@ -46,7 +58,7 @@ class ViewerTopAppBar extends ConsumerWidget implements PreferredSizeWidget {
 
     final actions = <Widget>[
       if (asset.isMotionPhoto) const MotionPhotoActionButton(iconOnly: true),
-      if (album != null && album.isActivityEnabled && album.isShared)
+      if (canReadRemote && album != null && album.isActivityEnabled && album.isShared)
         IconButton(
           icon: const Icon(Icons.chat_outlined),
           onPressed: () {
@@ -60,9 +72,9 @@ class ViewerTopAppBar extends ConsumerWidget implements PreferredSizeWidget {
           },
         ),
 
-      if (asset.hasRemote && isOwner && !asset.isFavorite)
+      if (canMutateRemote && asset.hasRemote && isOwner && !asset.isFavorite)
         const FavoriteActionButton(source: ActionSource.viewer, iconOnly: true),
-      if (asset.hasRemote && isOwner && asset.isFavorite)
+      if (canMutateRemote && asset.hasRemote && isOwner && asset.isFavorite)
         const UnFavoriteActionButton(source: ActionSource.viewer, iconOnly: true),
 
       ViewerKebabMenu(originalTheme: originalTheme),

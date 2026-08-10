@@ -5,6 +5,7 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/constants/constants.dart';
 import 'package:immich_mobile/domain/interfaces/anonymous_server_discovery.interface.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
+import 'package:immich_mobile/domain/models/logout_outcome.model.dart';
 import 'package:immich_mobile/domain/models/user.model.dart';
 import 'package:immich_mobile/domain/interfaces/auth_request_context.interface.dart';
 import 'package:immich_mobile/domain/interfaces/resolved_server_endpoint_installer.interface.dart';
@@ -229,6 +230,15 @@ class AuthNotifier extends StateNotifier<AuthState> {
   }
 
   Future<void> logout() => _requestRemoteAuthenticationTermination(_RemoteAuthenticationTerminationIntent.logout);
+
+  Future<LogoutOutcome> logoutWithOutcome() async {
+    try {
+      await logout();
+      return const LogoutSuccess();
+    } on Object catch (error) {
+      return state.isAuthenticated ? LogoutNotCleared(error) : LogoutClearedWithWarning(error);
+    }
+  }
 
   Future<void> requireReauthentication() =>
       _requestRemoteAuthenticationTermination(_RemoteAuthenticationTerminationIntent.reauthenticate);

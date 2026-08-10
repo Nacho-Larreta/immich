@@ -91,6 +91,41 @@ Future<void> main() async {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('pinned selector stays below the dynamic top safe area after the app bar scrolls away', (tester) async {
+    final controller = ScrollController();
+    addTearDown(controller.dispose);
+    const topSafeArea = 59.0;
+
+    await tester.pumpWidget(
+      _safeAreaHarness(
+        controller: controller,
+        topPadding: topSafeArea,
+        selector: AssetSourceSelector(
+          key: const ValueKey('safe-area-selector'),
+          selectedSource: TimelineSourceFilter.combined,
+          hasConfiguredServer: true,
+          requiresReauthentication: true,
+          reachabilityPhase: ReachabilityPhase.offline,
+          galleryPermission: PermissionStatus.limited,
+          onSourceSelected: (_) {},
+          onConnectServer: () {},
+          onManageGalleryPermission: () {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final initialSelectorTop = tester.getTopLeft(find.byKey(const ValueKey('safe-area-selector'))).dy;
+    expect(initialSelectorTop, closeTo(topSafeArea + kToolbarHeight, 0.01));
+
+    controller.jumpTo(300);
+    await tester.pumpAndSettle();
+
+    final pinnedSelectorTop = tester.getTopLeft(find.byKey(const ValueKey('safe-area-selector'))).dy;
+    expect(pinnedSelectorTop, closeTo(topSafeArea, 0.01));
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('month snap uses measured selector status and memory extent', (tester) async {
     final controller = ScrollController();
     addTearDown(controller.dispose);
@@ -244,15 +279,60 @@ Widget _scrubberHarness({
         supportedLocales: context.supportedLocales,
         locale: context.locale,
         home: MediaQuery(
-          data: MediaQueryData(size: const Size(393, 852), textScaler: textScaler),
-          child: Scaffold(
-            body: PrimaryScrollController(controller: controller, child: child),
+          data: MediaQueryData(
+            size: const Size(393, 852),
+            padding: const EdgeInsets.only(top: 59),
+            textScaler: textScaler,
+          ),
+          child: MainTimelineSafeViewport(
+            child: Scaffold(
+              body: PrimaryScrollController(controller: controller, child: child),
+            ),
           ),
         ),
       ),
     ),
   ),
 );
+
+Widget _safeAreaHarness({required ScrollController controller, required double topPadding, required Widget selector}) =>
+    EasyLocalization(
+      supportedLocales: const [Locale('en')],
+      path: 'unused',
+      fallbackLocale: const Locale('en'),
+      saveLocale: false,
+      assetLoader: const CodegenLoader(),
+      child: Builder(
+        builder: (context) => MaterialApp(
+          localizationsDelegates: context.localizationDelegates,
+          supportedLocales: context.supportedLocales,
+          locale: context.locale,
+          home: MediaQuery(
+            data: MediaQueryData(
+              size: const Size(393, 852),
+              padding: EdgeInsets.only(top: topPadding),
+              textScaler: const TextScaler.linear(2),
+            ),
+            child: MainTimelineSafeViewport(
+              child: Scaffold(
+                body: CustomScrollView(
+                  controller: controller,
+                  slivers: [
+                    const SliverAppBar(floating: false, pinned: false),
+                    MainTimelineTopSlivers(
+                      source: TimelineSourceFilter.combined,
+                      selector: selector,
+                      memoryLaneBuilder: (_) => const SizedBox(height: 300, child: Text('memories')),
+                    ),
+                    const SliverToBoxAdapter(child: SizedBox(height: 2000)),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
 
 final class _TestSegment extends Segment {
   _TestSegment(int index)

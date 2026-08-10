@@ -6,15 +6,19 @@ import 'package:flutter/services.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/models/album/album.model.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/domain/models/server_access.model.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
 import 'package:immich_mobile/presentation/widgets/bottom_sheet/remote_album_bottom_sheet.widget.dart';
 import 'package:immich_mobile/presentation/widgets/remote_album/drift_album_option.widget.dart';
+import 'package:immich_mobile/presentation/widgets/server/server_access_boundary.widget.dart';
 import 'package:immich_mobile/presentation/widgets/timeline/timeline.widget.dart';
 import 'package:immich_mobile/providers/infrastructure/album.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/current_album.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/remote_album.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/timeline.provider.dart';
+import 'package:immich_mobile/providers/server_access.provider.dart';
+import 'package:immich_mobile/providers/server_reachability.provider.dart';
 import 'package:immich_mobile/providers/user.provider.dart';
 import 'package:immich_mobile/routing/router.dart';
 import 'package:immich_mobile/widgets/common/immich_toast.dart';
@@ -86,7 +90,10 @@ class _RemoteAlbumPageState extends ConsumerState<RemoteAlbumPage> {
         );
       }
 
-      ref.invalidate(remoteAlbumSharedUsersProvider(_album.id));
+      final scope = ref.read(remoteAlbumScopeProvider(_album.id));
+      if (scope != null) {
+        ref.invalidate(remoteAlbumSharedUsersProvider(scope));
+      }
     } catch (e) {
       ImmichToast.show(
         context: context,
@@ -173,35 +180,85 @@ class _RemoteAlbumPageState extends ConsumerState<RemoteAlbumPage> {
 
   @override
   Widget build(BuildContext context) {
-    final user = ref.watch(currentUserProvider);
-    final isOwner = user != null ? user.id == _album.ownerId : false;
+    final access = ref.watch(serverAccessProvider);
+    final scope = ref.watch(remoteAlbumScopeProvider(widget.album.id));
+    final canReadCache = access.allows(ServerCapability.cachedRead) && scope != null;
+    final canMutate = access.allows(ServerCapability.remoteMutation);
+
+    if (!canReadCache) {
+      return Scaffold(
+        body: ServerAccessNotice(
+          mode: access.mode,
+          variant: ServerAccessNoticeVariant.fullPage,
+          onConnect: () => context.pushRoute(const LoginRoute()),
+          onReauthenticate: () => context.pushRoute(const LoginRoute()),
+          onRetry: () => ref.read(serverReachabilityCoordinatorProvider).activateSession(),
+        ),
+      );
+    }
+
+    final albumAsync = ref.watch(remoteAlbumByScopeProvider(scope));
+    final resolvedAlbum = albumAsync.valueOrNull;
+    if (resolvedAlbum == null) {
+      if (albumAsync.isLoading) {
+        return const Scaffold(body: Center(child: CircularProgressIndicator.adaptive()));
+      }
+      return Scaffold(
+        body: ServerAccessNotice(
+          mode: access.mode,
+          variant: ServerAccessNoticeVariant.fullPage,
+          onConnect: () => context.pushRoute(const LoginRoute()),
+          onReauthenticate: () => context.pushRoute(const LoginRoute()),
+          onRetry: () => ref.read(serverReachabilityCoordinatorProvider).activateSession(),
+        ),
+      );
+    }
+
+    _album = resolvedAlbum;
+    final user = ref.watch(currentUserProvider)!;
+
+    final isOwner = user.id == _album.ownerId;
 
     return ProviderScope(
       overrides: [
         timelineServiceProvider.overrideWith((ref) {
-          final timelineService = ref.watch(timelineFactoryProvider).remoteAlbum(albumId: _album.id);
+          final timelineService = ref
+              .watch(timelineFactoryProvider)
+              .remoteAlbum(albumId: scope.albumId, viewerId: scope.viewerId);
           ref.onDispose(timelineService.dispose);
           return timelineService;
         }),
-        currentRemoteAlbumScopedProvider.overrideWithValue(_album),
+        currentRemoteAlbumScopedProvider.overrideWithValue(scope),
       ],
       child: Timeline(
+        topSliverWidget: !canMutate
+            ? SliverToBoxAdapter(
+                child: ServerAccessNotice(
+                  mode: access.mode,
+                  variant: ServerAccessNoticeVariant.inline,
+                  onReauthenticate: () => context.pushRoute(const LoginRoute()),
+                  onRetry: () => ref.read(serverReachabilityCoordinatorProvider).activateSession(),
+                ),
+              )
+            : null,
         appBar: RemoteAlbumSliverAppBar(
           icon: Icons.photo_album_outlined,
-          kebabMenu: _AlbumKebabMenu(
-            album: _album,
-            onDeleteAlbum: () => deleteAlbum(context),
-            onAddUsers: () => addUsers(context),
-            onAddPhotos: () => addAssets(context),
-            onToggleAlbumOrder: () => toggleAlbumOrder(),
-            onEditAlbum: () => showEditTitleAndDescription(context),
-            onCreateSharedLink: () => unawaited(context.pushRoute(SharedLinkEditRoute(albumId: _album.id))),
-            onShowOptions: () => context.pushRoute(DriftAlbumOptionsRoute(album: _album)),
-          ),
-          onEditTitle: isOwner ? () => showEditTitleAndDescription(context) : null,
-          onActivity: () => showActivity(context),
+          kebabMenu: canMutate
+              ? _AlbumKebabMenu(
+                  album: _album,
+                  onDeleteAlbum: () => deleteAlbum(context),
+                  onAddUsers: () => addUsers(context),
+                  onAddPhotos: () => addAssets(context),
+                  onToggleAlbumOrder: () => toggleAlbumOrder(),
+                  onEditAlbum: () => showEditTitleAndDescription(context),
+                  onCreateSharedLink: () => unawaited(context.pushRoute(SharedLinkEditRoute(albumId: _album.id))),
+                  onShowOptions: () => context.pushRoute(DriftAlbumOptionsRoute(album: _album)),
+                )
+              : const SizedBox.shrink(),
+          onEditTitle: isOwner && canMutate ? () => showEditTitleAndDescription(context) : null,
+          onActivity: canMutate ? () => showActivity(context) : null,
         ),
-        bottomSheet: RemoteAlbumBottomSheet(album: _album),
+        bottomSheet: canMutate ? RemoteAlbumBottomSheet(album: _album) : null,
       ),
     );
   }

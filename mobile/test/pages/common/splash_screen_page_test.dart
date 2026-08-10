@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:immich_mobile/pages/common/splash_screen.page.dart';
 import 'package:immich_mobile/pages/common/splash_session.dart';
 
 void main() {
@@ -47,6 +48,21 @@ void main() {
 
       expect(navigations, [SplashDestination.timeline]);
       expect(postNavigationTriggers, 1);
+    });
+  });
+
+  group('local sync policy', () {
+    test('unauthenticated iOS startup requests a full local sync', () {
+      expect(shouldRunFullLocalSync(hasRemoteAuthentication: false, isAndroid: false), isTrue);
+    });
+
+    test('authenticated iOS startup keeps delta sync', () {
+      expect(shouldRunFullLocalSync(hasRemoteAuthentication: true, isAndroid: false), isFalse);
+    });
+
+    test('Android startup always requests a full local sync', () {
+      expect(shouldRunFullLocalSync(hasRemoteAuthentication: true, isAndroid: true), isTrue);
+      expect(shouldRunFullLocalSync(hasRemoteAuthentication: false, isAndroid: true), isTrue);
     });
   });
 }

@@ -2,6 +2,7 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/constants/errors.dart';
 import 'package:immich_mobile/domain/services/asset.service.dart';
 import 'package:immich_mobile/domain/services/timeline.service.dart';
+import 'package:immich_mobile/domain/services/remote_mutation_guard.dart';
 import 'package:immich_mobile/mixins/error_logger.mixin.dart';
 import 'package:immich_mobile/models/activities/activity.model.dart';
 import 'package:immich_mobile/presentation/widgets/asset_viewer/asset_viewer.page.dart';
@@ -14,11 +15,12 @@ class ActivityService with ErrorLoggerMixin {
   final ActivityApiRepository _activityApiRepository;
   final TimelineFactory _timelineFactory;
   final AssetService _assetService;
+  final RemoteMutationGuard _remoteMutationGuard;
 
   @override
   final Logger logger = Logger("ActivityService");
 
-  ActivityService(this._activityApiRepository, this._timelineFactory, this._assetService);
+  ActivityService(this._activityApiRepository, this._timelineFactory, this._assetService, this._remoteMutationGuard);
 
   Future<List<Activity>> getAllActivities(String albumId, {String? assetId}) async {
     return logError(
@@ -29,6 +31,7 @@ class ActivityService with ErrorLoggerMixin {
   }
 
   Future<bool> removeActivity(String id) async {
+    _remoteMutationGuard.requireAllowed();
     return logError(
       () async {
         try {
@@ -44,6 +47,7 @@ class ActivityService with ErrorLoggerMixin {
   }
 
   AsyncFuture<Activity> addActivity(String albumId, ActivityType type, {String? assetId, String? comment}) async {
+    _remoteMutationGuard.requireAllowed();
     return guardError(
       () => _activityApiRepository.create(albumId, type, assetId: assetId, comment: comment),
       errorMessage: "Failed to create $type for album $albumId",
@@ -51,16 +55,24 @@ class ActivityService with ErrorLoggerMixin {
   }
 
   Future<AssetViewerRoute?> buildAssetViewerRoute(String assetId, WidgetRef ref) async {
-    final asset = await _assetService.getRemoteAsset(assetId);
-    if (asset == null) {
+    final scope = ref.read(currentRemoteAlbumScopedProvider);
+    if (scope == null) {
       return null;
     }
+    final asset = await _assetService.getRemoteAsset(assetId);
+    if (asset == null || ref.read(currentRemoteAlbumScopedProvider) != scope) {
+      return null;
+    }
+
+    final album = ref.read(currentRemoteAlbumProvider);
+    if (album == null) return null;
 
     AssetViewer.setAsset(ref, asset);
     return AssetViewerRoute(
       initialIndex: 0,
       timelineService: _timelineFactory.fromAssets([asset], TimelineOrigin.albumActivities),
-      currentAlbum: ref.read(currentRemoteAlbumProvider),
+      currentAlbum: album,
+      albumScope: scope,
     );
   }
 }

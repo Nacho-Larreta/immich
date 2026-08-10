@@ -9,6 +9,7 @@ import 'package:immich_mobile/providers/remote_media.provider.dart';
 import 'package:immich_mobile/constants/enums.dart';
 import 'package:immich_mobile/domain/models/album/album.model.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/domain/models/server_access.model.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/extensions/theme_extensions.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
@@ -22,6 +23,7 @@ import 'package:immich_mobile/providers/asset_viewer/asset_viewer.provider.dart'
 import 'package:immich_mobile/providers/infrastructure/album.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/asset.provider.dart';
 import 'package:immich_mobile/providers/timeline/multiselect.provider.dart';
+import 'package:immich_mobile/providers/server_access.provider.dart';
 import 'package:immich_mobile/providers/user.provider.dart';
 import 'package:immich_mobile/routing/router.dart';
 import 'package:immich_mobile/services/app_settings.service.dart';
@@ -36,8 +38,9 @@ typedef AlbumSelectorCallback = void Function(RemoteAlbum album);
 class AlbumSelector extends ConsumerStatefulWidget {
   final AlbumSelectorCallback onAlbumSelected;
   final Function? onKeyboardExpanded;
+  final bool canMutate;
 
-  const AlbumSelector({super.key, required this.onAlbumSelected, this.onKeyboardExpanded});
+  const AlbumSelector({super.key, required this.onAlbumSelected, required this.canMutate, this.onKeyboardExpanded});
 
   @override
   ConsumerState<AlbumSelector> createState() => _AlbumSelectorState();
@@ -189,6 +192,9 @@ class _AlbumSelectorState extends ConsumerState<AlbumSelector> {
   @override
   Widget build(BuildContext context) {
     final userId = ref.watch(currentUserProvider.select((user) => user?.id));
+    final canMutate =
+        widget.canMutate &&
+        ref.watch(serverAccessProvider.select((policy) => policy.allows(ServerCapability.remoteMutation)));
 
     // refilter and sort when albums change
     ref.listen(remoteAlbumProvider.select((state) => state.albums), (_, _) async {
@@ -223,8 +229,18 @@ class _AlbumSelectorState extends ConsumerState<AlbumSelector> {
             currentIsReverse: sort.isReverse,
           ),
           isGrid
-              ? _AlbumGrid(albums: shownAlbums, userId: userId, onAlbumSelected: widget.onAlbumSelected)
-              : _AlbumList(albums: shownAlbums, userId: userId, onAlbumSelected: widget.onAlbumSelected),
+              ? _AlbumGrid(
+                  albums: shownAlbums,
+                  userId: userId,
+                  canMutate: canMutate,
+                  onAlbumSelected: widget.onAlbumSelected,
+                )
+              : _AlbumList(
+                  albums: shownAlbums,
+                  userId: userId,
+                  canMutate: canMutate,
+                  onAlbumSelected: widget.onAlbumSelected,
+                ),
         ],
       ),
     );
@@ -571,10 +587,16 @@ class _QuickSortAndViewMode extends StatelessWidget {
 }
 
 class _AlbumList extends ConsumerWidget {
-  const _AlbumList({required this.albums, required this.userId, required this.onAlbumSelected});
+  const _AlbumList({
+    required this.albums,
+    required this.userId,
+    required this.canMutate,
+    required this.onAlbumSelected,
+  });
 
   final List<RemoteAlbum> albums;
   final String? userId;
+  final bool canMutate;
   final AlbumSelectorCallback onAlbumSelected;
 
   @override
@@ -594,7 +616,7 @@ class _AlbumList extends ConsumerWidget {
           final album = albums[index];
           final isOwner = album.ownerId == userId;
 
-          if (isOwner) {
+          if (isOwner && canMutate) {
             return Padding(
               padding: const EdgeInsets.only(bottom: 8.0),
               child: Dismissible(
@@ -620,13 +642,13 @@ class _AlbumList extends ConsumerWidget {
                 onDismissed: (direction) async {
                   await ref.read(remoteAlbumProvider.notifier).deleteAlbum(album.id);
                 },
-                child: AlbumTile(album: album, isOwner: isOwner, onAlbumSelected: onAlbumSelected),
+                child: AlbumTile(album: album, isOwner: isOwner, onAlbumSelected: canMutate ? onAlbumSelected : null),
               ),
             );
           } else {
             return Padding(
               padding: const EdgeInsets.only(bottom: 8.0),
-              child: AlbumTile(album: album, isOwner: isOwner, onAlbumSelected: onAlbumSelected),
+              child: AlbumTile(album: album, isOwner: isOwner, onAlbumSelected: canMutate ? onAlbumSelected : null),
             );
           }
         },
@@ -637,10 +659,16 @@ class _AlbumList extends ConsumerWidget {
 }
 
 class _AlbumGrid extends StatelessWidget {
-  const _AlbumGrid({required this.albums, required this.userId, required this.onAlbumSelected});
+  const _AlbumGrid({
+    required this.albums,
+    required this.userId,
+    required this.canMutate,
+    required this.onAlbumSelected,
+  });
 
   final List<RemoteAlbum> albums;
   final String? userId;
+  final bool canMutate;
   final AlbumSelectorCallback onAlbumSelected;
 
   @override
@@ -664,7 +692,7 @@ class _AlbumGrid extends StatelessWidget {
         ),
         delegate: SliverChildBuilderDelegate((context, index) {
           final album = albums[index];
-          return _GridAlbumCard(album: album, userId: userId, onAlbumSelected: onAlbumSelected);
+          return _GridAlbumCard(album: album, userId: userId, onAlbumSelected: canMutate ? onAlbumSelected : null);
         }, childCount: albums.length),
       ),
     );
@@ -676,14 +704,14 @@ class _GridAlbumCard extends ConsumerWidget {
 
   final RemoteAlbum album;
   final String? userId;
-  final AlbumSelectorCallback onAlbumSelected;
+  final AlbumSelectorCallback? onAlbumSelected;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final albumThumbnailAsset = ref.read(assetServiceProvider).getRemoteAsset(album.thumbnailAssetId ?? "");
 
     return GestureDetector(
-      onTap: () => onAlbumSelected(album),
+      onTap: onAlbumSelected == null ? null : () => onAlbumSelected!(album),
       child: Card(
         elevation: 0,
         color: context.colorScheme.surfaceBright,

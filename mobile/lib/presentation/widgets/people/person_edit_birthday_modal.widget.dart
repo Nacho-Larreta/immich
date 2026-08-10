@@ -3,9 +3,11 @@ import 'package:flutter/material.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/models/person.model.dart';
+import 'package:immich_mobile/domain/models/server_access.model.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
 import 'package:immich_mobile/providers/infrastructure/people.provider.dart';
+import 'package:immich_mobile/providers/server_access.provider.dart';
 import 'package:immich_mobile/widgets/common/immich_toast.dart';
 import 'package:scroll_date_picker/scroll_date_picker.dart';
 import 'package:immich_mobile/utils/debug_print.dart';
@@ -30,10 +32,15 @@ class _DriftPersonNameEditFormState extends ConsumerState<DriftPersonBirthdayEdi
 
   void saveBirthday() async {
     try {
-      final result = await ref.read(driftPeopleServiceProvider).updateBrithday(widget.person.id, _selectedDate);
+      if (!ref.read(serverAccessProvider).allows(ServerCapability.remoteMutation)) {
+        throw StateError('Server mutations require an online authenticated session');
+      }
+      final result = await ref
+          .read(driftPeopleServiceProvider)
+          .updateBrithday(widget.person.id, widget.person.ownerId, _selectedDate);
 
       if (result != 0) {
-        ref.invalidate(driftGetAllPeopleProvider);
+        ref.invalidate(driftGetAllPeopleProvider(widget.person.ownerId));
         context.pop<DateTime>(_selectedDate);
       }
     } catch (error) {

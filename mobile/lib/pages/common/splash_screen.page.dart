@@ -307,7 +307,10 @@ class SplashScreenPageState extends ConsumerState<SplashScreenPage> {
             .activate(
               confirmedEndpoint: cachedEndpoint?.hasAuthority == true ? cachedEndpoint : null,
               hasRemoteAuthentication: hasRemoteAuthentication,
-              fullLocalSync: Platform.isAndroid,
+              fullLocalSync: shouldRunFullLocalSync(
+                hasRemoteAuthentication: hasRemoteAuthentication,
+                isAndroid: Platform.isAndroid,
+              ),
             );
       },
     ).run();
@@ -322,3 +325,7 @@ class SplashScreenPageState extends ConsumerState<SplashScreenPage> {
     );
   }
 }
+
+@visibleForTesting
+bool shouldRunFullLocalSync({required bool hasRemoteAuthentication, required bool isAndroid}) =>
+    !hasRemoteAuthentication || isAndroid;

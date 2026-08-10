@@ -10,25 +10,25 @@ class DriftPeopleService {
 
   const DriftPeopleService(this._repository, this._personApiRepository);
 
-  Future<DriftPerson?> get(String personId) {
-    return _repository.get(personId);
+  Future<DriftPerson?> get(String personId, String ownerId) {
+    return _repository.get(personId, ownerId);
   }
 
-  Future<List<DriftPerson>> getAssetPeople(String assetId) {
-    return _repository.getAssetPeople(assetId);
+  Future<List<DriftPerson>> getAssetPeople(String assetId, String ownerId) {
+    return _repository.getAssetPeople(assetId, ownerId);
   }
 
-  Future<List<DriftPerson>> getAllPeople() {
-    return _repository.getAllPeople();
+  Future<List<DriftPerson>> getAllPeople(String ownerId) {
+    return _repository.getAllPeople(ownerId);
   }
 
-  Future<int> updateName(String personId, String name) async {
+  Future<int> updateName(String personId, String ownerId, String name) async {
     await _personApiRepository.update(personId, name: name);
-    return _repository.updateName(personId, name);
+    return _repository.updateName(personId, ownerId, name);
   }
 
-  Future<int> updateBrithday(String personId, DateTime birthday) async {
+  Future<int> updateBrithday(String personId, String ownerId, DateTime birthday) async {
     await _personApiRepository.update(personId, birthday: birthday);
-    return _repository.updateBirthday(personId, birthday);
+    return _repository.updateBirthday(personId, ownerId, birthday);
   }
 }

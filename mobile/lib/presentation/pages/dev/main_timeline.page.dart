@@ -31,33 +31,35 @@ class MainTimelinePage extends ConsumerWidget {
     final reachabilityPhase = ref.watch(serverReachabilityStateProvider.select((state) => state.phase));
     final galleryPermission = ref.watch(galleryPermissionNotifier);
 
-    return Timeline(
-      topSliverWidget: MainTimelineTopSlivers(
-        source: sourceSelection.effectiveSource,
-        selector: AssetSourceSelector(
-          selectedSource: sourceSelection.effectiveSource,
-          hasConfiguredServer: authenticationPhase != RemoteAuthenticationPhase.unconfigured,
-          requiresReauthentication: authenticationPhase == RemoteAuthenticationPhase.reauthenticationRequired,
-          reachabilityPhase: reachabilityPhase,
-          galleryPermission: galleryPermission,
-          onSourceSelected: (source) => unawaited(
-            ref
-                .read(timelineSourceSelectionProvider.notifier)
-                .select(source)
-                .onError((error, stackTrace) => _showPreferenceError(context)),
+    return MainTimelineSafeViewport(
+      child: Timeline(
+        topSliverWidget: MainTimelineTopSlivers(
+          source: sourceSelection.effectiveSource,
+          selector: AssetSourceSelector(
+            selectedSource: sourceSelection.effectiveSource,
+            hasConfiguredServer: authenticationPhase != RemoteAuthenticationPhase.unconfigured,
+            requiresReauthentication: authenticationPhase == RemoteAuthenticationPhase.reauthenticationRequired,
+            reachabilityPhase: reachabilityPhase,
+            galleryPermission: galleryPermission,
+            onSourceSelected: (source) => unawaited(
+              ref
+                  .read(timelineSourceSelectionProvider.notifier)
+                  .select(source)
+                  .onError((error, stackTrace) => _showPreferenceError(context)),
+            ),
+            onConnectServer: () => unawaited(context.pushRoute(const LoginRoute())),
+            onManageGalleryPermission: () => unawaited(openAppSettings()),
           ),
-          onConnectServer: () => unawaited(context.pushRoute(const LoginRoute())),
-          onManageGalleryPermission: () => unawaited(openAppSettings()),
+          memoryLaneBuilder: (context) => const DriftMemoryLane(),
         ),
-        memoryLaneBuilder: (context) => const DriftMemoryLane(),
+        emptyWidget: MainTimelineEmptyState(
+          messageKey: mainTimelineEmptyMessageKey(sourceSelection.effectiveSource, reachabilityPhase),
+        ),
+        errorWidgetBuilder: (error, stackTrace) =>
+            MainTimelineErrorState(onRetry: () => ref.invalidate(timelineServiceProvider)),
+        showStorageIndicator: true,
+        onInteractive: performance.recordTimelineInteractive,
       ),
-      emptyWidget: MainTimelineEmptyState(
-        messageKey: mainTimelineEmptyMessageKey(sourceSelection.effectiveSource, reachabilityPhase),
-      ),
-      errorWidgetBuilder: (error, stackTrace) =>
-          MainTimelineErrorState(onRetry: () => ref.invalidate(timelineServiceProvider)),
-      showStorageIndicator: true,
-      onInteractive: performance.recordTimelineInteractive,
     );
   }
 
@@ -66,6 +68,15 @@ class MainTimelinePage extends ConsumerWidget {
       context,
     ).showSnackBar(SnackBar(content: Text('timeline_source_save_error'.t(context: context))));
   }
+}
+
+class MainTimelineSafeViewport extends StatelessWidget {
+  const MainTimelineSafeViewport({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => SafeArea(left: false, right: false, bottom: false, child: child);
 }
 
 class MainTimelineTopSlivers extends StatelessWidget {

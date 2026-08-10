@@ -7,14 +7,18 @@ import 'package:flutter/services.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/providers/remote_media.provider.dart';
 import 'package:immich_mobile/domain/models/album/album.model.dart';
+import 'package:immich_mobile/domain/models/album/remote_album_scope.model.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/events.model.dart';
+import 'package:immich_mobile/domain/models/server_access.model.dart';
 import 'package:immich_mobile/domain/services/timeline.service.dart';
+import 'package:immich_mobile/domain/services/remote_album_viewer_session.dart';
 import 'package:immich_mobile/domain/utils/event_stream.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/extensions/platform_extensions.dart';
 import 'package:immich_mobile/extensions/scroll_extensions.dart';
 import 'package:immich_mobile/presentation/widgets/action_buttons/download_status_floating_button.widget.dart';
+import 'package:immich_mobile/presentation/widgets/album/remote_album_scope_boundary.widget.dart';
 import 'package:immich_mobile/presentation/widgets/asset_viewer/asset_page.widget.dart';
 import 'package:immich_mobile/presentation/widgets/asset_viewer/asset_preloader.dart';
 import 'package:immich_mobile/presentation/widgets/asset_viewer/asset_stack.provider.dart';
@@ -22,17 +26,22 @@ import 'package:immich_mobile/providers/asset_viewer/asset_viewer.provider.dart'
 import 'package:immich_mobile/presentation/widgets/asset_viewer/viewer_top_app_bar.widget.dart';
 import 'package:immich_mobile/presentation/widgets/asset_viewer/viewer_bottom_app_bar.widget.dart';
 import 'package:immich_mobile/providers/cast.provider.dart';
-import 'package:immich_mobile/providers/infrastructure/current_album.provider.dart';
+import 'package:immich_mobile/providers/infrastructure/remote_album.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/timeline.provider.dart';
 import 'package:immich_mobile/providers/local_media.provider.dart';
+import 'package:immich_mobile/providers/server_access.provider.dart';
+import 'package:immich_mobile/providers/server_reachability.provider.dart';
+import 'package:immich_mobile/routing/router.dart';
+import 'package:immich_mobile/presentation/widgets/server/server_access_boundary.widget.dart';
 import 'package:immich_mobile/widgets/photo_view/photo_view.dart';
 
 @RoutePage()
-class AssetViewerPage extends StatelessWidget {
+class AssetViewerPage extends ConsumerStatefulWidget {
   final int initialIndex;
   final TimelineService timelineService;
   final int? heroOffset;
   final RemoteAlbum? currentAlbum;
+  final RemoteAlbumScope? albumScope;
 
   const AssetViewerPage({
     super.key,
@@ -40,20 +49,64 @@ class AssetViewerPage extends StatelessWidget {
     required this.timelineService,
     this.heroOffset,
     this.currentAlbum,
+    this.albumScope,
   });
 
   @override
+  ConsumerState<AssetViewerPage> createState() => _AssetViewerPageState();
+}
+
+class _AssetViewerPageState extends ConsumerState<AssetViewerPage> {
+  RemoteAlbumViewerSession? _albumSession;
+  bool _didCaptureAlbumScope = false;
+
+  @override
   Widget build(BuildContext context) {
-    // This is necessary to ensure that the timeline service is available
-    // since the Timeline and AssetViewer are on different routes / Widget subtrees.
+    final album = widget.currentAlbum;
+    if (album != null) {
+      final access = ref.watch(serverAccessProvider);
+      final currentScope = ref.watch(remoteAlbumScopeProvider(album.id));
+      if (!_didCaptureAlbumScope) {
+        _didCaptureAlbumScope = true;
+        final initialScope = widget.albumScope ?? currentScope;
+        if (initialScope != null) {
+          _albumSession = RemoteAlbumViewerSession(scope: initialScope, timeline: widget.timelineService);
+        }
+      }
+
+      final albumSession = _albumSession;
+      if (albumSession == null || !albumSession.matches(currentScope)) {
+        return _unavailableAlbumViewer(access);
+      }
+
+      return RemoteAlbumScopeBoundary(
+        albumId: album.id,
+        loadingBuilder: (_) => const Scaffold(body: Center(child: CircularProgressIndicator.adaptive())),
+        unavailableBuilder: (_) => _unavailableAlbumViewer(access),
+        builder: (context, scope, _) {
+          return ProviderScope(
+            overrides: [timelineServiceProvider.overrideWithValue(albumSession.timeline)],
+            child: AssetViewer(key: ValueKey(scope), initialIndex: widget.initialIndex, heroOffset: widget.heroOffset),
+          );
+        },
+      );
+    }
+
     return ProviderScope(
-      overrides: [
-        timelineServiceProvider.overrideWithValue(timelineService),
-        currentRemoteAlbumScopedProvider.overrideWithValue(currentAlbum),
-      ],
-      child: AssetViewer(initialIndex: initialIndex, heroOffset: heroOffset),
+      overrides: [timelineServiceProvider.overrideWithValue(widget.timelineService)],
+      child: AssetViewer(initialIndex: widget.initialIndex, heroOffset: widget.heroOffset),
     );
   }
+
+  Widget _unavailableAlbumViewer(ServerAccessPolicy access) => Scaffold(
+    body: ServerAccessNotice(
+      mode: access.mode,
+      variant: ServerAccessNoticeVariant.fullPage,
+      onConnect: () => context.pushRoute(const LoginRoute()),
+      onReauthenticate: () => context.pushRoute(const LoginRoute()),
+      onRetry: () => ref.read(serverReachabilityCoordinatorProvider).activateSession(),
+    ),
+  );
 }
 
 class AssetViewer extends ConsumerStatefulWidget {

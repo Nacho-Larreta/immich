@@ -67,14 +67,107 @@ void main() {
     expect(operation.cancelCount, 1);
     expect(await load, isNull);
   });
+
+  test('preserves the typed local failure code', () async {
+    final request = _request(_SequencePort([const OfflineResult.failure(OfflineErrorCode.mediaNotLocal)]));
+
+    await expectLater(
+      request.load(_unusedDecoder),
+      throwsA(isA<LocalMediaLoadFailure>().having((failure) => failure.code, 'code', OfflineErrorCode.mediaNotLocal)),
+    );
+  });
+
+  test('retries a transient thumbnail failure exactly once and releases the successful payload', () async {
+    final lease = _Lease(Uint8List.fromList([0, 0, 0, 255]));
+    final port = _SequencePort([
+      const OfflineResult.failure(OfflineErrorCode.timeout),
+      OfflineResult.success(OwnedRgbaLocalMediaPayload(lease: lease, widthPx: 1, heightPx: 1, rowBytes: 4)),
+    ]);
+    final request = _request(port);
+
+    final image = await request.load(_unusedDecoder);
+
+    expect(image, isNotNull);
+    expect(port.requests, hasLength(2));
+    expect(lease.releaseCount, 1);
+    image?.dispose();
+  });
+
+  test('caps transient thumbnail attempts at two', () async {
+    final port = _SequencePort([
+      const OfflineResult.failure(OfflineErrorCode.mediaUnavailable),
+      const OfflineResult.failure(OfflineErrorCode.mediaUnavailable),
+      OfflineResult.success(
+        OwnedRgbaLocalMediaPayload(
+          lease: _Lease(Uint8List.fromList([0, 0, 0, 255])),
+          widthPx: 1,
+          heightPx: 1,
+          rowBytes: 4,
+        ),
+      ),
+    ]);
+    final request = _request(port);
+
+    await expectLater(
+      request.load(_unusedDecoder),
+      throwsA(
+        isA<LocalMediaLoadFailure>().having((failure) => failure.code, 'code', OfflineErrorCode.mediaUnavailable),
+      ),
+    );
+    expect(port.requests, hasLength(2));
+  });
+
+  test('cancellation after a transient result prevents the retry', () async {
+    final port = _SequencePort([const OfflineResult.failure(OfflineErrorCode.timeout)]);
+    final request = _request(port);
+
+    final load = request.load(_unusedDecoder);
+    request.cancel();
+
+    expect(await load, isNull);
+    expect(port.requests, hasLength(1));
+  });
+
+  for (final code in [OfflineErrorCode.mediaNotLocal, OfflineErrorCode.iCloudUnavailable, OfflineErrorCode.cancelled]) {
+    test('does not retry a $code thumbnail failure', () async {
+      final port = _SequencePort([OfflineResult.failure(code)]);
+      final request = _request(port);
+
+      await expectLater(
+        request.load(_unusedDecoder),
+        throwsA(isA<LocalMediaLoadFailure>().having((failure) => failure.code, 'code', code)),
+      );
+      expect(port.requests, hasLength(1));
+    });
+  }
+
+  test('does not retry transient failures for original media', () async {
+    final port = _SequencePort([const OfflineResult.failure(OfflineErrorCode.timeout)]);
+    final request = _request(port, rendition: const LocalMediaRendition.originalEncoded());
+
+    await expectLater(request.loadCodec(), throwsA(isA<LocalMediaLoadFailure>()));
+    expect(port.requests, hasLength(1));
+  });
+
+  test('does not retry a transient thumbnail failure when iCloud access is allowed', () async {
+    final port = _SequencePort([const OfflineResult.failure(OfflineErrorCode.timeout)]);
+    final request = _request(port, policy: LocalMediaPolicy.allowICloud);
+
+    await expectLater(request.load(_unusedDecoder), throwsA(isA<LocalMediaLoadFailure>()));
+    expect(port.requests, hasLength(1));
+  });
 }
 
-LocalImageRequest _request(LocalMediaPort<OwnedLocalMediaPayload> port, {LocalMediaRendition? rendition}) {
+LocalImageRequest _request(
+  LocalMediaPort<OwnedLocalMediaPayload> port, {
+  LocalMediaRendition? rendition,
+  LocalMediaPolicy policy = LocalMediaPolicy.localOnly,
+}) {
   return LocalImageRequest(
     media: port,
     assetId: 'asset-1',
     assetType: AssetType.image,
-    policy: LocalMediaPolicy.localOnly,
+    policy: policy,
     rendition: rendition ?? LocalMediaRendition.thumbnail(widthPx: 1, heightPx: 1),
   );
 }
@@ -90,6 +183,22 @@ final class _Port implements LocalMediaPort<OwnedLocalMediaPayload> {
 
   @override
   CancellableMediaRequest<OwnedLocalMediaPayload> request(LocalMediaRequest request) => operation;
+
+  @override
+  Future<void> cancelAll() async {}
+}
+
+final class _SequencePort implements LocalMediaPort<OwnedLocalMediaPayload> {
+  _SequencePort(this.results);
+
+  final List<OfflineResult<OwnedLocalMediaPayload>> results;
+  final List<LocalMediaRequest> requests = [];
+
+  @override
+  CancellableMediaRequest<OwnedLocalMediaPayload> request(LocalMediaRequest request) {
+    requests.add(request);
+    return _Operation(result: results[requests.length - 1]);
+  }
 
   @override
   Future<void> cancelAll() async {}

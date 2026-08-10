@@ -12,6 +12,7 @@ import 'package:immich_mobile/domain/models/media_request.model.dart';
 import 'package:immich_mobile/domain/models/offline_result.model.dart';
 import 'package:immich_mobile/domain/models/remote_media_access.model.dart';
 import 'package:immich_mobile/domain/services/timeline.service.dart';
+import 'package:immich_mobile/infrastructure/loaders/image_request.dart';
 import 'package:immich_mobile/presentation/widgets/asset_viewer/asset_preloader.dart';
 import 'package:immich_mobile/presentation/widgets/images/local_image_provider.dart';
 import 'package:immich_mobile/presentation/widgets/images/remote_image_provider.dart';
@@ -34,11 +35,20 @@ void main() {
     final stream = provider.loadAnimatedMediaForTesting(_unusedDecoder).map((event) {
       if (event case ImageInfo image) {
         image.dispose();
+        return 'preview';
       }
       return event;
     });
 
-    await expectLater(stream, emitsInOrder([isA<ImageInfo>(), emitsError(isA<StateError>())]));
+    await expectLater(
+      stream,
+      emitsInOrder([
+        'preview',
+        emitsError(
+          isA<LocalMediaLoadFailure>().having((failure) => failure.code, 'code', OfflineErrorCode.mediaUnavailable),
+        ),
+      ]),
+    );
 
     expect(port.requests, isNotEmpty);
     expect(port.requests.every((request) => request.policy == LocalMediaPolicy.allowICloud), isTrue);

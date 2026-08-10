@@ -3,9 +3,14 @@ import 'dart:async';
 import 'package:auto_route/auto_route.dart';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:immich_mobile/domain/models/server_access.model.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/presentation/widgets/album/album_selector.widget.dart';
+import 'package:immich_mobile/presentation/widgets/server/server_access_boundary.widget.dart';
 import 'package:immich_mobile/providers/infrastructure/album.provider.dart';
+import 'package:immich_mobile/providers/server_access.provider.dart';
+import 'package:immich_mobile/providers/server_reachability.provider.dart';
+import 'package:immich_mobile/providers/user.provider.dart';
 import 'package:immich_mobile/routing/router.dart';
 import 'package:immich_mobile/widgets/common/immich_sliver_app_bar.dart';
 
@@ -32,6 +37,22 @@ class _DriftAlbumsPageState extends ConsumerState<DriftAlbumsPage> {
 
   @override
   Widget build(BuildContext context) {
+    final access = ref.watch(serverAccessProvider);
+    final viewerId = ref.watch(currentUserProvider.select((user) => user?.id));
+    final canReadCache = access.allows(ServerCapability.cachedRead) && viewerId != null;
+    final canMutate = access.allows(ServerCapability.remoteMutation);
+
+    if (!canReadCache) {
+      return Scaffold(
+        body: CustomScrollView(
+          slivers: [
+            const ImmichSliverAppBar(snap: false, floating: false, pinned: true, showUploadButton: false),
+            SliverFillRemaining(hasScrollBody: false, child: _ServerAccessNotice(access: access)),
+          ],
+        ),
+      );
+    }
+
     final albumCount = ref.watch(remoteAlbumProvider.select((state) => state.albums.length));
     final showScrollbar = albumCount > 20;
 
@@ -43,14 +64,20 @@ class _DriftAlbumsPageState extends ConsumerState<DriftAlbumsPage> {
           floating: false,
           pinned: true,
           actions: [
-            IconButton(
-              onPressed: () => context.pushRoute(const DriftCreateAlbumRoute()),
-              icon: const Icon(Icons.add_rounded),
-            ),
+            if (canMutate)
+              IconButton(
+                onPressed: () => context.pushRoute(const DriftCreateAlbumRoute()),
+                icon: const Icon(Icons.add_rounded),
+              ),
           ],
           showUploadButton: false,
         ),
+        if (!canMutate)
+          SliverToBoxAdapter(
+            child: _ServerAccessNotice(access: access, variant: ServerAccessNoticeVariant.section),
+          ),
         AlbumSelector(
+          canMutate: canMutate,
           onAlbumSelected: (album) {
             context.router.push(RemoteAlbumRoute(album: album));
           },
@@ -75,6 +102,24 @@ class _DriftAlbumsPageState extends ConsumerState<DriftAlbumsPage> {
               child: scrollView,
             )
           : scrollView,
+    );
+  }
+}
+
+class _ServerAccessNotice extends ConsumerWidget {
+  const _ServerAccessNotice({required this.access, this.variant = ServerAccessNoticeVariant.fullPage});
+
+  final ServerAccessPolicy access;
+  final ServerAccessNoticeVariant variant;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return ServerAccessNotice(
+      mode: access.mode,
+      variant: variant,
+      onConnect: () => context.pushRoute(const LoginRoute()),
+      onReauthenticate: () => context.pushRoute(const LoginRoute()),
+      onRetry: () => ref.read(serverReachabilityCoordinatorProvider).activateSession(),
     );
   }
 }

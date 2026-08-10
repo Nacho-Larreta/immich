@@ -3,6 +3,7 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/constants/enums.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/setting.model.dart';
+import 'package:immich_mobile/domain/models/server_access.model.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/providers/cast.provider.dart';
 import 'package:immich_mobile/providers/asset_viewer/asset_viewer.provider.dart';
@@ -11,6 +12,7 @@ import 'package:immich_mobile/providers/infrastructure/setting.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/timeline.provider.dart';
 import 'package:immich_mobile/providers/routes.provider.dart';
 import 'package:immich_mobile/providers/server_info.provider.dart';
+import 'package:immich_mobile/providers/server_access.provider.dart';
 import 'package:immich_mobile/providers/user.provider.dart';
 import 'package:immich_mobile/utils/action_button.utils.dart';
 
@@ -35,6 +37,9 @@ class ViewerKebabMenu extends ConsumerWidget {
     final currentAlbum = ref.watch(currentRemoteAlbumProvider);
     final isArchived = asset is RemoteAsset && asset.visibility == AssetVisibility.archive;
     final advancedTroubleshooting = ref.watch(settingsProvider.notifier).get(Setting.advancedTroubleshooting);
+    final canMutate = ref.watch(
+      serverAccessProvider.select((policy) => policy.allows(ServerCapability.remoteMutation)),
+    );
 
     final actionContext = ActionButtonContext(
       asset: asset,
@@ -49,6 +54,7 @@ class ViewerKebabMenu extends ConsumerWidget {
       isCasting: isCasting,
       timelineOrigin: timelineOrigin,
       originalTheme: originalTheme,
+      canMutate: canMutate,
     );
 
     final menuChildren = ActionButtonBuilder.buildViewerKebabMenu(actionContext, context, ref);

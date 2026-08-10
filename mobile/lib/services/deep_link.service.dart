@@ -1,7 +1,8 @@
 import 'package:auto_route/auto_route.dart';
+import 'package:flutter/foundation.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/models/memory.model.dart';
-import 'package:immich_mobile/domain/models/user.model.dart';
+import 'package:immich_mobile/domain/models/album/remote_album_scope.model.dart';
 import 'package:immich_mobile/domain/services/asset.service.dart' as beta_asset_service;
 import 'package:immich_mobile/domain/services/memory.service.dart';
 import 'package:immich_mobile/domain/services/people.service.dart';
@@ -12,8 +13,8 @@ import 'package:immich_mobile/providers/infrastructure/album.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/asset.provider.dart' as beta_asset_provider;
 import 'package:immich_mobile/providers/infrastructure/memory.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/people.provider.dart';
+import 'package:immich_mobile/providers/infrastructure/remote_album.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/timeline.provider.dart';
-import 'package:immich_mobile/providers/user.provider.dart';
 import 'package:immich_mobile/routing/router.dart';
 
 final deepLinkServiceProvider = Provider(
@@ -23,7 +24,7 @@ final deepLinkServiceProvider = Provider(
     ref.watch(remoteAlbumServiceProvider),
     ref.watch(driftMemoryServiceProvider),
     ref.watch(driftPeopleServiceProvider),
-    ref.watch(currentUserProvider),
+    () => ref.read(remoteViewerScopeProvider),
   ),
 );
 
@@ -34,7 +35,7 @@ class DeepLinkService {
   final DriftMemoryService _betaMemoryService;
   final DriftPeopleService _betaPeopleService;
 
-  final UserDto? _currentUser;
+  final RemoteViewerScope? Function() _readRemoteViewerScope;
 
   const DeepLinkService(
     this._betaTimelineFactory,
@@ -42,7 +43,7 @@ class DeepLinkService {
     this._betaRemoteAlbumService,
     this._betaMemoryService,
     this._betaPeopleService,
-    this._currentUser,
+    this._readRemoteViewerScope,
   );
 
   DeepLink _handleColdStart(PageRouteInfo<dynamic> route, bool isColdStart) {
@@ -60,11 +61,11 @@ class DeepLinkService {
     final queryParams = link.uri.queryParameters;
 
     PageRouteInfo<dynamic>? deepLinkRoute = switch (intent) {
-      "memory" => await _buildMemoryDeepLink(queryParams['id'] ?? ''),
-      "asset" => await _buildAssetDeepLink(queryParams['id'] ?? '', ref),
-      "album" => await _buildAlbumDeepLink(queryParams['id'] ?? ''),
-      "people" => await _buildPeopleDeepLink(queryParams['id'] ?? ''),
-      "activity" => await _buildActivityDeepLink(queryParams['albumId'] ?? ''),
+      "memory" => await buildMemoryDeepLink(queryParams['id'] ?? ''),
+      "asset" => await buildAssetDeepLink(queryParams['id'] ?? '', ref),
+      "album" => await buildAlbumDeepLink(queryParams['id'] ?? ''),
+      "people" => await buildPeopleDeepLink(queryParams['id'] ?? ''),
+      "activity" => await buildActivityDeepLink(queryParams['albumId'] ?? ''),
       _ => null,
     };
 
@@ -91,15 +92,15 @@ class DeepLinkService {
     PageRouteInfo<dynamic>? deepLinkRoute;
     if (assetRegex.hasMatch(path)) {
       final assetId = assetRegex.firstMatch(path)?.group(1) ?? '';
-      deepLinkRoute = await _buildAssetDeepLink(assetId, ref);
+      deepLinkRoute = await buildAssetDeepLink(assetId, ref);
     } else if (albumRegex.hasMatch(path)) {
       final albumId = albumRegex.firstMatch(path)?.group(1) ?? '';
-      deepLinkRoute = await _buildAlbumDeepLink(albumId);
+      deepLinkRoute = await buildAlbumDeepLink(albumId);
     } else if (peopleRegex.hasMatch(path)) {
       final peopleId = peopleRegex.firstMatch(path)?.group(1) ?? '';
-      deepLinkRoute = await _buildPeopleDeepLink(peopleId);
+      deepLinkRoute = await buildPeopleDeepLink(peopleId);
     } else if (path == "/memory") {
-      deepLinkRoute = await _buildMemoryDeepLink(null);
+      deepLinkRoute = await buildMemoryDeepLink(null);
     }
 
     // Deep link resolution failed, safely handle it based on the app state
@@ -111,32 +112,42 @@ class DeepLinkService {
     return _handleColdStart(deepLinkRoute, isColdStart);
   }
 
-  Future<PageRouteInfo?> _buildMemoryDeepLink(String? memoryId) async {
+  @visibleForTesting
+  Future<PageRouteInfo?> buildMemoryDeepLink(String? memoryId) async {
+    final initialScope = _readRemoteViewerScope();
+    if (initialScope == null) {
+      return null;
+    }
+
     List<DriftMemory> memories = [];
 
     if (memoryId == null) {
-      if (_currentUser == null) {
-        return null;
-      }
-
-      memories = await _betaMemoryService.getMemoryLane(_currentUser.id);
+      memories = (await _betaMemoryService.getMemoryLane(
+        initialScope.viewerId,
+      )).where((memory) => memory.ownerId == initialScope.viewerId).toList(growable: false);
     } else {
       final memory = await _betaMemoryService.get(memoryId);
-      if (memory != null) {
+      if (memory != null && memory.ownerId == initialScope.viewerId) {
         memories = [memory];
       }
     }
 
-    if (memories.isEmpty) {
+    if (_readRemoteViewerScope() != initialScope || memories.isEmpty) {
       return null;
     }
 
     return DriftMemoryRoute(memories: memories, memoryIndex: 0);
   }
 
-  Future<PageRouteInfo?> _buildAssetDeepLink(String assetId, WidgetRef ref) async {
+  @visibleForTesting
+  Future<PageRouteInfo?> buildAssetDeepLink(String assetId, WidgetRef ref) async {
+    final initialScope = _readRemoteViewerScope();
+    if (initialScope == null) {
+      return null;
+    }
+
     final asset = await _betaAssetService.getRemoteAsset(assetId);
-    if (asset == null) {
+    if (asset == null || asset.ownerId != initialScope.viewerId || _readRemoteViewerScope() != initialScope) {
       return null;
     }
 
@@ -147,30 +158,45 @@ class DeepLinkService {
     );
   }
 
-  Future<PageRouteInfo?> _buildAlbumDeepLink(String albumId) async {
-    final album = await _betaRemoteAlbumService.get(albumId);
+  @visibleForTesting
+  Future<PageRouteInfo?> buildAlbumDeepLink(String albumId) async {
+    final initialScope = _readRemoteViewerScope();
+    if (initialScope == null) {
+      return null;
+    }
+    final album = await _betaRemoteAlbumService.get(albumId, initialScope.viewerId);
 
-    if (album == null) {
+    if (album == null || _readRemoteViewerScope() != initialScope) {
       return null;
     }
 
     return RemoteAlbumRoute(album: album);
   }
 
-  Future<PageRouteInfo?> _buildActivityDeepLink(String albumId) async {
-    final album = await _betaRemoteAlbumService.get(albumId);
+  @visibleForTesting
+  Future<PageRouteInfo?> buildActivityDeepLink(String albumId) async {
+    final initialScope = _readRemoteViewerScope();
+    if (initialScope == null) {
+      return null;
+    }
+    final album = await _betaRemoteAlbumService.get(albumId, initialScope.viewerId);
 
-    if (album == null || album.isActivityEnabled == false) {
+    if (album == null || album.isActivityEnabled == false || _readRemoteViewerScope() != initialScope) {
       return null;
     }
 
     return DriftActivitiesRoute(album: album);
   }
 
-  Future<PageRouteInfo?> _buildPeopleDeepLink(String personId) async {
-    final person = await _betaPeopleService.get(personId);
+  @visibleForTesting
+  Future<PageRouteInfo?> buildPeopleDeepLink(String personId) async {
+    final initialScope = _readRemoteViewerScope();
+    if (initialScope == null) {
+      return null;
+    }
+    final person = await _betaPeopleService.get(personId, initialScope.viewerId);
 
-    if (person == null) {
+    if (person == null || person.ownerId != initialScope.viewerId || _readRemoteViewerScope() != initialScope) {
       return null;
     }
 

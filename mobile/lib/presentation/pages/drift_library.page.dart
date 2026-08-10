@@ -3,17 +3,22 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/models/media_request.model.dart';
+import 'package:immich_mobile/domain/models/server_access.model.dart';
 import 'package:immich_mobile/domain/models/user.model.dart';
 import 'package:immich_mobile/extensions/asyncvalue_extensions.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
 import 'package:immich_mobile/presentation/widgets/images/local_album_thumbnail.widget.dart';
 import 'package:immich_mobile/presentation/widgets/people/partner_user_avatar.widget.dart';
+import 'package:immich_mobile/presentation/widgets/server/server_access_boundary.widget.dart';
 import 'package:immich_mobile/providers/infrastructure/album.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/partner.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/people.provider.dart';
 import 'package:immich_mobile/providers/server_info.provider.dart';
 import 'package:immich_mobile/providers/remote_media.provider.dart';
+import 'package:immich_mobile/providers/server_access.provider.dart';
+import 'package:immich_mobile/providers/server_reachability.provider.dart';
+import 'package:immich_mobile/providers/user.provider.dart';
 import 'package:immich_mobile/routing/router.dart';
 import 'package:immich_mobile/utils/image_url_builder.dart';
 import 'package:immich_mobile/widgets/common/immich_sliver_app_bar.dart';
@@ -26,14 +31,56 @@ class DriftLibraryPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return const Scaffold(
+    final access = ref.watch(serverAccessProvider);
+    final viewerId = ref.watch(currentUserProvider.select((user) => user?.id));
+    final visibility = LibrarySurfaceVisibility.from(access, viewerId: viewerId);
+
+    return Scaffold(
       body: CustomScrollView(
         slivers: [
-          ImmichSliverAppBar(snap: false, floating: false, pinned: true, showUploadButton: false),
-          _ActionButtonGrid(),
-          _CollectionCards(),
-          _QuickAccessButtonList(),
+          const ImmichSliverAppBar(snap: false, floating: false, pinned: true, showUploadButton: false),
+          if (!visibility.showRemoteDestinations) _ServerNoticeSliver(access: access),
+          if (visibility.showRemoteDestinations) const _ActionButtonGrid(),
+          _CollectionCards(
+            viewerId: visibility.showCachedPeople ? viewerId : null,
+            showPlaces: visibility.showRemoteDestinations,
+          ),
+          if (visibility.showRemoteDestinations) const _QuickAccessButtonList(),
         ],
+      ),
+    );
+  }
+}
+
+@immutable
+final class LibrarySurfaceVisibility {
+  const LibrarySurfaceVisibility({required this.showCachedPeople, required this.showRemoteDestinations});
+
+  factory LibrarySurfaceVisibility.from(ServerAccessPolicy access, {required String? viewerId}) {
+    return LibrarySurfaceVisibility(
+      showCachedPeople: viewerId != null && access.allows(ServerCapability.cachedRead),
+      showRemoteDestinations: viewerId != null && access.allows(ServerCapability.remoteRead),
+    );
+  }
+
+  final bool showCachedPeople;
+  final bool showRemoteDestinations;
+}
+
+class _ServerNoticeSliver extends ConsumerWidget {
+  const _ServerNoticeSliver({required this.access});
+
+  final ServerAccessPolicy access;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return SliverToBoxAdapter(
+      child: ServerAccessNotice(
+        mode: access.mode,
+        variant: ServerAccessNoticeVariant.section,
+        onConnect: () => context.pushRoute(const LoginRoute()),
+        onReauthenticate: () => context.pushRoute(const LoginRoute()),
+        onRetry: () => ref.read(serverReachabilityCoordinatorProvider).activateSession(),
       ),
     );
   }
@@ -124,17 +171,24 @@ class _ActionButton extends StatelessWidget {
 }
 
 class _CollectionCards extends StatelessWidget {
-  const _CollectionCards();
+  const _CollectionCards({required this.viewerId, required this.showPlaces});
+
+  final String? viewerId;
+  final bool showPlaces;
 
   @override
   Widget build(BuildContext context) {
-    return const SliverPadding(
-      padding: EdgeInsets.symmetric(horizontal: 16),
+    return SliverPadding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
       sliver: SliverToBoxAdapter(
         child: Wrap(
           spacing: 8,
           runSpacing: 8,
-          children: [_PeopleCollectionCard(), _PlacesCollectionCard(), _LocalAlbumsCollectionCard()],
+          children: [
+            if (viewerId case final viewerId?) _PeopleCollectionCard(viewerId: viewerId),
+            if (showPlaces) const _PlacesCollectionCard(),
+            const _LocalAlbumsCollectionCard(),
+          ],
         ),
       ),
     );
@@ -142,11 +196,13 @@ class _CollectionCards extends StatelessWidget {
 }
 
 class _PeopleCollectionCard extends ConsumerWidget {
-  const _PeopleCollectionCard();
+  const _PeopleCollectionCard({required this.viewerId});
+
+  final String viewerId;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final people = ref.watch(driftGetAllPeopleProvider);
+    final people = ref.watch(driftGetAllPeopleProvider(viewerId));
 
     return LayoutBuilder(
       builder: (context, constraints) {

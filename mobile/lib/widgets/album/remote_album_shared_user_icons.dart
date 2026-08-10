@@ -12,11 +12,12 @@ class RemoteAlbumSharedUserIcons extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final currentAlbum = ref.watch(currentRemoteAlbumProvider);
-    if (currentAlbum == null) {
+    final scope = ref.watch(currentRemoteAlbumScopedProvider);
+    if (currentAlbum == null || scope == null) {
       return const SizedBox();
     }
 
-    final sharedUsersAsync = ref.watch(remoteAlbumSharedUsersProvider(currentAlbum.id));
+    final sharedUsersAsync = ref.watch(remoteAlbumSharedUsersProvider(scope));
 
     return sharedUsersAsync.maybeWhen(
       data: (sharedUsers) {

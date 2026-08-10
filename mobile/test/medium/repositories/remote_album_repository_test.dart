@@ -1,6 +1,11 @@
+import 'package:drift/drift.dart' show Value;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:immich_mobile/constants/enums.dart';
+import 'package:immich_mobile/domain/models/album/album.model.dart';
+import 'package:immich_mobile/domain/models/timeline.model.dart';
+import 'package:immich_mobile/infrastructure/entities/remote_album_user.entity.drift.dart';
 import 'package:immich_mobile/infrastructure/repositories/remote_album.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/timeline.repository.dart';
 
 import '../repository_context.dart';
 
@@ -205,6 +210,76 @@ void main() {
 
       // album2 (Jan 1) should come before album1 (Jan 25)
       expect(resultEnd, [album2.id, album1.id]);
+    });
+  });
+
+  group('identity-scoped cached reads', () {
+    test('returns only albums owned by or shared with the viewer', () async {
+      final userA = await ctx.newUser();
+      final userB = await ctx.newUser();
+      final ownedByA = await ctx.newRemoteAlbum(ownerId: userA.id);
+      final ownedByB = await ctx.newRemoteAlbum(ownerId: userB.id);
+      final sharedByA = await ctx.newRemoteAlbum(ownerId: userA.id);
+      await ctx.db
+          .into(ctx.db.remoteAlbumUserEntity)
+          .insert(
+            RemoteAlbumUserEntityCompanion(
+              albumId: Value(sharedByA.id),
+              userId: Value(userB.id),
+              role: const Value(AlbumUserRole.editor),
+            ),
+          );
+
+      final albumsForA = await sut.getAll(userA.id);
+      final albumsForB = await sut.getAll(userB.id);
+
+      expect(albumsForA.map((album) => album.id), unorderedEquals([ownedByA.id, sharedByA.id]));
+      expect(albumsForB.map((album) => album.id), unorderedEquals([ownedByB.id, sharedByA.id]));
+      expect(await sut.get(ownedByA.id, userB.id), isNull);
+      expect(await sut.get(sharedByA.id, userB.id), isNotNull);
+    });
+
+    test('secondary album reads require viewer membership', () async {
+      final owner = await ctx.newUser();
+      final outsider = await ctx.newUser();
+      final sharedUser = await ctx.newUser();
+      final album = await ctx.newRemoteAlbum(ownerId: owner.id);
+      final asset = await ctx.newRemoteAsset(ownerId: owner.id, createdAt: DateTime(2024, 4, 3));
+      await ctx.insertRemoteAlbumAsset(albumId: album.id, assetId: asset.id);
+      await ctx.db
+          .into(ctx.db.remoteAlbumUserEntity)
+          .insert(
+            RemoteAlbumUserEntityCompanion(
+              albumId: Value(album.id),
+              userId: Value(sharedUser.id),
+              role: const Value(AlbumUserRole.editor),
+            ),
+          );
+
+      expect(await sut.getAssets(album.id, owner.id), hasLength(1));
+      expect(await sut.getAssets(album.id, outsider.id), isEmpty);
+      expect(await sut.getSharedUsers(album.id, owner.id), hasLength(1));
+      expect(await sut.getSharedUsers(album.id, outsider.id), isEmpty);
+      final expectedDate = DateTime(2024, 4, 3).toUtc();
+      expect(await sut.getDateRange(album.id, owner.id), (expectedDate, expectedDate));
+      await expectLater(sut.getDateRange(album.id, outsider.id), throwsA(anything));
+      expect(await sut.watchAlbum(album.id, outsider.id).first, isNull);
+    });
+
+    test('album timeline returns no buckets or assets to a non-member viewer', () async {
+      final owner = await ctx.newUser();
+      final outsider = await ctx.newUser();
+      final album = await ctx.newRemoteAlbum(ownerId: owner.id);
+      final asset = await ctx.newRemoteAsset(ownerId: owner.id, createdAt: DateTime(2024, 4, 3));
+      await ctx.insertRemoteAlbumAsset(albumId: album.id, assetId: asset.id);
+      final timeline = DriftTimelineRepository(ctx.db);
+
+      final ownerQuery = timeline.remoteAlbum(album.id, owner.id, GroupAssetsBy.day);
+      final outsiderQuery = timeline.remoteAlbum(album.id, outsider.id, GroupAssetsBy.day);
+
+      expect(await ownerQuery.assetSource(0, 10), hasLength(1));
+      expect(await outsiderQuery.assetSource(0, 10), isEmpty);
+      expect(await outsiderQuery.bucketSource().first, isEmpty);
     });
   });
 }

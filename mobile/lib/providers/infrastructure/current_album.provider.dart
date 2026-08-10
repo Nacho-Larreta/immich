@@ -1,30 +1,18 @@
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/models/album/album.model.dart';
+import 'package:immich_mobile/domain/models/album/remote_album_scope.model.dart';
 import 'package:immich_mobile/providers/infrastructure/album.provider.dart';
 
-final currentRemoteAlbumScopedProvider = Provider<RemoteAlbum?>((ref) => null);
-final currentRemoteAlbumProvider = NotifierProvider<CurrentAlbumNotifier, RemoteAlbum?>(
-  CurrentAlbumNotifier.new,
-  dependencies: [currentRemoteAlbumScopedProvider, remoteAlbumServiceProvider],
-);
+final currentRemoteAlbumScopedProvider = Provider<RemoteAlbumScope?>((ref) => null);
 
-class CurrentAlbumNotifier extends Notifier<RemoteAlbum?> {
-  @override
-  RemoteAlbum? build() {
-    final album = ref.watch(currentRemoteAlbumScopedProvider);
+final remoteAlbumByScopeProvider = StreamProvider.autoDispose.family<RemoteAlbum?, RemoteAlbumScope>((ref, scope) {
+  return ref.watch(remoteAlbumServiceProvider).watchAlbum(scope.albumId, scope.viewerId);
+});
 
-    if (album == null) {
-      return null;
-    }
-
-    final watcher = ref.watch(remoteAlbumServiceProvider).watchAlbum(album.id).listen((updatedAlbum) {
-      if (updatedAlbum != null) {
-        state = updatedAlbum;
-      }
-    });
-
-    ref.onDispose(watcher.cancel);
-
-    return album;
+final currentRemoteAlbumProvider = Provider<RemoteAlbum?>((ref) {
+  final scope = ref.watch(currentRemoteAlbumScopedProvider);
+  if (scope == null) {
+    return null;
   }
-}
+  return ref.watch(remoteAlbumByScopeProvider(scope)).valueOrNull;
+}, dependencies: [currentRemoteAlbumScopedProvider]);

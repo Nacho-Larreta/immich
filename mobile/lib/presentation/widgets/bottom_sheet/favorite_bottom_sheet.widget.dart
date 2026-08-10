@@ -3,6 +3,7 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/constants/enums.dart';
 import 'package:immich_mobile/domain/models/album/album.model.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/domain/models/server_access.model.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
 import 'package:immich_mobile/presentation/widgets/action_buttons/archive_action_button.widget.dart';
 import 'package:immich_mobile/presentation/widgets/action_buttons/delete_local_action_button.widget.dart';
@@ -21,6 +22,7 @@ import 'package:immich_mobile/presentation/widgets/album/album_selector.widget.d
 import 'package:immich_mobile/presentation/widgets/bottom_sheet/base_bottom_sheet.widget.dart';
 import 'package:immich_mobile/providers/infrastructure/album.provider.dart';
 import 'package:immich_mobile/providers/server_info.provider.dart';
+import 'package:immich_mobile/providers/server_access.provider.dart';
 import 'package:immich_mobile/providers/timeline/multiselect.provider.dart';
 import 'package:immich_mobile/widgets/common/immich_toast.dart';
 
@@ -30,7 +32,10 @@ class FavoriteBottomSheet extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final multiselect = ref.watch(multiSelectProvider);
-    final isTrashEnable = ref.watch(serverInfoProvider.select((state) => state.serverFeatures.trash));
+    final canMutate = ref.watch(
+      serverAccessProvider.select((policy) => policy.allows(ServerCapability.remoteMutation)),
+    );
+    final isTrashEnable = canMutate && ref.watch(serverInfoProvider.select((state) => state.serverFeatures.trash));
 
     Future<void> addAssetsToAlbum(RemoteAlbum album) async {
       final selectedAssets = multiselect.selectedAssets;
@@ -71,7 +76,7 @@ class FavoriteBottomSheet extends ConsumerWidget {
       shouldCloseOnMinExtent: false,
       actions: [
         const ShareActionButton(source: ActionSource.timeline),
-        if (multiselect.hasRemote) ...[
+        if (multiselect.hasRemote && canMutate) ...[
           const ShareLinkActionButton(source: ActionSource.timeline),
           const UnFavoriteActionButton(source: ActionSource.timeline),
           const ArchiveActionButton(source: ActionSource.timeline),
@@ -87,8 +92,8 @@ class FavoriteBottomSheet extends ConsumerWidget {
         ],
         if (multiselect.hasMerged) const DeleteLocalActionButton(source: ActionSource.timeline),
       ],
-      slivers: multiselect.hasRemote
-          ? [const AddToAlbumHeader(), AlbumSelector(onAlbumSelected: addAssetsToAlbum)]
+      slivers: multiselect.hasRemote && canMutate
+          ? [const AddToAlbumHeader(), AlbumSelector(onAlbumSelected: addAssetsToAlbum, canMutate: canMutate)]
           : [],
     );
   }

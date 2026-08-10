@@ -45,7 +45,7 @@ class SyncLinkedAlbumService {
           return;
         }
 
-        final remoteAlbum = await _remoteAlbumRepository.get(linkedRemoteAlbumId);
+        final remoteAlbum = await _remoteAlbumRepository.get(linkedRemoteAlbumId, userId);
         if (remoteAlbum == null) {
           _log.warning("Linked remote album not found for ID: $linkedRemoteAlbumId");
           return;
@@ -77,16 +77,16 @@ class SyncLinkedAlbumService {
     final hasLinkedRemoteAlbum = localAlbum.linkedRemoteAlbumId != null;
 
     if (hasLinkedRemoteAlbum) {
-      return _handleLinkedAlbum(localAlbum);
+      return _handleLinkedAlbum(localAlbum, ownerId);
     } else {
       return _handleUnlinkedAlbum(localAlbum, ownerId);
     }
   }
 
   /// Handles albums that are already linked to a remote album
-  Future<void> _handleLinkedAlbum(LocalAlbum localAlbum) async {
+  Future<void> _handleLinkedAlbum(LocalAlbum localAlbum, String ownerId) async {
     final remoteAlbumId = localAlbum.linkedRemoteAlbumId!;
-    final remoteAlbum = await _remoteAlbumRepository.get(remoteAlbumId);
+    final remoteAlbum = await _remoteAlbumRepository.get(remoteAlbumId, ownerId);
 
     final remoteAlbumExists = remoteAlbum != null;
     if (!remoteAlbumExists) {

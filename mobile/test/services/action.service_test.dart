@@ -2,7 +2,11 @@ import 'package:drift/drift.dart' as drift;
 import 'package:drift/native.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:immich_mobile/constants/enums.dart';
+import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
+import 'package:immich_mobile/domain/models/server_access.model.dart';
+import 'package:immich_mobile/domain/services/remote_mutation_guard.dart';
 import 'package:immich_mobile/domain/services/store.service.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/infrastructure/repositories/db.repository.dart';
@@ -27,6 +31,7 @@ void main() {
   late MockTrashedLocalAssetRepository trashedLocalAssetRepository;
   late MockAssetMediaRepository assetMediaRepository;
   late MockDownloadRepository downloadRepository;
+  late ServerAccessPolicy accessPolicy;
 
   late Drift db;
 
@@ -53,6 +58,7 @@ void main() {
     trashedLocalAssetRepository = MockTrashedLocalAssetRepository();
     assetMediaRepository = MockAssetMediaRepository();
     downloadRepository = MockDownloadRepository();
+    accessPolicy = const ServerAccessPolicy.online();
 
     sut = ActionService(
       assetApiRepository,
@@ -63,6 +69,7 @@ void main() {
       trashedLocalAssetRepository,
       assetMediaRepository,
       downloadRepository,
+      RemoteMutationGuard(() => accessPolicy),
     );
   });
 
@@ -139,6 +146,44 @@ void main() {
       expect(calls, ['api', 'local']);
       verify(() => assetApiRepository.unStack(stackIds)).called(1);
       verify(() => remoteAssetRepository.unStack(stackIds)).called(1);
+    });
+  });
+
+  group('remote mutation boundary', () {
+    for (final entry in <String, ServerAccessPolicy>{
+      'offline': const ServerAccessPolicy.offline(),
+      'reauthentication': const ServerAccessPolicy.reauthenticationRequired(),
+    }.entries) {
+      test('blocks asset mutation families before API calls while ${entry.key}', () async {
+        accessPolicy = entry.value;
+
+        await expectLater(sut.favorite(const ['asset']), throwsA(isA<StateError>()));
+        await expectLater(sut.archive(const ['asset']), throwsA(isA<StateError>()));
+        await expectLater(sut.trash(const ['asset']), throwsA(isA<StateError>()));
+        await expectLater(sut.stack('viewer', const ['asset']), throwsA(isA<StateError>()));
+
+        verifyNever(() => assetApiRepository.updateFavorite(const ['asset'], true));
+        verifyNever(() => assetApiRepository.updateVisibility(const ['asset'], AssetVisibilityEnum.archive));
+        verifyNever(() => assetApiRepository.delete(const ['asset'], false));
+        verifyNever(() => assetApiRepository.stack(const ['asset']));
+        verifyNever(() => remoteAssetRepository.updateFavorite(const ['asset'], true));
+        verifyNever(() => remoteAssetRepository.updateVisibility(const ['asset'], AssetVisibility.archive));
+        verifyNever(() => remoteAssetRepository.trash(const ['asset']));
+      });
+    }
+
+    test('preserves local deletion for a local-only mixed action while offline', () async {
+      accessPolicy = const ServerAccessPolicy.offline();
+      const localIds = ['local'];
+      when(() => assetMediaRepository.deleteAll(localIds)).thenAnswer((_) async => localIds);
+      when(() => localAssetRepository.delete(localIds)).thenAnswer((_) async {});
+
+      await sut.trashRemoteAndDeleteLocal(const [], localIds);
+
+      verifyNever(() => assetApiRepository.delete(any(), any()));
+      verifyNever(() => remoteAssetRepository.trash(any()));
+      verify(() => assetMediaRepository.deleteAll(localIds)).called(1);
+      verify(() => localAssetRepository.delete(localIds)).called(1);
     });
   });
 }

@@ -10,9 +10,11 @@ import 'package:immich_mobile/providers/infrastructure/album.provider.dart';
 import 'package:immich_mobile/providers/routes.provider.dart';
 import 'package:immich_mobile/widgets/common/immich_toast.dart';
 import 'package:immich_mobile/providers/user.provider.dart';
+import 'package:immich_mobile/providers/server_access.provider.dart';
 
 import 'package:immich_mobile/domain/models/album/album.model.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/domain/models/server_access.model.dart';
 
 import 'package:immich_mobile/constants/enums.dart';
 import 'package:immich_mobile/presentation/widgets/action_buttons/archive_action_button.widget.dart';
@@ -49,6 +51,9 @@ class _AddActionButtonState extends ConsumerState<AddActionButton> {
   }
 
   List<Widget> _buildMenuChildren() {
+    if (!ref.read(serverAccessProvider).allows(ServerCapability.remoteMutation)) {
+      return [];
+    }
     final asset = ref.read(assetViewerProvider).currentAsset;
     if (asset == null) return [];
 
@@ -103,6 +108,10 @@ class _AddActionButtonState extends ConsumerState<AddActionButton> {
   }
 
   void _openAlbumSelector() {
+    final canMutate = ref.read(serverAccessProvider).allows(ServerCapability.remoteMutation);
+    if (!canMutate) {
+      return;
+    }
     final currentAsset = ref.read(assetViewerProvider).currentAsset;
     if (currentAsset == null) {
       ImmichToast.show(context: context, msg: "Cannot load asset information.", toastType: ToastType.error);
@@ -111,7 +120,7 @@ class _AddActionButtonState extends ConsumerState<AddActionButton> {
 
     final List<Widget> slivers = [
       const CreateAlbumButton(),
-      AlbumSelector(onAlbumSelected: (album) => _addCurrentAssetToAlbum(album)),
+      AlbumSelector(onAlbumSelected: (album) => _addCurrentAssetToAlbum(album), canMutate: canMutate),
     ];
 
     showModalBottomSheet(
@@ -170,7 +179,10 @@ class _AddActionButtonState extends ConsumerState<AddActionButton> {
   @override
   Widget build(BuildContext context) {
     final asset = ref.watch(assetViewerProvider.select((s) => s.currentAsset));
-    if (asset == null) {
+    final canMutate = ref.watch(
+      serverAccessProvider.select((policy) => policy.allows(ServerCapability.remoteMutation)),
+    );
+    if (asset == null || !canMutate) {
       return const SizedBox.shrink();
     }
 

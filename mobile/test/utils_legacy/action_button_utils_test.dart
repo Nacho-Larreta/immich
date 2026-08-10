@@ -1159,4 +1159,25 @@ void main() {
       expect(nonArchivedWidgets, isNotEmpty);
     });
   });
+
+  test('remote mutation actions are hidden while local actions remain available', () {
+    final context = ActionButtonContext(
+      asset: createRemoteAsset(localId: 'local-id'),
+      isOwner: true,
+      isArchived: false,
+      isTrashEnabled: true,
+      isInLockedView: false,
+      currentAlbum: null,
+      advancedTroubleshooting: false,
+      isStacked: false,
+      source: ActionSource.viewer,
+      canMutate: false,
+    );
+
+    expect(ActionButtonType.archive.shouldShow(context), isFalse);
+    expect(ActionButtonType.trash.shouldShow(context), isFalse);
+    expect(ActionButtonType.shareLink.shouldShow(context), isFalse);
+    expect(ActionButtonType.share.shouldShow(context), isTrue);
+    expect(ActionButtonType.deleteLocal.shouldShow(context), isTrue);
+  });
 }

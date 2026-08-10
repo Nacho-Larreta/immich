@@ -191,30 +191,55 @@ class DriftTimelineRepository extends DriftDatabaseRepository implements MainTim
         .get();
   }
 
-  TimelineQuery remoteAlbum(String albumId, GroupAssetsBy groupBy) => (
-    bucketSource: () => _watchRemoteAlbumBucket(albumId, groupBy: groupBy),
-    assetSource: (offset, count) => _getRemoteAlbumBucketAssets(albumId, offset: offset, count: count),
+  TimelineQuery remoteAlbum(String albumId, String viewerId, GroupAssetsBy groupBy) => (
+    bucketSource: () => _watchRemoteAlbumBucket(albumId, viewerId, groupBy: groupBy),
+    assetSource: (offset, count) => _getRemoteAlbumBucketAssets(albumId, viewerId, offset: offset, count: count),
     origin: TimelineOrigin.remoteAlbum,
   );
 
-  Stream<List<Bucket>> _watchRemoteAlbumBucket(String albumId, {GroupAssetsBy groupBy = GroupAssetsBy.day}) {
+  Stream<List<Bucket>> _watchRemoteAlbumBucket(
+    String albumId,
+    String viewerId, {
+    GroupAssetsBy groupBy = GroupAssetsBy.day,
+  }) {
+    final viewerMembership = _db.alias(_db.remoteAlbumUserEntity, 'viewer_membership');
     if (groupBy == GroupAssetsBy.none) {
-      return _db.remoteAlbumAssetEntity
-          .count(where: (row) => row.albumId.equals(albumId))
+      final count = _db.remoteAlbumAssetEntity.assetId.count();
+      final query = _db.remoteAlbumAssetEntity.selectOnly()
+        ..addColumns([count])
+        ..join([
+          innerJoin(
+            viewerMembership,
+            viewerMembership.albumId.equalsExp(_db.remoteAlbumAssetEntity.albumId) &
+                viewerMembership.userId.equals(viewerId),
+            useColumns: false,
+          ),
+        ])
+        ..where(_db.remoteAlbumAssetEntity.albumId.equals(albumId));
+      return query
+          .map((row) => row.read(count) ?? 0)
           .map(_generateBuckets)
           .watch()
           .map((results) => results.isNotEmpty ? results.first : const <Bucket>[])
           .handleError((error) => const <Bucket>[]);
     }
 
-    return (_db.remoteAlbumEntity.select()..where((row) => row.id.equals(albumId)))
+    final albumQuery = _db.remoteAlbumEntity.select().join([
+      innerJoin(
+        viewerMembership,
+        viewerMembership.albumId.equalsExp(_db.remoteAlbumEntity.id) & viewerMembership.userId.equals(viewerId),
+        useColumns: false,
+      ),
+    ])..where(_db.remoteAlbumEntity.id.equals(albumId));
+
+    return albumQuery
         .watch()
         .switchMap((albums) {
           if (albums.isEmpty) {
             return Stream.value(const <Bucket>[]);
           }
 
-          final album = albums.first;
+          final album = albums.first.readTable(_db.remoteAlbumEntity);
           final isAscending = album.order == AlbumAssetOrder.asc;
           final assetCountExp = _db.remoteAssetEntity.id.count();
           final dateExp = _db.remoteAssetEntity.effectiveCreatedAt(groupBy);
@@ -225,6 +250,12 @@ class DriftTimelineRepository extends DriftDatabaseRepository implements MainTim
               innerJoin(
                 _db.remoteAlbumAssetEntity,
                 _db.remoteAlbumAssetEntity.assetId.equalsExp(_db.remoteAssetEntity.id),
+                useColumns: false,
+              ),
+              innerJoin(
+                viewerMembership,
+                viewerMembership.albumId.equalsExp(_db.remoteAlbumAssetEntity.albumId) &
+                    viewerMembership.userId.equals(viewerId),
                 useColumns: false,
               ),
             ])
@@ -247,14 +278,28 @@ class DriftTimelineRepository extends DriftDatabaseRepository implements MainTim
         .handleError((error) => const <Bucket>[]);
   }
 
-  Future<List<BaseAsset>> _getRemoteAlbumBucketAssets(String albumId, {required int offset, required int count}) async {
-    final albumData = await (_db.remoteAlbumEntity.select()..where((row) => row.id.equals(albumId))).getSingleOrNull();
+  Future<List<BaseAsset>> _getRemoteAlbumBucketAssets(
+    String albumId,
+    String viewerId, {
+    required int offset,
+    required int count,
+  }) async {
+    final viewerMembership = _db.alias(_db.remoteAlbumUserEntity, 'viewer_membership');
+    final albumQuery = _db.remoteAlbumEntity.select().join([
+      innerJoin(
+        viewerMembership,
+        viewerMembership.albumId.equalsExp(_db.remoteAlbumEntity.id) & viewerMembership.userId.equals(viewerId),
+        useColumns: false,
+      ),
+    ])..where(_db.remoteAlbumEntity.id.equals(albumId));
+    final albumRow = await albumQuery.getSingleOrNull();
 
     // If album doesn't exist (was deleted), return empty list
-    if (albumData == null) {
+    if (albumRow == null) {
       return const <BaseAsset>[];
     }
 
+    final albumData = albumRow.readTable(_db.remoteAlbumEntity);
     final isAscending = albumData.order == AlbumAssetOrder.asc;
 
     final query = _db.remoteAssetEntity.select().addColumns([_db.localAssetEntity.id]).join([
@@ -266,6 +311,12 @@ class DriftTimelineRepository extends DriftDatabaseRepository implements MainTim
       leftOuterJoin(
         _db.localAssetEntity,
         _db.remoteAssetEntity.checksum.equalsExp(_db.localAssetEntity.checksum),
+        useColumns: false,
+      ),
+      innerJoin(
+        viewerMembership,
+        viewerMembership.albumId.equalsExp(_db.remoteAlbumAssetEntity.albumId) &
+            viewerMembership.userId.equals(viewerId),
         useColumns: false,
       ),
     ])..where(_db.remoteAssetEntity.deletedAt.isNull() & _db.remoteAlbumAssetEntity.albumId.equals(albumId));

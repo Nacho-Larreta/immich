@@ -1,23 +1,22 @@
 import 'package:collection/collection.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/models/activities/activity.model.dart';
+import 'package:immich_mobile/domain/models/album/remote_album_scope.model.dart';
 import 'package:immich_mobile/providers/activity_service.provider.dart';
 
 // ignore: unintended_html_in_doc_comment
 /// Maintains the current list of all activities for <share-album-id, asset>
 
 final albumActivityProvider = AsyncNotifierProvider.autoDispose
-    .family<AlbumActivity, List<Activity>, (String albumId, String? assetId)>(AlbumActivity.new);
+    .family<AlbumActivity, List<Activity>, RemoteAlbumActivityScope>(AlbumActivity.new);
 
-class AlbumActivity extends AutoDisposeFamilyAsyncNotifier<List<Activity>, (String albumId, String? assetId)> {
-  late String albumId;
-  late String? assetId;
+class AlbumActivity extends AutoDisposeFamilyAsyncNotifier<List<Activity>, RemoteAlbumActivityScope> {
+  late RemoteAlbumActivityScope scope;
 
   @override
-  Future<List<Activity>> build((String albumId, String? assetId) args) async {
-    albumId = args.$1;
-    assetId = args.$2;
-    return ref.watch(activityServiceProvider).getAllActivities(albumId, assetId: assetId);
+  Future<List<Activity>> build(RemoteAlbumActivityScope args) async {
+    scope = args;
+    return ref.watch(activityServiceProvider).getAllActivities(scope.albumId, assetId: scope.assetId);
   }
 
   Future<void> removeActivity(String id) async {
@@ -27,18 +26,22 @@ class AlbumActivity extends AutoDisposeFamilyAsyncNotifier<List<Activity>, (Stri
         return;
       }
 
-      if (assetId != null) {
-        ref.read(albumActivityProvider((albumId, assetId)).notifier)._removeFromState(id);
+      if (scope.assetId != null) {
+        ref.read(albumActivityProvider(RemoteAlbumActivityScope(album: scope.album)).notifier)._removeFromState(id);
       }
     }
   }
 
   Future<void> addLike() async {
-    final activity = await ref.watch(activityServiceProvider).addActivity(albumId, ActivityType.like, assetId: assetId);
+    final activity = await ref
+        .watch(activityServiceProvider)
+        .addActivity(scope.albumId, ActivityType.like, assetId: scope.assetId);
     if (activity.hasValue) {
       _addToState(activity.requireValue);
-      if (assetId != null) {
-        ref.read(albumActivityProvider((albumId, assetId)).notifier)._addToState(activity.requireValue);
+      if (scope.assetId != null) {
+        ref
+            .read(albumActivityProvider(RemoteAlbumActivityScope(album: scope.album)).notifier)
+            ._addToState(activity.requireValue);
       }
     }
   }
@@ -46,12 +49,14 @@ class AlbumActivity extends AutoDisposeFamilyAsyncNotifier<List<Activity>, (Stri
   Future<void> addComment(String comment) async {
     final activity = await ref
         .watch(activityServiceProvider)
-        .addActivity(albumId, ActivityType.comment, assetId: assetId, comment: comment);
+        .addActivity(scope.albumId, ActivityType.comment, assetId: scope.assetId, comment: comment);
 
     if (activity.hasValue) {
       _addToState(activity.requireValue);
-      if (assetId != null) {
-        ref.read(albumActivityProvider((albumId, assetId)).notifier)._addToState(activity.requireValue);
+      if (scope.assetId != null) {
+        ref
+            .read(albumActivityProvider(RemoteAlbumActivityScope(album: scope.album)).notifier)
+            ._addToState(activity.requireValue);
       }
     }
   }

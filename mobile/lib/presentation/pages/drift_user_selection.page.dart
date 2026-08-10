@@ -50,6 +50,7 @@ class DriftUserSelectionPage extends HookConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final AsyncValue<List<UserDto>> suggestedShareUsers = ref.watch(driftUsersProvider);
+    final scope = ref.watch(remoteAlbumScopeProvider(album.id));
     final sharedUsersList = useState<Set<UserDto>>({});
 
     addNewUsersHandler() {
@@ -135,7 +136,9 @@ class DriftUserSelectionPage extends HookConsumerWidget {
       body: suggestedShareUsers.widgetWhen(
         onData: (users) {
           // Get shared users for this album from the database
-          final sharedUsers = ref.watch(remoteAlbumSharedUsersProvider(album.id));
+          final sharedUsers = scope == null
+              ? const AsyncValue<List<UserDto>>.data([])
+              : ref.watch(remoteAlbumSharedUsersProvider(scope));
 
           return sharedUsers.when(
             data: (albumSharedUsers) {

@@ -22,18 +22,12 @@ import 'package:immich_mobile/utils/people.utils.dart';
 import 'package:immich_mobile/utils/image_url_builder.dart';
 
 class PersonSliverAppBar extends ConsumerStatefulWidget {
-  const PersonSliverAppBar({
-    super.key,
-    required this.person,
-    required this.onNameTap,
-    required this.onShowOptions,
-    required this.onBirthdayTap,
-  });
+  const PersonSliverAppBar({super.key, required this.person, this.onNameTap, this.onShowOptions, this.onBirthdayTap});
 
   final DriftPerson person;
-  final VoidCallback onNameTap;
-  final VoidCallback onBirthdayTap;
-  final VoidCallback onShowOptions;
+  final VoidCallback? onNameTap;
+  final VoidCallback? onBirthdayTap;
+  final VoidCallback? onShowOptions;
 
   @override
   ConsumerState<PersonSliverAppBar> createState() => _MesmerizingSliverAppBarState();
@@ -140,8 +134,8 @@ class _MesmerizingSliverAppBarState extends ConsumerState<PersonSliverAppBar> {
 class _ExpandedBackground extends ConsumerStatefulWidget {
   final double scrollProgress;
   final DriftPerson person;
-  final VoidCallback onNameTap;
-  final VoidCallback onBirthdayTap;
+  final VoidCallback? onNameTap;
+  final VoidCallback? onBirthdayTap;
 
   const _ExpandedBackground({
     required this.scrollProgress,
@@ -249,7 +243,7 @@ class _ExpandedBackgroundState extends ConsumerState<_ExpandedBackground> with S
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       GestureDetector(
-                        onTap: () => widget.onNameTap.call(),
+                        onTap: widget.onNameTap,
                         child: SizedBox(
                           width: double.infinity,
                           child: SingleChildScrollView(

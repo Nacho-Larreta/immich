@@ -7,6 +7,7 @@ import 'package:immich_mobile/domain/interfaces/auth_request_context.interface.d
 import 'package:immich_mobile/domain/interfaces/resolved_server_endpoint_installer.interface.dart';
 import 'package:immich_mobile/domain/models/anonymous_server_discovery.model.dart';
 import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
+import 'package:immich_mobile/domain/models/logout_outcome.model.dart';
 import 'package:immich_mobile/domain/models/offline_result.model.dart';
 import 'package:immich_mobile/domain/services/session_mutation_mutex.dart';
 import 'package:immich_mobile/domain/services/user.service.dart';
@@ -294,6 +295,20 @@ void main() {
       verify(auth.authService.invalidateRemoteSession).called(1);
       verify(auth.widgetService.clearCredentialsAndRefresh).called(1);
       expect(auth.notifier.state.isAuthenticated, isFalse);
+    });
+
+    test('reports clearedWithWarning when auxiliary cancellation fails after credentials are cleared', () async {
+      final auth = _LogoutFixture(
+        mutex: SessionMutationMutex(),
+        invalidateSession: () async => throw StateError('cancel failed'),
+      );
+
+      final outcome = await auth.notifier.logoutWithOutcome();
+
+      expect(outcome, isA<LogoutClearedWithWarning>());
+      expect(outcome.didClearSession, isTrue);
+      expect(auth.notifier.state.isAuthenticated, isFalse);
+      verify(auth.authService.clearRemoteAuthentication).called(1);
     });
 
     test('cancels remote media exactly once and still clears authentication when cancellation fails', () async {

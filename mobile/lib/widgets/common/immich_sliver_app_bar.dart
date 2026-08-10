@@ -13,6 +13,7 @@ import 'package:immich_mobile/providers/backup/drift_backup.provider.dart';
 import 'package:immich_mobile/providers/cast.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/readonly_mode.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/setting.provider.dart';
+import 'package:immich_mobile/providers/remote_authentication.provider.dart';
 import 'package:immich_mobile/providers/server_info.provider.dart';
 import 'package:immich_mobile/providers/sync_status.provider.dart';
 import 'package:immich_mobile/providers/timeline/multiselect.provider.dart';
@@ -44,9 +45,8 @@ class ImmichSliverAppBar extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final isCasting = ref.watch(castProvider.select((c) => c.isCasting));
-    final isReadonlyModeEnabled = ref.watch(readonlyModeProvider);
     final isMultiSelectEnabled = ref.watch(multiSelectProvider.select((s) => s.isEnabled));
+    final authenticationPhase = ref.watch(remoteAuthenticationPhaseProvider);
 
     return SliverIgnorePointer(
       ignoring: isMultiSelectEnabled,
@@ -67,19 +67,69 @@ class ImmichSliverAppBar extends ConsumerWidget {
           centerTitle: false,
           title: title ?? const _ImmichLogoWithText(),
           actions: [
-            const _SyncStatusIndicator(),
-            if (isCasting && !isReadonlyModeEnabled)
-              IconButton(
-                onPressed: () => showDialog(context: context, builder: (context) => const CastDialog()),
-                icon: Icon(isCasting ? Icons.cast_connected_rounded : Icons.cast_rounded),
-              ),
             if (actions != null) ...actions!,
-            if (showUploadButton && !isReadonlyModeEnabled) const _BackupIndicator(),
-            const _ProfileIndicator(),
+            AppBarServerSessionActions(
+              authenticationPhase: authenticationPhase,
+              onConnect: () => context.pushRoute(const LoginRoute()),
+              authenticatedBuilder: (_) => _AuthenticatedServerActions(showUploadButton: showUploadButton),
+            ),
             const SizedBox(width: 8),
           ],
         ),
       ),
+    );
+  }
+}
+
+class AppBarServerSessionActions extends StatelessWidget {
+  const AppBarServerSessionActions({
+    super.key,
+    required this.authenticationPhase,
+    required this.onConnect,
+    required this.authenticatedBuilder,
+  });
+
+  final RemoteAuthenticationPhase authenticationPhase;
+  final VoidCallback onConnect;
+  final WidgetBuilder authenticatedBuilder;
+
+  @override
+  Widget build(BuildContext context) {
+    if (authenticationPhase == RemoteAuthenticationPhase.authenticated) {
+      return authenticatedBuilder(context);
+    }
+
+    return IconButton(
+      key: const ValueKey('connect-server-indicator'),
+      tooltip: 'server_access_connect'.tr(),
+      onPressed: onConnect,
+      icon: const Icon(Icons.cloud_outlined),
+    );
+  }
+}
+
+class _AuthenticatedServerActions extends ConsumerWidget {
+  const _AuthenticatedServerActions({required this.showUploadButton});
+
+  final bool showUploadButton;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isCasting = ref.watch(castProvider.select((state) => state.isCasting));
+    final isReadonlyModeEnabled = ref.watch(readonlyModeProvider);
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const _SyncStatusIndicator(),
+        if (isCasting && !isReadonlyModeEnabled)
+          IconButton(
+            onPressed: () => showDialog(context: context, builder: (context) => const CastDialog()),
+            icon: const Icon(Icons.cast_connected_rounded),
+          ),
+        if (showUploadButton && !isReadonlyModeEnabled) const _BackupIndicator(),
+        const _ProfileIndicator(),
+      ],
     );
   }
 }
@@ -113,7 +163,7 @@ class _ProfileIndicator extends ConsumerWidget {
     final isIpad = defaultTargetPlatform == TargetPlatform.iOS && !context.isMobile;
 
     void toggleReadonlyMode() {
-      final isReadonlyModeEnabled = ref.watch(readonlyModeProvider);
+      final isReadonlyModeEnabled = ref.read(readonlyModeProvider);
       ref.read(readonlyModeProvider.notifier).toggleReadonlyMode();
 
       context.scaffoldMessenger.showSnackBar(

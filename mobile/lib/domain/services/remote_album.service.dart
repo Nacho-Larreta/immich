@@ -16,16 +16,16 @@ class RemoteAlbumService {
 
   const RemoteAlbumService(this._repository, this._albumApiRepository);
 
-  Stream<RemoteAlbum?> watchAlbum(String albumId) {
-    return _repository.watchAlbum(albumId);
+  Stream<RemoteAlbum?> watchAlbum(String albumId, String viewerId) {
+    return _repository.watchAlbum(albumId, viewerId);
   }
 
-  Future<List<RemoteAlbum>> getAll() {
-    return _repository.getAll();
+  Future<List<RemoteAlbum>> getAll(String viewerId) {
+    return _repository.getAll(viewerId);
   }
 
-  Future<RemoteAlbum?> get(String albumId) {
-    return _repository.get(albumId);
+  Future<RemoteAlbum?> get(String albumId, String viewerId) {
+    return _repository.get(albumId, viewerId);
   }
 
   Future<List<RemoteAlbum>> sortAlbums(
@@ -124,20 +124,20 @@ class RemoteAlbumService {
     return updatedAlbum;
   }
 
-  FutureOr<(DateTime, DateTime)> getDateRange(String albumId) {
-    return _repository.getDateRange(albumId);
+  FutureOr<(DateTime, DateTime)> getDateRange(String albumId, String viewerId) {
+    return _repository.getDateRange(albumId, viewerId);
   }
 
-  Future<List<UserDto>> getSharedUsers(String albumId) {
-    return _repository.getSharedUsers(albumId);
+  Future<List<UserDto>> getSharedUsers(String albumId, String viewerId) {
+    return _repository.getSharedUsers(albumId, viewerId);
   }
 
   Future<AlbumUserRole?> getUserRole(String albumId, String userId) {
     return _repository.getUserRole(albumId, userId);
   }
 
-  Future<List<RemoteAsset>> getAssets(String albumId) {
-    return _repository.getAssets(albumId);
+  Future<List<RemoteAsset>> getAssets(String albumId, String viewerId) {
+    return _repository.getAssets(albumId, viewerId);
   }
 
   Future<int> addAssets({required String albumId, required List<String> assetIds}) async {

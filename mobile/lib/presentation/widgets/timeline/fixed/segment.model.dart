@@ -211,6 +211,7 @@ class _AssetTileWidget extends ConsumerWidget {
             timelineService: ref.read(timelineServiceProvider),
             heroOffset: heroOffset,
             currentAlbum: ref.read(currentRemoteAlbumProvider),
+            albumScope: ref.read(currentRemoteAlbumScopedProvider),
           ),
         ),
       );

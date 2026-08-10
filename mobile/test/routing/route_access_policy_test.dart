@@ -45,6 +45,34 @@ void main() {
     }
   });
 
+  test('tab children and cached read details do not navigate to Login', () {
+    final router = AppRouter(
+      _MockApiService(),
+      () async {},
+      _MockGalleryPermissionNotifier(),
+      _MockSecureStorageService(),
+      _MockLocalAuthService(),
+    );
+    final tabShell = router.routes.firstWhere((candidate) => candidate.name == TabShellRoute.name);
+
+    for (final routeName in [DriftSearchRoute.name, DriftAlbumsRoute.name, DriftLibraryRoute.name]) {
+      final route = tabShell.children!.firstWhere((candidate) => candidate.name == routeName);
+      expect(route.guards.whereType<AuthGuard>(), isEmpty, reason: '$routeName is capability-gated in-page');
+    }
+
+    for (final routeName in [RemoteAlbumRoute.name, DriftPeopleCollectionRoute.name, DriftPersonRoute.name]) {
+      final route = router.routes.firstWhere((candidate) => candidate.name == routeName);
+      expect(route.guards.whereType<AuthGuard>(), isEmpty, reason: '$routeName supports identity-scoped cached reads');
+    }
+
+    final rootLibrary = router.routes.firstWhere((candidate) => candidate.name == DriftLibraryRoute.name);
+    expect(
+      rootLibrary.guards.whereType<AuthGuard>(),
+      isEmpty,
+      reason: 'root DriftLibraryRoute is the same local-first mixed surface',
+    );
+  });
+
   test('remote-only routes keep an authentication capability gate', () {
     final router = AppRouter(
       _MockApiService(),
@@ -54,7 +82,7 @@ void main() {
       _MockLocalAuthService(),
     );
 
-    for (final routeName in [SharedLinkRoute.name, RemoteAlbumRoute.name, DriftPartnerRoute.name]) {
+    for (final routeName in [SharedLinkRoute.name, DriftCreateAlbumRoute.name, DriftPartnerRoute.name]) {
       final route = router.routes.firstWhere((candidate) => candidate.name == routeName);
       expect(route.guards.whereType<AuthGuard>(), hasLength(1), reason: '$routeName needs remote authentication');
     }

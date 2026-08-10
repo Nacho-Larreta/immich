@@ -9,6 +9,7 @@ import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/asset_edit.model.dart';
 import 'package:immich_mobile/domain/models/share.model.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
+import 'package:immich_mobile/domain/services/remote_mutation_guard.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/extensions/platform_extensions.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_asset.repository.dart';
@@ -17,6 +18,7 @@ import 'package:immich_mobile/infrastructure/repositories/remote_asset.repositor
 import 'package:immich_mobile/infrastructure/repositories/trashed_local_asset.repository.dart';
 import 'package:immich_mobile/providers/infrastructure/album.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/asset.provider.dart';
+import 'package:immich_mobile/providers/server_access.provider.dart';
 import 'package:immich_mobile/repositories/asset_api.repository.dart';
 import 'package:immich_mobile/repositories/asset_media.repository.dart';
 import 'package:immich_mobile/repositories/download.repository.dart';
@@ -37,6 +39,7 @@ final actionServiceProvider = Provider<ActionService>(
     ref.watch(trashedLocalAssetRepository),
     ref.watch(assetMediaRepositoryProvider),
     ref.watch(downloadRepositoryProvider),
+    ref.watch(remoteMutationGuardProvider),
   ),
 );
 
@@ -49,8 +52,9 @@ class ActionService {
   final DriftTrashedLocalAssetRepository _trashedLocalAssetRepository;
   final AssetMediaRepository _assetMediaRepository;
   final DownloadRepository _downloadRepository;
+  final RemoteMutationGuard _remoteMutationGuard;
 
-  const ActionService(
+  ActionService(
     this._assetApiRepository,
     this._remoteAssetRepository,
     this._localAssetRepository,
@@ -59,35 +63,44 @@ class ActionService {
     this._trashedLocalAssetRepository,
     this._assetMediaRepository,
     this._downloadRepository,
+    this._remoteMutationGuard,
   );
 
   Future<void> shareLink(List<String> remoteIds, BuildContext context) async {
+    _remoteMutationGuard.requireAllowed();
     unawaited(context.pushRoute(SharedLinkEditRoute(assetsList: remoteIds)));
   }
 
   Future<void> favorite(List<String> remoteIds) async {
+    _remoteMutationGuard.requireAllowed();
     await _assetApiRepository.updateFavorite(remoteIds, true);
     await _remoteAssetRepository.updateFavorite(remoteIds, true);
   }
 
   Future<void> unFavorite(List<String> remoteIds) async {
+    _remoteMutationGuard.requireAllowed();
     await _assetApiRepository.updateFavorite(remoteIds, false);
     await _remoteAssetRepository.updateFavorite(remoteIds, false);
   }
 
   Future<void> archive(List<String> remoteIds) async {
+    _remoteMutationGuard.requireAllowed();
     await _assetApiRepository.updateVisibility(remoteIds, AssetVisibilityEnum.archive);
     await _remoteAssetRepository.updateVisibility(remoteIds, AssetVisibility.archive);
   }
 
   Future<void> unArchive(List<String> remoteIds) async {
+    _remoteMutationGuard.requireAllowed();
     await _assetApiRepository.updateVisibility(remoteIds, AssetVisibilityEnum.timeline);
     await _remoteAssetRepository.updateVisibility(remoteIds, AssetVisibility.timeline);
   }
 
   Future<void> moveToLockFolder(List<String> remoteIds, List<String> localIds) async {
-    await _assetApiRepository.updateVisibility(remoteIds, AssetVisibilityEnum.locked);
-    await _remoteAssetRepository.updateVisibility(remoteIds, AssetVisibility.locked);
+    if (remoteIds.isNotEmpty) {
+      _remoteMutationGuard.requireAllowed();
+      await _assetApiRepository.updateVisibility(remoteIds, AssetVisibilityEnum.locked);
+      await _remoteAssetRepository.updateVisibility(remoteIds, AssetVisibility.locked);
+    }
 
     // Ask user if they want to delete local copies
     if (localIds.isNotEmpty) {
@@ -96,23 +109,29 @@ class ActionService {
   }
 
   Future<void> removeFromLockFolder(List<String> remoteIds) async {
+    _remoteMutationGuard.requireAllowed();
     await _assetApiRepository.updateVisibility(remoteIds, AssetVisibilityEnum.timeline);
     await _remoteAssetRepository.updateVisibility(remoteIds, AssetVisibility.timeline);
   }
 
   Future<void> trash(List<String> remoteIds) async {
+    _remoteMutationGuard.requireAllowed();
     await _assetApiRepository.delete(remoteIds, false);
     await _remoteAssetRepository.trash(remoteIds);
   }
 
   Future<void> restoreTrash(List<String> ids) async {
+    _remoteMutationGuard.requireAllowed();
     await _assetApiRepository.restoreTrash(ids);
     await _remoteAssetRepository.restoreTrash(ids);
   }
 
   Future<void> trashRemoteAndDeleteLocal(List<String> remoteIds, List<String> localIds) async {
-    await _assetApiRepository.delete(remoteIds, false);
-    await _remoteAssetRepository.trash(remoteIds);
+    if (remoteIds.isNotEmpty) {
+      _remoteMutationGuard.requireAllowed();
+      await _assetApiRepository.delete(remoteIds, false);
+      await _remoteAssetRepository.trash(remoteIds);
+    }
 
     if (localIds.isNotEmpty) {
       await _deleteLocalAssets(localIds);
@@ -120,8 +139,11 @@ class ActionService {
   }
 
   Future<void> deleteRemoteAndLocal(List<String> remoteIds, List<String> localIds) async {
-    await _assetApiRepository.delete(remoteIds, true);
-    await _remoteAssetRepository.delete(remoteIds);
+    if (remoteIds.isNotEmpty) {
+      _remoteMutationGuard.requireAllowed();
+      await _assetApiRepository.delete(remoteIds, true);
+      await _remoteAssetRepository.delete(remoteIds);
+    }
 
     if (localIds.isNotEmpty) {
       await _deleteLocalAssets(localIds);
@@ -133,6 +155,7 @@ class ActionService {
   }
 
   Future<bool> editLocation(List<String> remoteIds, BuildContext context) async {
+    _remoteMutationGuard.requireAllowed();
     maplibre.LatLng? initialLatLng;
     if (remoteIds.length == 1) {
       final exif = await _remoteAssetRepository.getExif(remoteIds[0]);
@@ -155,6 +178,7 @@ class ActionService {
   }
 
   Future<bool> editDateTime(List<String> remoteIds, BuildContext context) async {
+    _remoteMutationGuard.requireAllowed();
     DateTime? initialDate;
     String? timeZone;
     Duration? offset;
@@ -201,6 +225,7 @@ class ActionService {
   }
 
   Future<int> removeFromAlbum(List<String> remoteIds, String albumId) async {
+    _remoteMutationGuard.requireAllowed();
     final result = await _albumApiRepository.removeAssets(albumId, remoteIds);
     if (result.removed.isNotEmpty) {
       await _remoteAlbumRepository.removeAssets(albumId, result.removed);
@@ -209,6 +234,7 @@ class ActionService {
   }
 
   Future<bool> updateDescription(String assetId, String description) async {
+    _remoteMutationGuard.requireAllowed();
     // update remote first, then local to ensure consistency
     await _assetApiRepository.updateDescription(assetId, description);
     await _remoteAssetRepository.updateDescription(assetId, description);
@@ -217,6 +243,7 @@ class ActionService {
   }
 
   Future<bool> updateRating(String assetId, int rating) async {
+    _remoteMutationGuard.requireAllowed();
     // update remote first, then local to ensure consistency
     await _assetApiRepository.updateRating(assetId, rating);
     await _remoteAssetRepository.updateRating(assetId, rating);
@@ -225,11 +252,13 @@ class ActionService {
   }
 
   Future<void> stack(String userId, List<String> remoteIds) async {
+    _remoteMutationGuard.requireAllowed();
     final stack = await _assetApiRepository.stack(remoteIds);
     await _remoteAssetRepository.stack(userId, stack);
   }
 
   Future<void> unStack(List<String> stackIds) async {
+    _remoteMutationGuard.requireAllowed();
     await _assetApiRepository.unStack(stackIds);
     await _remoteAssetRepository.unStack(stackIds);
   }
@@ -243,6 +272,7 @@ class ActionService {
   }
 
   Future<bool> setAlbumCover(String albumId, String assetId) async {
+    _remoteMutationGuard.requireAllowed();
     final owner = await _remoteAlbumRepository.getOwner(albumId);
     final updatedAlbum = await _albumApiRepository.updateAlbum(albumId, owner, thumbnailAssetId: assetId);
     await _remoteAlbumRepository.update(updatedAlbum);
@@ -250,6 +280,7 @@ class ActionService {
   }
 
   Future<void> applyEdits(String remoteId, List<AssetEdit> edits) async {
+    _remoteMutationGuard.requireAllowed();
     if (edits.isEmpty) {
       await _assetApiRepository.removeEdits(remoteId);
     } else {

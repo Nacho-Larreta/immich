@@ -8,6 +8,7 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/constants/enums.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/person.model.dart';
+import 'package:immich_mobile/domain/models/server_access.model.dart';
 import 'package:immich_mobile/domain/models/tag.model.dart';
 import 'package:immich_mobile/domain/models/timeline.model.dart';
 import 'package:immich_mobile/domain/services/timeline.service.dart';
@@ -17,10 +18,13 @@ import 'package:immich_mobile/models/search/search_filter.model.dart';
 import 'package:immich_mobile/presentation/pages/search/paginated_search.provider.dart';
 import 'package:immich_mobile/presentation/widgets/bottom_sheet/general_bottom_sheet.widget.dart';
 import 'package:immich_mobile/presentation/widgets/search/quick_date_picker.dart';
+import 'package:immich_mobile/presentation/widgets/server/server_access_boundary.widget.dart';
 import 'package:immich_mobile/presentation/widgets/timeline/timeline.widget.dart';
 import 'package:immich_mobile/providers/infrastructure/timeline.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/user_metadata.provider.dart';
 import 'package:immich_mobile/providers/search/search_input_focus.provider.dart';
+import 'package:immich_mobile/providers/server_access.provider.dart';
+import 'package:immich_mobile/providers/server_reachability.provider.dart';
 import 'package:immich_mobile/providers/server_info.provider.dart';
 import 'package:immich_mobile/routing/router.dart';
 import 'package:immich_mobile/widgets/common/feature_check.dart';
@@ -37,8 +41,26 @@ import 'package:immich_mobile/widgets/search/search_filter/search_filter_utils.d
 import 'package:immich_mobile/widgets/search/search_filter/star_rating_picker.dart';
 
 @RoutePage()
-class DriftSearchPage extends HookConsumerWidget {
+class DriftSearchPage extends ConsumerWidget {
   const DriftSearchPage({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final access = ref.watch(serverAccessProvider);
+    return ServerCapabilityBoundary(
+      access: access,
+      capability: ServerCapability.remoteRead,
+      noticeVariant: ServerAccessNoticeVariant.fullPage,
+      onConnect: () => context.pushRoute(const LoginRoute()),
+      onReauthenticate: () => context.pushRoute(const LoginRoute()),
+      onRetry: () => ref.read(serverReachabilityCoordinatorProvider).activateSession(),
+      childBuilder: (_) => const _OnlineSearchPage(),
+    );
+  }
+}
+
+class _OnlineSearchPage extends HookConsumerWidget {
+  const _OnlineSearchPage();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
