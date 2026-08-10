@@ -25,6 +25,8 @@ final class StoreCachedSessionReader implements CachedSessionReader {
 
   @override
   CachedSession? read() {
+    final sessionReady = _store.tryGet(StoreKey.authenticatedSessionReady);
+    if (sessionReady == false) return null;
     final accessToken = _store.tryGet(StoreKey.accessToken);
     final endpointValue = _store.tryGet(StoreKey.serverEndpoint);
     final deviceId = _store.tryGet(StoreKey.deviceId);

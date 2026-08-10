@@ -12,23 +12,29 @@ final class RemoteImagesImplTests: XCTestCase {
   private var performance: RecordingPerformanceRecorder!
   private var api: RemoteImageApiImpl!
 
-  override func setUp() {
-    super.setUp()
+  override func setUpWithError() throws {
+    try super.setUpWithError()
     context = URLSessionTestFactory.make()
     performance = RecordingPerformanceRecorder()
     api = RemoteImageApiImpl(
       sessionConfiguration: context.session.configuration,
       performanceRecorder: performance
     )
+    try URLSessionManager.replaceRequestContext(
+      headers: [:],
+      canonicalOrigin: "https://photos.example.test",
+      token: "test-token"
+    )
   }
 
-  override func tearDown() {
+  override func tearDownWithError() throws {
     api.dispose()
     context.reset()
     api = nil
     performance = nil
     context = nil
-    super.tearDown()
+    try URLSessionManager.replaceRequestContext(headers: [:], canonicalOrigin: nil, token: nil)
+    try super.tearDownWithError()
   }
 
   func testCacheOnlyReturnsCachedPayloadWithoutStartingNetwork() {
@@ -53,6 +59,30 @@ final class RemoteImagesImplTests: XCTestCase {
     assertEncodedPayload(result, equals: data)
     XCTAssertTrue(ControllableURLProtocol.observedRequests.isEmpty)
     XCTAssertEqual(performance.finishedCount(.request(.remoteThumbnail)), 1)
+  }
+
+  func testCacheOnlyReturnsCachedPayloadWhileRequestContextIsBlocked() {
+    let url = URL(string: "https://photos.example.test/api/assets/offline/thumbnail")!
+    let data = Data("offline-image".utf8)
+    let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+    context.cache.storeCachedResponse(
+      CachedURLResponse(response: response, data: data, storagePolicy: .allowedInMemoryOnly),
+      for: URLRequest(url: url)
+    )
+    URLSessionManager.initializeBlockedRequestContext()
+    ControllableURLProtocol.setRequestHandler { _ in
+      XCTFail("cacheOnly must not start a network request while offline")
+    }
+
+    let result = request(
+      url: url,
+      origin: "https://photos.example.test",
+      policy: .cacheOnly,
+      requestId: 82
+    )
+
+    assertEncodedPayload(result, equals: data)
+    XCTAssertTrue(ControllableURLProtocol.observedRequests.isEmpty)
   }
 
   func testCacheOnlyReturnsCacheMissWithoutStartingNetwork() {
@@ -166,6 +196,126 @@ final class RemoteImagesImplTests: XCTestCase {
     XCTAssertEqual(ControllableURLProtocol.observedRequests.count, 1)
   }
 
+  func testInvalidationTimeoutCancelsActiveRemoteRequest() throws {
+    let started = expectation(description: "remote image started")
+    let completed = expectation(description: "remote image cancelled")
+    var result: Result<RemoteImageResult, any Error>?
+    ControllableURLProtocol.setRequestHandler { _ in started.fulfill() }
+
+    api.requestImage(
+      request: RemoteImageRequest(
+        url: "https://photos.example.test/api/assets/1/thumbnail",
+        origin: "https://photos.example.test",
+        requestId: 81,
+        preferEncoded: true,
+        policy: .cacheThenNetwork,
+        kind: .thumbnail
+      )
+    ) {
+      result = $0
+      completed.fulfill()
+    }
+    wait(for: [started], timeout: 1)
+
+    URLSessionManager.overrideSessionInvalidationBarrierForTesting { false }
+    defer { URLSessionManager.overrideSessionInvalidationBarrierForTesting(nil) }
+    XCTAssertThrowsError(
+      try URLSessionManager.replaceRequestContext(
+        headers: [:],
+        canonicalOrigin: "https://photos.example.test",
+        token: "replacement-token"
+      )
+    )
+
+    wait(for: [completed], timeout: 1)
+    XCTAssertEqual(try result?.get().error, .cancelled)
+  }
+
+  func testFutureNetworkRequestUsesCurrentHeadersInsteadOfSessionSnapshot() throws {
+    let configuration = context.session.configuration
+    configuration.httpAdditionalHeaders = ["Authorization": "Bearer stale"]
+    api.dispose()
+    api = RemoteImageApiImpl(
+      sessionConfiguration: configuration,
+      performanceRecorder: performance
+    )
+    try URLSessionManager.replaceRequestContext(
+      headers: ["Authorization": "Bearer current"],
+      canonicalOrigin: "https://photos.example.test",
+      token: "current-token"
+    )
+    ControllableURLProtocol.setRequestHandler { request in
+      XCTAssertEqual(
+        request.request?.value(forHTTPHeaderField: "Authorization"),
+        "Bearer current"
+      )
+      XCTAssertTrue(request.respond(statusCode: 200))
+      XCTAssertTrue(request.send(Data("image".utf8)))
+      XCTAssertTrue(request.finish())
+    }
+
+    let result = request(
+      url: URL(string: "https://photos.example.test/api/assets/current/thumbnail")!,
+      origin: "https://photos.example.test",
+      policy: .cacheThenNetwork,
+      requestId: 83
+    )
+
+    assertEncodedPayload(result, equals: Data("image".utf8))
+  }
+
+  func testFutureNetworkRequestIsRejectedAfterRequestContextIsBlocked() {
+    URLSessionManager.initializeBlockedRequestContext()
+    ControllableURLProtocol.setRequestHandler { _ in
+      XCTFail("A blocked request context must reject future network requests")
+    }
+
+    let result = request(
+      url: URL(string: "https://photos.example.test/api/assets/blocked/thumbnail")!,
+      origin: "https://photos.example.test",
+      policy: .cacheThenNetwork,
+      requestId: 84
+    )
+
+    XCTAssertEqual(try? result.get().error, .wrongServer)
+    XCTAssertTrue(ControllableURLProtocol.observedRequests.isEmpty)
+  }
+
+  func testContextInvalidationAfterCredentialCaptureCancelsWithoutStartingNetwork() {
+    let completed = expectation(description: "request cancelled")
+    let networkStarted = expectation(description: "network must not start")
+    networkStarted.isInverted = true
+    api.dispose()
+    api = RemoteImageApiImpl(
+      sessionConfiguration: context.session.configuration,
+      beforeNetworkTaskRegistration: URLSessionManager.initializeBlockedRequestContext,
+      performanceRecorder: performance
+    )
+    ControllableURLProtocol.setRequestHandler { request in
+      networkStarted.fulfill()
+      XCTAssertTrue(request.respond(statusCode: 200))
+      XCTAssertTrue(request.send(Data("stale".utf8)))
+      XCTAssertTrue(request.finish())
+    }
+    var result: Result<RemoteImageResult, any Error>?
+
+    api.requestImage(
+      request: makeRequest(
+        url: URL(string: "https://photos.example.test/api/assets/race/thumbnail")!,
+        origin: "https://photos.example.test",
+        policy: .cacheThenNetwork,
+        requestId: 85
+      )
+    ) {
+      result = $0
+      completed.fulfill()
+    }
+
+    wait(for: [completed, networkStarted], timeout: 1)
+    XCTAssertEqual(try? result?.get().error, .cancelled)
+    XCTAssertTrue(ControllableURLProtocol.observedRequests.isEmpty)
+  }
+
   func testRejectsRequestWhoseURLDoesNotMatchCanonicalOrigin() {
     ControllableURLProtocol.setRequestHandler { _ in
       XCTFail("An origin mismatch must be rejected before URLSession")
@@ -233,7 +383,11 @@ final class RemoteImagesImplTests: XCTestCase {
     let delegate = RemoteImageSessionDelegate(challengeHandler: nil)
     delegate.register(
       task: task,
-      origin: RemoteImageCanonicalOrigin(origin: "https://photos.example.test")!
+      origin: RemoteImageCanonicalOrigin(origin: "https://photos.example.test")!,
+      authorization: URLSessionManager.authorize(
+        sourceURL,
+        declaredOrigin: "https://photos.example.test"
+      )!
     )
     let response = HTTPURLResponse(
       url: sourceURL,

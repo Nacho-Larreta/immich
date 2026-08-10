@@ -55,7 +55,7 @@ void main() {
           expectedUserId: 'user-1',
           sessionEpoch: 0,
           probeGeneration: 0,
-          schemePolicy: EndpointSchemePolicy.approvedLocalHttp,
+          schemePolicy: EndpointSchemePolicy.registeredLocalHttp,
         ).candidateOrigin,
         httpOrigin,
       );
@@ -69,7 +69,7 @@ void main() {
           expectedUserId: 'user-1',
           sessionEpoch: 0,
           probeGeneration: 0,
-          schemePolicy: EndpointSchemePolicy.approvedLocalHttp,
+          schemePolicy: EndpointSchemePolicy.explicitlyApprovedHttp,
         ),
         throwsA(isA<ArgumentError>()),
       );
@@ -169,10 +169,10 @@ void main() {
       canonicalOrigin: httpOrigin,
       apiEndpoint: Uri.parse('http://192.168.1.10/api'),
       userId: 'user-1',
-      schemePolicy: EndpointSchemePolicy.approvedLocalHttp,
+      schemePolicy: EndpointSchemePolicy.explicitlyApprovedHttp,
     );
 
-    expect((approved as ValidatedEndpointProbeResult).schemePolicy, EndpointSchemePolicy.approvedLocalHttp);
+    expect((approved as ValidatedEndpointProbeResult).schemePolicy, EndpointSchemePolicy.explicitlyApprovedHttp);
   });
 
   test('activation receipt preserves approval and validates epoch at runtime', () {
@@ -180,13 +180,13 @@ void main() {
       canonicalOrigin: Uri.parse('http://192.168.1.10'),
       apiEndpoint: Uri.parse('http://192.168.1.10/immich/api'),
       userId: 'user-1',
-      schemePolicy: EndpointSchemePolicy.approvedLocalHttp,
+      schemePolicy: EndpointSchemePolicy.explicitlyApprovedHttp,
     );
 
     final receipt = EndpointActivationReceipt(endpoint: endpoint, sessionEpoch: 0, probeGeneration: 1);
     expect(receipt.confirmedEndpoint, endpoint.apiEndpoint);
     expect(receipt.canonicalOrigin, endpoint.canonicalOrigin);
-    expect(receipt.schemePolicy, EndpointSchemePolicy.approvedLocalHttp);
+    expect(receipt.schemePolicy, EndpointSchemePolicy.explicitlyApprovedHttp);
     expect(receipt.probeGeneration, 1);
     expect(
       () => EndpointActivationReceipt(endpoint: endpoint, sessionEpoch: -1, probeGeneration: 0),

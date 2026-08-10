@@ -8,6 +8,25 @@ import 'package:immich_mobile/domain/models/share.model.dart';
 import 'package:immich_mobile/presentation/widgets/action_buttons/share_action_button.widget.dart';
 
 void main() {
+  test('maps remote authentication and connectivity failures to distinct messages', () {
+    expect(
+      shareFailureMessageKey(
+        ShareAssetFailure(assetId: 'remote-1', phase: SharePhase.remoteExport, error: OriginalExportError.unauthorized),
+      ),
+      'timeline_source_reauthentication_required',
+    );
+    expect(
+      shareFailureMessageKey(
+        ShareAssetFailure(
+          assetId: 'remote-1',
+          phase: SharePhase.remoteExport,
+          error: OriginalExportError.serverUnavailable,
+        ),
+      ),
+      'timeline_source_server_offline',
+    );
+  });
+
   testWidgets('dialog cancel invokes operation cancellation once and late completion is context-safe', (tester) async {
     final operation = _ShareOperation();
     await tester.pumpWidget(_Harness(operation: operation));

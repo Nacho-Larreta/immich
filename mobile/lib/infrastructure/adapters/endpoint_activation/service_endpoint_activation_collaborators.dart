@@ -1,5 +1,6 @@
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/interfaces/auth_request_context.interface.dart';
+import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/infrastructure/adapters/endpoint_activation/endpoint_activation_collaborators.dart';
 import 'package:immich_mobile/infrastructure/repositories/network.repository.dart';
@@ -54,18 +55,37 @@ final class StoreConfirmedEndpointAdapter implements ConfirmedEndpointStorePort 
   const StoreConfirmedEndpointAdapter();
 
   @override
-  Uri? read() {
+  ConfirmedServerEndpoint? read() {
     final endpoint = Store.tryGet(StoreKey.serverEndpoint);
-    return endpoint == null || endpoint.isEmpty ? null : Uri.parse(endpoint);
+    if (endpoint == null || endpoint.isEmpty) return null;
+    final apiEndpoint = Uri.tryParse(endpoint);
+    if (apiEndpoint == null) return null;
+    final storedPolicy = parseEndpointSchemePolicy(Store.tryGet(StoreKey.serverEndpointSchemePolicy));
+    final policy = storedPolicy ?? (apiEndpoint.scheme == 'https' ? EndpointSchemePolicy.httpsOnly : null);
+    if (policy == null) return null;
+    try {
+      return ConfirmedServerEndpoint(
+        apiEndpoint: apiEndpoint,
+        schemePolicy: policy,
+        authenticatedSessionReady: Store.tryGet(StoreKey.authenticatedSessionReady) == true,
+      );
+    } on ArgumentError {
+      return null;
+    }
   }
 
   @override
-  Future<void> write(Uri? endpoint) async {
-    if (endpoint == null || endpoint.toString().isEmpty) {
-      await Store.delete(StoreKey.serverEndpoint);
+  Future<void> write(ConfirmedServerEndpoint? endpoint) async {
+    await Store.put(StoreKey.authenticatedSessionReady, false);
+    if (endpoint == null) {
+      await Future.wait([Store.delete(StoreKey.serverEndpoint), Store.delete(StoreKey.serverEndpointSchemePolicy)]);
       return;
     }
-    await Store.put(StoreKey.serverEndpoint, endpoint.toString());
+    await Store.put(StoreKey.serverEndpointSchemePolicy, endpoint.schemePolicy.name);
+    await Store.put(StoreKey.serverEndpoint, endpoint.apiEndpoint.toString());
+    if (endpoint.authenticatedSessionReady) {
+      await Store.put(StoreKey.authenticatedSessionReady, true);
+    }
   }
 }
 
@@ -81,10 +101,17 @@ final class NetworkNativeRequestContextAdapter implements NativeRequestContextPo
   NativeRequestContext snapshot() {
     final endpoint = Store.tryGet(StoreKey.serverEndpoint);
     final endpointUri = endpoint == null || endpoint.isEmpty ? null : Uri.parse(endpoint);
+    final canonicalOrigin = endpointUri == null ? null : Uri.parse(endpointUri.origin);
+    final hasConfirmedContext =
+        canonicalOrigin != null && NetworkRepository.hasConfirmedRequestContext(canonicalOrigin);
     return NativeRequestContext(
-      canonicalOrigin: endpointUri == null ? null : Uri.parse(endpointUri.origin),
-      accessToken: Store.tryGet(StoreKey.accessToken),
-      customHeaders: ApiService.getRequestHeaders(),
+      canonicalOrigin: hasConfirmedContext ? canonicalOrigin : null,
+      accessToken: hasConfirmedContext ? Store.tryGet(StoreKey.accessToken) : null,
+      schemePolicy: !hasConfirmedContext
+          ? null
+          : parseEndpointSchemePolicy(Store.tryGet(StoreKey.serverEndpointSchemePolicy)) ??
+                (canonicalOrigin.scheme == 'https' ? EndpointSchemePolicy.httpsOnly : null),
+      customHeaders: hasConfirmedContext ? ApiService.getRequestHeaders() : const {},
     );
   }
 
@@ -94,6 +121,7 @@ final class NetworkNativeRequestContextAdapter implements NativeRequestContextPo
       headers: context.customHeaders,
       canonicalOrigin: context.canonicalOrigin,
       token: context.accessToken,
+      schemePolicy: context.schemePolicy,
     );
   }
 

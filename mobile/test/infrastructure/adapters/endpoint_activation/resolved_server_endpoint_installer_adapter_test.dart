@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:immich_mobile/domain/models/anonymous_server_discovery.model.dart';
+import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/domain/services/session_mutation_mutex.dart';
 import 'package:immich_mobile/infrastructure/adapters/endpoint_activation/endpoint_activation_collaborators.dart';
 import 'package:immich_mobile/infrastructure/adapters/endpoint_activation/resolved_server_endpoint_installer_adapter.dart';
@@ -15,7 +16,15 @@ final class _PreparedGraph extends Fake implements PreparedApiGraph {}
 
 void main() {
   setUpAll(() {
-    registerFallbackValue(NativeRequestContext(canonicalOrigin: null, accessToken: null, customHeaders: const {}));
+    registerFallbackValue(
+      NativeRequestContext(canonicalOrigin: null, accessToken: null, schemePolicy: null, customHeaders: const {}),
+    );
+    registerFallbackValue(
+      ConfirmedServerEndpoint(
+        apiEndpoint: Uri.parse('https://fallback.test/api'),
+        schemePolicy: EndpointSchemePolicy.httpsOnly,
+      ),
+    );
   });
 
   test('installs the resolved endpoint with no previous server credentials', () async {
@@ -32,17 +41,23 @@ void main() {
       NativeRequestContext(
         canonicalOrigin: Uri.parse('https://server-a.example.test'),
         accessToken: 'server-a-token',
+        schemePolicy: EndpointSchemePolicy.httpsOnly,
         customHeaders: const {'x-server': 'a'},
       ),
     );
-    when(endpointStore.read).thenReturn(Uri.parse('https://server-a.example.test/api'));
+    when(endpointStore.read).thenReturn(
+      ConfirmedServerEndpoint(
+        apiEndpoint: Uri.parse('https://server-a.example.test/api'),
+        schemePolicy: EndpointSchemePolicy.httpsOnly,
+      ),
+    );
     when(() => graph.prepare(endpoint.apiEndpoint)).thenAnswer((_) async => preparedGraph);
     when(() => graph.prepare(Uri.parse('https://server-a.example.test/api'))).thenAnswer((_) async => _PreparedGraph());
     when(graph.block).thenReturn(null);
     when(nativeContext.block).thenReturn(null);
     when(() => nativeContext.replace(any())).thenAnswer((_) async {});
     when(() => graph.install(preparedGraph)).thenAnswer((_) async {});
-    when(() => endpointStore.write(endpoint.apiEndpoint)).thenAnswer((_) async {});
+    when(() => endpointStore.write(any())).thenAnswer((_) async {});
     var deviceHeaderInstallations = 0;
     final installer = ResolvedServerEndpointInstallerAdapter(
       mutex: SessionMutationMutex(),
@@ -59,7 +74,10 @@ void main() {
     expect(installedContext.accessToken, isNull);
     expect(installedContext.customHeaders, isEmpty);
     verify(() => graph.install(preparedGraph)).called(1);
-    verify(() => endpointStore.write(endpoint.apiEndpoint)).called(1);
+    final installedEndpoint =
+        verify(() => endpointStore.write(captureAny())).captured.single as ConfirmedServerEndpoint;
+    expect(installedEndpoint.apiEndpoint, endpoint.apiEndpoint);
+    expect(installedEndpoint.schemePolicy, EndpointSchemePolicy.httpsOnly);
     verifyNever(() => nativeContext.snapshot());
     expect(deviceHeaderInstallations, 1);
   });
@@ -187,9 +205,15 @@ final class _FaultNativeContext implements NativeRequestContextPort {
   final persistedContext = NativeRequestContext(
     canonicalOrigin: Uri.parse('https://server-a.example.test'),
     accessToken: 'server-a-token',
+    schemePolicy: EndpointSchemePolicy.httpsOnly,
     customHeaders: const {'x-server-a-key': 'secret'},
   );
-  var context = NativeRequestContext(canonicalOrigin: null, accessToken: null, customHeaders: const {});
+  var context = NativeRequestContext(
+    canonicalOrigin: null,
+    accessToken: null,
+    schemePolicy: null,
+    customHeaders: const {},
+  );
   bool blocked = false;
   var replaceCalls = 0;
   var snapshotCalls = 0;
@@ -220,7 +244,12 @@ final class _FaultNativeContext implements NativeRequestContextPort {
     if (rollbackFailure == _RollbackFailure.nativePurge) {
       throw StateError('native purge failed');
     }
-    context = NativeRequestContext(canonicalOrigin: null, accessToken: null, customHeaders: const {});
+    context = NativeRequestContext(
+      canonicalOrigin: null,
+      accessToken: null,
+      schemePolicy: null,
+      customHeaders: const {},
+    );
   }
 
   @override
@@ -236,18 +265,22 @@ final class _FaultEndpointStore implements ConfirmedEndpointStorePort {
   _FaultEndpointStore(this.failedStep);
 
   final _InstallationStep failedStep;
-  Uri? endpoint = Uri.parse('https://server-a.example.test/api');
+  ConfirmedServerEndpoint? confirmedEndpoint = ConfirmedServerEndpoint(
+    apiEndpoint: Uri.parse('https://server-a.example.test/api'),
+    schemePolicy: EndpointSchemePolicy.httpsOnly,
+  );
+  Uri? get endpoint => confirmedEndpoint?.apiEndpoint;
   var writeCalls = 0;
 
   @override
-  Uri? read() => endpoint;
+  ConfirmedServerEndpoint? read() => confirmedEndpoint;
 
   @override
-  Future<void> write(Uri? endpoint) async {
+  Future<void> write(ConfirmedServerEndpoint? endpoint) async {
     writeCalls++;
     if (failedStep == _InstallationStep.endpointStore && writeCalls == 1) {
       throw StateError('endpoint store failed');
     }
-    this.endpoint = endpoint;
+    confirmedEndpoint = endpoint;
   }
 }

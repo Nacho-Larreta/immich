@@ -16,6 +16,7 @@ void main() {
     final store = _MockStoreService();
     final userService = _MockUserService();
     when(() => store.tryGet(StoreKey.accessToken)).thenReturn('cached-token');
+    when(() => store.tryGet(StoreKey.authenticatedSessionReady)).thenReturn(true);
     when(() => store.tryGet(StoreKey.serverEndpoint)).thenReturn('https://photos.example.test/immich/api');
     when(() => store.tryGet(StoreKey.deviceId)).thenReturn('cached-device');
     when(userService.tryGetMyUser).thenReturn(UserStub.admin);
@@ -27,6 +28,7 @@ void main() {
     expect(session?.deviceId, 'cached-device');
     expect(session?.user, UserStub.admin);
     verify(() => store.tryGet(StoreKey.accessToken)).called(1);
+    verify(() => store.tryGet(StoreKey.authenticatedSessionReady)).called(1);
     verify(() => store.tryGet(StoreKey.serverEndpoint)).called(1);
     verify(() => store.tryGet(StoreKey.deviceId)).called(1);
     verifyNoMoreInteractions(store);
@@ -37,6 +39,7 @@ void main() {
   test('rejects an incomplete cached session', () {
     final store = _MockStoreService();
     final userService = _MockUserService();
+    when(() => store.tryGet(StoreKey.authenticatedSessionReady)).thenReturn(true);
     when(() => store.tryGet(StoreKey.accessToken)).thenReturn('cached-token');
     when(() => store.tryGet(StoreKey.serverEndpoint)).thenReturn(null);
     when(() => store.tryGet(StoreKey.deviceId)).thenReturn(null);
@@ -44,6 +47,18 @@ void main() {
 
     expect(StoreCachedSessionReader(store, userService).read(), isNull);
     _verifyReadOnlyCacheAccess(store, userService);
+  });
+
+  test('does not revive credentials from an interrupted authentication bootstrap', () {
+    final store = _MockStoreService();
+    final userService = _MockUserService();
+    when(() => store.tryGet(StoreKey.authenticatedSessionReady)).thenReturn(false);
+
+    expect(StoreCachedSessionReader(store, userService).read(), isNull);
+
+    verify(() => store.tryGet(StoreKey.authenticatedSessionReady)).called(1);
+    verifyNoMoreInteractions(store);
+    verifyNoMoreInteractions(userService);
   });
 
   test('rejects an empty access token without writing to Store', () {
@@ -81,6 +96,7 @@ void _stubCachedSession(
   String? endpoint = 'https://photos.example.test/immich/api',
   bool hasUser = true,
 }) {
+  when(() => store.tryGet(StoreKey.authenticatedSessionReady)).thenReturn(true);
   when(() => store.tryGet(StoreKey.accessToken)).thenReturn(accessToken);
   when(() => store.tryGet(StoreKey.serverEndpoint)).thenReturn(endpoint);
   when(() => store.tryGet(StoreKey.deviceId)).thenReturn(null);
@@ -88,6 +104,7 @@ void _stubCachedSession(
 }
 
 void _verifyReadOnlyCacheAccess(_MockStoreService store, _MockUserService userService) {
+  verify(() => store.tryGet(StoreKey.authenticatedSessionReady)).called(1);
   verify(() => store.tryGet(StoreKey.accessToken)).called(1);
   verify(() => store.tryGet(StoreKey.serverEndpoint)).called(1);
   verify(() => store.tryGet(StoreKey.deviceId)).called(1);

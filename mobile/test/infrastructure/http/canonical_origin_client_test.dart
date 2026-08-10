@@ -102,6 +102,23 @@ void main() {
     expect(guard.isCurrent(newer), isTrue);
   });
 
+  test('logout block prevents a delayed native replacement from reopening requests', () async {
+    final guard = RequestOriginGuard();
+    final nativeReply = Completer<void>();
+    final replacement = guard.block();
+    final delayedPublication = (() async {
+      await nativeReply.future;
+      guard.publish(replacement, RequestOriginContext.restricted([Uri.parse('https://stale.test')]));
+    })();
+
+    guard.invalidate();
+    nativeReply.complete();
+    await delayedPublication;
+
+    expect(guard.context.nativeContextConfirmed, isFalse);
+    expect(guard.context.allows(Uri.parse('https://stale.test/api')), isFalse);
+  });
+
   test('safety fence does not invalidate a newer queued login transition', () {
     final guard = RequestOriginGuard();
     final login = guard.block();

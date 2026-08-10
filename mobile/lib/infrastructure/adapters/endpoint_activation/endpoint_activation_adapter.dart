@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:immich_mobile/domain/interfaces/cancellable_request.interface.dart';
 import 'package:immich_mobile/domain/interfaces/endpoint_activation.interface.dart';
+import 'package:immich_mobile/domain/interfaces/request_context_lease.interface.dart';
 import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/domain/models/offline_result.model.dart';
 import 'package:immich_mobile/domain/services/session_mutation_mutex.dart';
@@ -17,6 +18,7 @@ final class EndpointActivationAdapter implements EndpointActivationPort {
     required ActivationSessionPort session,
     required EndpointApiGraphPort apiGraph,
     required NativeRequestContextPort nativeContext,
+    required RequestContextLeasePort requestContextLease,
     required ConfirmedEndpointStorePort endpointStore,
     required WidgetCredentialsPort widgetCredentials,
     EndpointActivationCheckpoint? checkpoint,
@@ -25,6 +27,7 @@ final class EndpointActivationAdapter implements EndpointActivationPort {
        _session = session,
        _apiGraph = apiGraph,
        _nativeContext = nativeContext,
+       _requestContextLease = requestContextLease,
        _endpointStore = endpointStore,
        _widgetCredentials = widgetCredentials,
        _checkpoint = checkpoint ?? _noCheckpoint,
@@ -34,6 +37,7 @@ final class EndpointActivationAdapter implements EndpointActivationPort {
   final ActivationSessionPort _session;
   final EndpointApiGraphPort _apiGraph;
   final NativeRequestContextPort _nativeContext;
+  final RequestContextLeasePort _requestContextLease;
   final ConfirmedEndpointStorePort _endpointStore;
   final WidgetCredentialsPort _widgetCredentials;
   final EndpointActivationCheckpoint _checkpoint;
@@ -63,7 +67,7 @@ final class EndpointActivationAdapter implements EndpointActivationPort {
 
     late final Uri? previousEndpoint;
     late final NativeRequestContext previousNativeContext;
-    late final Uri? previousStoredEndpoint;
+    late final ConfirmedServerEndpoint? previousStoredEndpoint;
     late final WidgetCredentials previousWidgetCredentials;
     late final PreparedApiGraph preparedGraph;
     try {
@@ -77,17 +81,38 @@ final class EndpointActivationAdapter implements EndpointActivationPort {
       return const OfflineResult.failure(OfflineErrorCode.serverUnavailable);
     }
     final progress = _ActivationProgress();
+    final activationLease = _requestContextLease.beginActivation(request.endpoint.schemePolicy);
+    var activationLeaseCommitted = false;
 
     try {
       _ensureFresh(request, signal);
       progress.nativeContextAttempted = true;
-      await _nativeContext.replace(
-        NativeRequestContext(
-          canonicalOrigin: request.endpoint.canonicalOrigin,
-          accessToken: initialSession.accessToken,
-          customHeaders: initialSession.customHeaders,
-        ),
-      );
+      try {
+        await _nativeContext.replace(
+          NativeRequestContext(
+            canonicalOrigin: request.endpoint.canonicalOrigin,
+            accessToken: initialSession.accessToken,
+            schemePolicy: request.endpoint.schemePolicy,
+            customHeaders: initialSession.customHeaders,
+          ),
+        );
+      } catch (_) {
+        if (activationLease != null) {
+          activationLeaseCommitted = _requestContextLease.commitActivation(activationLease);
+          if (!activationLeaseCommitted) {
+            final purgeError = await _purgeStaleTransportContext();
+            return OfflineResult.failure(purgeError ?? OfflineErrorCode.cancelled);
+          }
+        }
+        rethrow;
+      }
+      if (activationLease != null && !activationLeaseCommitted) {
+        activationLeaseCommitted = _requestContextLease.commitActivation(activationLease);
+        if (!activationLeaseCommitted) {
+          final purgeError = await _purgeStaleTransportContext();
+          return OfflineResult.failure(purgeError ?? OfflineErrorCode.cancelled);
+        }
+      }
       await _after(EndpointActivationStep.nativeContext, request, signal);
 
       progress.apiGraphAttempted = true;
@@ -95,7 +120,9 @@ final class EndpointActivationAdapter implements EndpointActivationPort {
       await _after(EndpointActivationStep.apiGraph, request, signal);
 
       progress.endpointStoreAttempted = true;
-      await _endpointStore.write(request.endpoint.apiEndpoint);
+      await _endpointStore.write(
+        ConfirmedServerEndpoint(apiEndpoint: request.endpoint.apiEndpoint, schemePolicy: request.endpoint.schemePolicy),
+      );
       await _after(EndpointActivationStep.endpointStore, request, signal);
 
       progress.widgetCredentialsAttempted = true;
@@ -118,6 +145,7 @@ final class EndpointActivationAdapter implements EndpointActivationPort {
       final rollbackError = await _rollback(
         progress: progress,
         request: request,
+        activationLease: activationLease,
         previousEndpoint: previousEndpoint,
         previousNativeContext: previousNativeContext,
         previousStoredEndpoint: previousStoredEndpoint,
@@ -128,13 +156,38 @@ final class EndpointActivationAdapter implements EndpointActivationPort {
       final rollbackError = await _rollback(
         progress: progress,
         request: request,
+        activationLease: activationLease,
         previousEndpoint: previousEndpoint,
         previousNativeContext: previousNativeContext,
         previousStoredEndpoint: previousStoredEndpoint,
         previousWidgetCredentials: previousWidgetCredentials,
       );
       return OfflineResult.failure(rollbackError ?? OfflineErrorCode.serverUnavailable);
+    } finally {
+      if (activationLease != null && !activationLeaseCommitted) {
+        _requestContextLease.abandonActivation(activationLease);
+      }
     }
+  }
+
+  Future<OfflineErrorCode?> _purgeStaleTransportContext() async {
+    var fenceApplied = true;
+    try {
+      _nativeContext.block();
+    } catch (error, stackTrace) {
+      fenceApplied = false;
+      _log.warning('Unable to fence a stale transport activation', error, stackTrace);
+    }
+    final purged = await _purgeCredential(_nativeContext.purge);
+    if (!fenceApplied || !purged) {
+      try {
+        _nativeContext.block();
+      } catch (error, stackTrace) {
+        _log.warning('Unable to preserve a stale transport fence', error, stackTrace);
+      }
+      return OfflineErrorCode.credentialPurgeFailed;
+    }
+    return null;
   }
 
   Future<void> _after(
@@ -149,14 +202,16 @@ final class EndpointActivationAdapter implements EndpointActivationPort {
   Future<OfflineErrorCode?> _rollback({
     required _ActivationProgress progress,
     required EndpointActivationRequest request,
+    required RequestContextActivationLease? activationLease,
     required Uri? previousEndpoint,
     required NativeRequestContext previousNativeContext,
-    required Uri? previousStoredEndpoint,
+    required ConfirmedServerEndpoint? previousStoredEndpoint,
     required WidgetCredentials previousWidgetCredentials,
   }) async {
     final sessionStillCurrent = _isSessionCurrent(request.sessionEpoch);
+    final transportLeaseStillCurrent = activationLease == null || _requestContextLease.isCurrent(activationLease);
 
-    if (!sessionStillCurrent) {
+    if (!sessionStillCurrent || !transportLeaseStillCurrent) {
       return _purgeStaleSession();
     }
 

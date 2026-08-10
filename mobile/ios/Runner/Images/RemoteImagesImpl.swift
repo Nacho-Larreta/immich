@@ -57,8 +57,13 @@ final class RemoteImageSessionDelegate: NSObject, URLSessionTaskDelegate {
     @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
   ) -> Void
 
+  private struct AuthorizedOrigin: Sendable {
+    let origin: RemoteImageCanonicalOrigin
+    let authorization: NetworkOriginAuthorization
+  }
+
   private struct State: Sendable {
-    var origins: [Int: RemoteImageCanonicalOrigin] = [:]
+    var origins: [Int: AuthorizedOrigin] = [:]
     var rejectedRedirects: Set<Int> = []
   }
 
@@ -69,8 +74,17 @@ final class RemoteImageSessionDelegate: NSObject, URLSessionTaskDelegate {
     self.challengeHandler = challengeHandler
   }
 
-  func register(task: URLSessionTask, origin: RemoteImageCanonicalOrigin) {
-    state.withLock { $0.origins[task.taskIdentifier] = origin }
+  func register(
+    task: URLSessionTask,
+    origin: RemoteImageCanonicalOrigin,
+    authorization: NetworkOriginAuthorization
+  ) {
+    state.withLock {
+      $0.origins[task.taskIdentifier] = AuthorizedOrigin(
+        origin: origin,
+        authorization: authorization
+      )
+    }
   }
 
   func consumeRejectedRedirect(for taskIdentifier: Int) -> Bool {
@@ -96,9 +110,10 @@ final class RemoteImageSessionDelegate: NSObject, URLSessionTaskDelegate {
   ) {
     let isAllowed = state.withLock { state in
       guard
-        let expectedOrigin = state.origins[task.taskIdentifier],
+        let authorizedOrigin = state.origins[task.taskIdentifier],
         let redirectURL = request.url,
-        RemoteImageCanonicalOrigin(requestURL: redirectURL) == expectedOrigin
+        RemoteImageCanonicalOrigin(requestURL: redirectURL) == authorizedOrigin.origin,
+        URLSessionManager.allows(redirectURL, under: authorizedOrigin.authorization)
       else {
         state.rejectedRedirects.insert(task.taskIdentifier)
         return false
@@ -136,6 +151,27 @@ final class RemoteImageSessionDelegate: NSObject, URLSessionTaskDelegate {
     guard let challengeHandler else {
       return completion(.performDefaultHandling, nil)
     }
+    let requestContextIsCurrent = state.withLock { state in
+      if let task {
+        guard
+          let authorizedOrigin = state.origins[task.taskIdentifier],
+          let requestURL = task.currentRequest?.url ?? task.originalRequest?.url
+        else { return false }
+        return URLSessionManager.allows(requestURL, under: authorizedOrigin.authorization)
+      }
+      return state.origins.values.contains { authorizedOrigin in
+        guard
+          let originURL = URL(
+            string:
+              "\(authorizedOrigin.origin.scheme)://\(authorizedOrigin.origin.host):\(authorizedOrigin.origin.port)"
+          )
+        else { return false }
+        return URLSessionManager.allows(originURL, under: authorizedOrigin.authorization)
+      }
+    }
+    guard requestContextIsCurrent else {
+      return completion(.cancelAuthenticationChallenge, nil)
+    }
     challengeHandler(session, challenge, task, completion)
   }
 }
@@ -151,12 +187,15 @@ final class RemoteImageOperation: ImageRequest<RemoteImageResult>, @unchecked Se
 
   private let state = Mutex(State())
   let id: Int64
+  let requiresRequestContext: Bool
 
   init(
     id: Int64,
+    requiresRequestContext: Bool = true,
     completion: @escaping (Result<RemoteImageResult, any Error>) -> Void
   ) {
     self.id = id
+    self.requiresRequestContext = requiresRequestContext
     super.init(completion: completion)
   }
 
@@ -205,8 +244,8 @@ final class RemoteImageOperation: ImageRequest<RemoteImageResult>, @unchecked Se
   }
 
   override func complete(_ result: Result<RemoteImageResult, any Error>) -> Bool {
-    let terminal: (shouldComplete: Bool, interval: (any PerformanceInterval)?) =
-      state.withLock { state in
+    let terminal: (shouldComplete: Bool, interval: (any PerformanceInterval)?) = state.withLock {
+      state in
       guard !state.isCompleted else { return (false, nil) }
       state.isCompleted = true
       defer { state.interval = nil }
@@ -219,8 +258,8 @@ final class RemoteImageOperation: ImageRequest<RemoteImageResult>, @unchecked Se
   }
 }
 
-private extension RemoteImageRequestKind {
-  var performanceRequestKind: PerformanceRequestKind {
+extension RemoteImageRequestKind {
+  fileprivate var performanceRequestKind: PerformanceRequestKind {
     switch self {
     case .thumbnail: .remoteThumbnail
     case .original: .remoteOriginal
@@ -265,47 +304,62 @@ class RemoteImageApiImpl: NSObject, RemoteImageApi {
     let manager = URLSessionManager.shared
     self.init(
       sessionConfiguration: manager.session.configuration,
+      cookieStorage: URLSessionManager.cookieStorage,
       challengeHandler: { session, challenge, task, completion in
         manager.delegate.handleChallenge(session, challenge, completion, task: task)
       },
+      beforeNetworkTaskRegistration: {},
       performanceRecorder: PerformanceTelemetry.shared
     )
   }
 
   convenience init(
     sessionConfiguration: URLSessionConfiguration,
+    beforeNetworkTaskRegistration: @escaping () -> Void = {},
     performanceRecorder: any PerformanceRecording = PerformanceTelemetry.shared
   ) {
     self.init(
       sessionConfiguration: sessionConfiguration,
+      cookieStorage: sessionConfiguration.httpCookieStorage,
       challengeHandler: nil,
+      beforeNetworkTaskRegistration: beforeNetworkTaskRegistration,
       performanceRecorder: performanceRecorder
     )
   }
 
   private init(
     sessionConfiguration: URLSessionConfiguration,
+    cookieStorage: HTTPCookieStorage?,
     challengeHandler: RemoteImageSessionDelegate.ChallengeHandler?,
+    beforeNetworkTaskRegistration: @escaping () -> Void,
     performanceRecorder: any PerformanceRecording
   ) {
     let urlCache = sessionConfiguration.urlCache
     let configuration = sessionConfiguration.copy() as! URLSessionConfiguration
-    let cookieStorage = configuration.httpCookieStorage
     configuration.urlCache = urlCache
     configuration.httpShouldSetCookies = false
     configuration.httpCookieStorage = nil
-    configuration.httpAdditionalHeaders = configuration.httpAdditionalHeaders?.filter {
-      String(describing: $0.key).caseInsensitiveCompare("Cookie") != .orderedSame
-    }
+    configuration.httpAdditionalHeaders = nil
     let sessionDelegate = RemoteImageSessionDelegate(challengeHandler: challengeHandler)
     self.cookieStorage = cookieStorage
     self.urlCache = urlCache
+    self.beforeNetworkTaskRegistration = beforeNetworkTaskRegistration
     self.performanceRecorder = performanceRecorder
     self.sessionDelegate = sessionDelegate
     self.session = URLSession(
       configuration: configuration, delegate: sessionDelegate, delegateQueue: nil)
     super.init()
+    requestContextObserver = NotificationCenter.default.addObserver(
+      forName: URLSessionManager.requestContextDidChange,
+      object: nil,
+      queue: nil
+    ) { [weak self] _ in
+      self?.cancelRequestsRequiringContext()
+    }
   }
+
+  private var requestContextObserver: NSObjectProtocol?
+  private let beforeNetworkTaskRegistration: () -> Void
 
   func requestImage(
     request input: RemoteImageRequest,
@@ -320,20 +374,23 @@ class RemoteImageApiImpl: NSObject, RemoteImageApi {
       return completion(.success(Self.failure(.wrongServer)))
     }
 
-    var urlRequest = URLRequest(url: url)
-    urlRequest.cachePolicy = Self.cachePolicy(for: input.policy)
-    urlRequest.httpShouldHandleCookies = false
-    if let cookieHeader = exactHostCookieHeader(for: url) {
-      urlRequest.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
-    }
-
-    let request = RemoteImageOperation(id: input.requestId, completion: completion)
+    let request = RemoteImageOperation(
+      id: input.requestId,
+      requiresRequestContext: input.policy != .cacheOnly,
+      completion: completion
+    )
     let replacedRequest = registry.add(requestId: input.requestId, request: request)
     request.markAccepted(kind: input.kind, recorder: performanceRecorder)
     _ = replacedRequest?.cancel()
 
     if input.policy == .cacheOnly {
-      guard let cachedResponse = urlCache?.cachedResponse(for: urlRequest) else {
+      var cacheRequest = URLRequest(url: url)
+      cacheRequest.cachePolicy = Self.cachePolicy(for: input.policy)
+      cacheRequest.httpShouldHandleCookies = false
+      if let cookieHeader = exactHostCookieHeader(for: url) {
+        cacheRequest.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+      }
+      guard let cachedResponse = urlCache?.cachedResponse(for: cacheRequest) else {
         Self.finish(request: request, registry: registry, result: Self.failure(.cacheMiss))
         return
       }
@@ -345,8 +402,40 @@ class RemoteImageApiImpl: NSObject, RemoteImageApi {
         data: cachedResponse.data,
         response: cachedResponse.response,
         error: nil,
-        rejectedRedirect: false
+        rejectedRedirect: false,
+        requestContextStillCurrent: true
       )
+    }
+
+    guard
+      let cookieStorage,
+      let requestContext = URLSessionManager.captureRequestContext(
+        for: url,
+        declaredOrigin: input.origin,
+        cookieStorage: cookieStorage
+      )
+    else {
+      Self.finish(request: request, registry: registry, result: Self.failure(.wrongServer))
+      return
+    }
+    var urlRequest = URLRequest(url: url)
+    urlRequest.cachePolicy = Self.cachePolicy(for: input.policy)
+    urlRequest.httpShouldHandleCookies = false
+    for (header, value) in requestContext.headers {
+      urlRequest.setValue(value, forHTTPHeaderField: header)
+    }
+    if let cookieHeader = requestContext.cookieHeader {
+      urlRequest.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+    }
+    beforeNetworkTaskRegistration()
+    guard
+      !request.isCancelled,
+      URLSessionManager.allows(url, under: requestContext.authorization)
+    else {
+      if !request.isCancelled {
+        Self.finish(request: request, registry: registry, result: Self.failure(.wrongServer))
+      }
+      return
     }
 
     let task = session.dataTask(with: urlRequest) { [self, request] data, response, error in
@@ -360,11 +449,30 @@ class RemoteImageApiImpl: NSObject, RemoteImageApi {
         data: data,
         response: response,
         error: error,
-        rejectedRedirect: rejectedRedirect
+        rejectedRedirect: rejectedRedirect,
+        requestContextStillCurrent: URLSessionManager.allows(
+          url,
+          under: requestContext.authorization
+        )
       )
     }
 
-    sessionDelegate.register(task: task, origin: declaredOrigin)
+    sessionDelegate.register(
+      task: task,
+      origin: declaredOrigin,
+      authorization: requestContext.authorization
+    )
+    guard
+      !request.isCancelled,
+      URLSessionManager.allows(url, under: requestContext.authorization)
+    else {
+      sessionDelegate.unregister(taskIdentifier: task.taskIdentifier)
+      task.cancel()
+      if !request.isCancelled {
+        Self.finish(request: request, registry: registry, result: Self.failure(.wrongServer))
+      }
+      return
+    }
     request.start(task)
   }
 
@@ -385,9 +493,29 @@ class RemoteImageApiImpl: NSObject, RemoteImageApi {
     }
   }
 
+  private func cancelRequestsRequiringContext() {
+    for request in registry.all() where request.requiresRequestContext {
+      guard registry.remove(requestId: request.id, matching: request) != nil else { continue }
+      if let taskIdentifier = request.taskIdentifier {
+        sessionDelegate.unregister(taskIdentifier: taskIdentifier)
+      }
+      _ = request.cancel()
+    }
+  }
+
   func dispose() {
+    if let requestContextObserver {
+      NotificationCenter.default.removeObserver(requestContextObserver)
+      self.requestContextObserver = nil
+    }
     cancelAll()
     session.invalidateAndCancel()
+  }
+
+  deinit {
+    if let requestContextObserver {
+      NotificationCenter.default.removeObserver(requestContextObserver)
+    }
   }
 
   func clearCache(
@@ -426,7 +554,8 @@ class RemoteImageApiImpl: NSObject, RemoteImageApi {
     data: Data?,
     response: URLResponse?,
     error: Error?,
-    rejectedRedirect: Bool
+    rejectedRedirect: Bool,
+    requestContextStillCurrent: Bool
   ) {
     if request.isCancelled {
       finish(request: request, registry: registry, result: failure(.cancelled))
@@ -434,6 +563,11 @@ class RemoteImageApiImpl: NSObject, RemoteImageApi {
     }
 
     if rejectedRedirect {
+      finish(request: request, registry: registry, result: failure(.wrongServer))
+      return
+    }
+
+    if !requestContextStillCurrent {
       finish(request: request, registry: registry, result: failure(.wrongServer))
       return
     }

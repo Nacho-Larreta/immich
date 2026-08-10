@@ -4,9 +4,9 @@ import 'package:flutter_udid/flutter_udid.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/constants/constants.dart';
 import 'package:immich_mobile/domain/interfaces/anonymous_server_discovery.interface.dart';
+import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/models/logout_outcome.model.dart';
-import 'package:immich_mobile/domain/models/user.model.dart';
 import 'package:immich_mobile/domain/interfaces/auth_request_context.interface.dart';
 import 'package:immich_mobile/domain/interfaces/resolved_server_endpoint_installer.interface.dart';
 import 'package:immich_mobile/domain/services/session_mutation_mutex.dart';
@@ -35,10 +35,7 @@ import 'package:immich_mobile/services/foreground_upload.service.dart';
 import 'package:immich_mobile/services/secure_storage.service.dart';
 import 'package:immich_mobile/services/background_upload.service.dart';
 import 'package:immich_mobile/services/widget.service.dart';
-import 'package:immich_mobile/utils/debug_print.dart';
 import 'package:immich_mobile/utils/hash.dart';
-import 'package:logging/logging.dart';
-import 'package:openapi/api.dart';
 
 final authProvider = StateNotifierProvider<AuthNotifier, AuthState>((ref) {
   final userService = ref.watch(userServiceProvider);
@@ -65,14 +62,16 @@ final authProvider = StateNotifierProvider<AuthNotifier, AuthState>((ref) {
       endpointStore: endpointStore,
       installDeviceInfoHeaders: apiService.setDeviceInfoHeader,
     ),
-    readConfiguredEndpoint: endpointStore.read,
+    readConfiguredEndpoint: () => endpointStore.read()?.apiEndpoint,
+    readConfiguredEndpointPolicy: () => endpointStore.read()?.schemePolicy,
     cachedSessionReader: StoreCachedSessionReader(Store, userService),
     hasConfiguredServer: () => Store.tryGet(StoreKey.serverEndpoint)?.isNotEmpty == true,
     publishRemoteAuthenticationPhase: (phase) => ref.read(remoteAuthenticationPhaseProvider.notifier).state = phase,
     invalidateSession: ref.read(serverReachabilityCoordinatorProvider).logout,
     cancelRemoteMedia: ref.read(remoteMediaProvider).cancelAll,
+    suspendRemoteShares: ref.read(assetMediaRepositoryProvider).suspendRemoteShares,
     cancelShares: ref.read(assetMediaRepositoryProvider).cancelAll,
-    activateShares: ref.read(assetMediaRepositoryProvider).activateSession,
+    activateShares: ref.read(assetMediaRepositoryProvider).activateRemoteShares,
     stopBackup: ref.read(driftBackupProvider.notifier).stopForegroundBackup,
     disconnectWebsocket: ref.read(websocketProvider.notifier).disconnect,
   );
@@ -101,6 +100,47 @@ final class RemoteAuthenticationTerminationSequenceException implements Exceptio
   }
 }
 
+final class AuthenticationBootstrapException implements Exception {
+  const AuthenticationBootstrapException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => 'AuthenticationBootstrapException: $message';
+}
+
+final class AuthenticationBootstrapRollbackException implements Exception {
+  const AuthenticationBootstrapRollbackException({required this.cause, required this.failures});
+
+  final Object cause;
+  final List<AuthenticationRollbackFailure> failures;
+
+  @override
+  String toString() =>
+      'AuthenticationBootstrapRollbackException: authentication failed ($cause); '
+      'rollback failures (${failures.join(', ')})';
+}
+
+enum AuthenticationRollbackSurface { sessionReadiness, persistedAuthentication, nativeContext, apiGraph, widget }
+
+final class AuthenticationRollbackFailure {
+  const AuthenticationRollbackFailure(this.surface, this.error, this.stackTrace);
+
+  final AuthenticationRollbackSurface surface;
+  final Object error;
+  final StackTrace stackTrace;
+
+  @override
+  String toString() => '${surface.name}: $error';
+}
+
+final class AuthenticationMutationCancelledException implements Exception {
+  const AuthenticationMutationCancelledException();
+
+  @override
+  String toString() => 'AuthenticationMutationCancelledException: a newer session mutation superseded login';
+}
+
 class AuthNotifier extends StateNotifier<AuthState> {
   final AuthService _authService;
   final ApiService _apiService;
@@ -116,19 +156,28 @@ class AuthNotifier extends StateNotifier<AuthState> {
   final AnonymousServerDiscoveryPort _anonymousServerDiscovery;
   final ResolvedServerEndpointInstallerPort _serverEndpointInstaller;
   final Uri? Function() _readConfiguredEndpoint;
+  final EndpointSchemePolicy? Function() _readConfiguredEndpointPolicy;
+  final Map<String, String> Function() _readCustomHeaders;
   final bool Function() _hasConfiguredServer;
   final void Function(RemoteAuthenticationPhase) _publishRemoteAuthenticationPhase;
   final Future<void> Function() _invalidateSession;
   final Future<void> Function() _cancelRemoteMedia;
+  final Future<void> Function() _suspendRemoteShares;
   final Future<void> Function() _cancelShares;
   final void Function() _activateShares;
   final void Function() _stopBackup;
   final void Function() _disconnectWebsocket;
-  final _log = Logger("AuthenticationNotifier");
+  final Future<void> Function(String) _persistAccessToken;
+  final Future<void> Function() _clearPersistedAuthentication;
+  final Future<void> Function(bool) _persistSessionReadiness;
+  final Future<String> Function() _readOrCreateDeviceId;
+  final Future<void> Function(String) _persistDeviceIdentity;
+  final Future<void> Function(String) _publishWidgetCredentials;
   Future<void>? _remoteAuthenticationTermination;
   _RemoteAuthenticationTerminationIntent? _requestedTerminationIntent;
   _RemoteAuthenticationTerminationIntent? _queuedTerminationIntent;
   bool _acceptsTerminationEscalation = false;
+  int _authenticationGeneration = 0;
 
   static const Duration _timeoutDuration = Duration(seconds: 7);
 
@@ -147,26 +196,50 @@ class AuthNotifier extends StateNotifier<AuthState> {
     required AnonymousServerDiscoveryPort anonymousServerDiscovery,
     required ResolvedServerEndpointInstallerPort serverEndpointInstaller,
     Uri? Function()? readConfiguredEndpoint,
+    EndpointSchemePolicy? Function()? readConfiguredEndpointPolicy,
+    Map<String, String> Function()? readCustomHeaders,
     bool Function()? hasConfiguredServer,
     void Function(RemoteAuthenticationPhase)? publishRemoteAuthenticationPhase,
     required Future<void> Function() invalidateSession,
     required Future<void> Function() cancelRemoteMedia,
+    Future<void> Function()? suspendRemoteShares,
     Future<void> Function()? cancelShares,
     void Function()? activateShares,
     required void Function() stopBackup,
     required void Function() disconnectWebsocket,
+    Future<void> Function(String)? persistAccessToken,
+    Future<void> Function()? clearPersistedAuthentication,
+    Future<void> Function(bool)? persistSessionReadiness,
+    Future<String> Function()? readOrCreateDeviceId,
+    Future<void> Function(String)? persistDeviceIdentity,
+    Future<void> Function(String)? publishWidgetCredentials,
   }) : _cachedSessionReader = cachedSessionReader,
        _anonymousServerDiscovery = anonymousServerDiscovery,
        _serverEndpointInstaller = serverEndpointInstaller,
        _readConfiguredEndpoint = readConfiguredEndpoint ?? _readStoredServerEndpoint,
+       _readConfiguredEndpointPolicy = readConfiguredEndpointPolicy ?? _readStoredServerEndpointPolicy,
+       _readCustomHeaders = readCustomHeaders ?? ApiService.getRequestHeaders,
        _hasConfiguredServer = hasConfiguredServer ?? _noConfiguredServer,
        _publishRemoteAuthenticationPhase = publishRemoteAuthenticationPhase ?? _noRemoteAuthenticationPhaseUpdate,
        _invalidateSession = invalidateSession,
        _cancelRemoteMedia = cancelRemoteMedia,
+       _suspendRemoteShares = suspendRemoteShares ?? _noAsyncWork,
        _cancelShares = cancelShares ?? _noAsyncWork,
        _activateShares = activateShares ?? _noWork,
        _stopBackup = stopBackup,
        _disconnectWebsocket = disconnectWebsocket,
+       _persistAccessToken = persistAccessToken ?? _storeAccessToken,
+       _clearPersistedAuthentication = clearPersistedAuthentication ?? _authService.clearRemoteAuthentication,
+       _persistSessionReadiness = persistSessionReadiness ?? _storeSessionReadiness,
+       _readOrCreateDeviceId = readOrCreateDeviceId ?? _storedOrGeneratedDeviceId,
+       _persistDeviceIdentity = persistDeviceIdentity ?? _storeDeviceIdentity,
+       _publishWidgetCredentials =
+           publishWidgetCredentials ??
+           ((accessToken) {
+             final serverEndpoint = Store.get(StoreKey.serverEndpoint);
+             final customHeaders = Store.tryGet(StoreKey.customHeaders);
+             return _widgetService.writeCredentialsAndRefresh(serverEndpoint, accessToken, customHeaders);
+           }),
        super(
          const AuthState(
            deviceId: "",
@@ -194,8 +267,8 @@ class AuthNotifier extends StateNotifier<AuthState> {
       name: user.name,
       isAdmin: user.isAdmin,
     );
-    _activateShares();
     _publishRemoteAuthenticationPhase(RemoteAuthenticationPhase.authenticated);
+    _activateShares();
     return true;
   }
 
@@ -223,10 +296,14 @@ class AuthNotifier extends StateNotifier<AuthState> {
   }
 
   Future<LoginResponse> login(String email, String password) async {
-    final response = await _authService.login(email, password);
-    await saveAuthInfo(accessToken: response.accessToken);
-    _activateShares();
-    return response;
+    final generation = _authenticationGeneration;
+    return _sessionMutationMutex.protect(() async {
+      _ensureAuthenticationMutationIsCurrent(generation);
+      final response = await _authService.login(email, password);
+      _ensureAuthenticationMutationIsCurrent(generation);
+      await _establishAuthenticatedSession(accessToken: response.accessToken, generation: generation);
+      return response;
+    });
   }
 
   Future<void> logout() => _requestRemoteAuthenticationTermination(_RemoteAuthenticationTerminationIntent.logout);
@@ -247,6 +324,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
       _requestRemoteAuthenticationTermination(_RemoteAuthenticationTerminationIntent.forgetServer);
 
   Future<void> _requestRemoteAuthenticationTermination(_RemoteAuthenticationTerminationIntent intent) {
+    _authenticationGeneration++;
     _requestContext.block();
     final activeTermination = _remoteAuthenticationTermination;
     if (activeTermination != null) {
@@ -261,13 +339,19 @@ class AuthNotifier extends StateNotifier<AuthState> {
     _queuedTerminationIntent = null;
     _requestedTerminationIntent = intent;
     _acceptsTerminationEscalation = true;
-    final termination = _coordinateRemoteAuthenticationTermination().whenComplete(() {
+    final termination = _beginRemoteAuthenticationTermination().whenComplete(() {
       _remoteAuthenticationTermination = null;
       _requestedTerminationIntent = null;
       _acceptsTerminationEscalation = false;
     });
     _remoteAuthenticationTermination = termination;
     return termination;
+  }
+
+  Future<void> _beginRemoteAuthenticationTermination() async {
+    await _persistSessionReadiness(false);
+    final remoteShareSuspension = _suspendRemoteShares();
+    await _coordinateRemoteAuthenticationTermination(remoteShareSuspension);
   }
 
   Future<void> _continueAfterRemoteAuthenticationTermination(
@@ -304,7 +388,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
     return current;
   }
 
-  Future<void> _coordinateRemoteAuthenticationTermination() async {
+  Future<void> _coordinateRemoteAuthenticationTermination(Future<void> remoteShareSuspension) async {
     Object? invalidationError;
     StackTrace? invalidationStackTrace;
 
@@ -319,7 +403,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
     await invalidate(_invalidateSession);
     await invalidate(_cancelRemoteMedia);
-    await invalidate(_cancelShares);
+    await invalidate(() => remoteShareSuspension);
     await invalidate(_stopBackup);
     await invalidate(_disconnectWebsocket);
     await _sessionMutationMutex.protect(_applyRequestedRemoteAuthenticationTermination);
@@ -339,6 +423,30 @@ class AuthNotifier extends StateNotifier<AuthState> {
   static Uri? _readStoredServerEndpoint() {
     final endpoint = Store.tryGet(StoreKey.serverEndpoint);
     return endpoint == null || endpoint.isEmpty ? null : Uri.parse(endpoint);
+  }
+
+  static EndpointSchemePolicy? _readStoredServerEndpointPolicy() {
+    final endpoint = _readStoredServerEndpoint();
+    if (endpoint == null) return null;
+    return parseEndpointSchemePolicy(Store.tryGet(StoreKey.serverEndpointSchemePolicy)) ??
+        (endpoint.scheme == 'https' ? EndpointSchemePolicy.httpsOnly : null);
+  }
+
+  static Future<void> _storeAccessToken(String accessToken) {
+    return Store.put(StoreKey.accessToken, accessToken);
+  }
+
+  static Future<void> _storeSessionReadiness(bool ready) {
+    return Store.put(StoreKey.authenticatedSessionReady, ready);
+  }
+
+  static Future<String> _storedOrGeneratedDeviceId() async {
+    return Store.tryGet(StoreKey.deviceId) ?? await FlutterUdid.consistentUdid;
+  }
+
+  static Future<void> _storeDeviceIdentity(String deviceId) async {
+    await Store.put(StoreKey.deviceId, deviceId);
+    await Store.put(StoreKey.deviceIdHash, fastHash(deviceId));
   }
 
   Future<void> _applyRequestedRemoteAuthenticationTermination() async {
@@ -367,6 +475,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
 
     var appliedIntent = _RemoteAuthenticationTerminationIntent.reauthenticate;
+    var sharesCancelled = false;
     var remoteSessionInvalidated = false;
     var remoteAuthenticationCleared = false;
     var serverForgotten = false;
@@ -378,6 +487,10 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
       while (true) {
         final requestedIntent = _requestedTerminationIntent ?? _RemoteAuthenticationTerminationIntent.reauthenticate;
+        if (requestedIntent.priority >= _RemoteAuthenticationTerminationIntent.logout.priority && !sharesCancelled) {
+          await attempt(_cancelShares, recordOperationError);
+          sharesCancelled = true;
+        }
         if (requestedIntent.priority >= _RemoteAuthenticationTerminationIntent.logout.priority &&
             !remoteSessionInvalidated) {
           await attempt(_authService.invalidateRemoteSession, recordOperationError);
@@ -470,59 +583,104 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
   }
 
-  Future<bool> saveAuthInfo({required String accessToken}) async {
-    await Store.put(StoreKey.accessToken, accessToken);
-    await _apiService.updateHeaders();
+  Future<bool> saveAuthInfo({required String accessToken}) {
+    final generation = _authenticationGeneration;
+    return _sessionMutationMutex.protect(() async {
+      _ensureAuthenticationMutationIsCurrent(generation);
+      await _establishAuthenticatedSession(accessToken: accessToken, generation: generation);
+      return true;
+    });
+  }
 
-    final serverEndpoint = Store.get(StoreKey.serverEndpoint);
-    final customHeaders = Store.tryGet(StoreKey.customHeaders);
-    await _widgetService.writeCredentialsAndRefresh(serverEndpoint, accessToken, customHeaders);
-
-    // Get the deviceid from the store if it exists, otherwise generate a new one
-    String deviceId = Store.tryGet(StoreKey.deviceId) ?? await FlutterUdid.consistentUdid;
-
-    UserDto? user = _userService.tryGetMyUser();
-
+  Future<void> _establishAuthenticatedSession({required String accessToken, required int generation}) async {
     try {
-      final serverUser = await _userService.refreshMyUser().timeout(_timeoutDuration);
-      if (serverUser == null) {
-        _log.severe("Unable to get user information from the server.");
-      } else {
-        // If the user information is successfully retrieved, update the store
-        // Due to the flow of the code, this will always happen on first login
-        user = serverUser;
-        await Store.put(StoreKey.deviceId, deviceId);
-        await Store.put(StoreKey.deviceIdHash, fastHash(deviceId));
+      final endpoint = _readConfiguredEndpoint();
+      final schemePolicy = _readConfiguredEndpointPolicy();
+      if (endpoint == null || schemePolicy == null) {
+        throw const AuthenticationBootstrapException('The active server has no approved request context');
       }
-    } on ApiException catch (error, stackTrace) {
-      if (error.code == 401) {
-        _log.warning("Unauthorized access, remote authentication is required again.");
-        await requireReauthentication();
-        return false;
+      final canonicalOrigin = Uri.parse(endpoint.origin);
+      validateEndpointSchemePolicy(canonicalOrigin, schemePolicy);
+
+      _ensureAuthenticationMutationIsCurrent(generation);
+      await _persistSessionReadiness(false);
+      _ensureAuthenticationMutationIsCurrent(generation);
+      await _persistAccessToken(accessToken);
+      _ensureAuthenticationMutationIsCurrent(generation);
+      await _requestContext.install(
+        canonicalOrigin: canonicalOrigin,
+        accessToken: accessToken,
+        schemePolicy: schemePolicy,
+        customHeaders: _readCustomHeaders(),
+      );
+      _ensureAuthenticationMutationIsCurrent(generation);
+      final deviceId = await _readOrCreateDeviceId();
+      _ensureAuthenticationMutationIsCurrent(generation);
+      final user = await _userService.refreshMyUser().timeout(_timeoutDuration);
+      if (user == null) {
+        throw const AuthenticationBootstrapException('The server returned no current user');
       }
-      _log.severe("Error getting user information from the server [API EXCEPTION]", stackTrace);
+
+      _ensureAuthenticationMutationIsCurrent(generation);
+      await _persistDeviceIdentity(deviceId);
+      _ensureAuthenticationMutationIsCurrent(generation);
+      await _publishWidgetCredentials(accessToken);
+      _ensureAuthenticationMutationIsCurrent(generation);
+      await _persistSessionReadiness(true);
+      _ensureAuthenticationMutationIsCurrent(generation);
+
+      state = state.copyWith(
+        deviceId: deviceId,
+        userId: user.id,
+        userEmail: user.email,
+        isAuthenticated: true,
+        name: user.name,
+        isAdmin: user.isAdmin,
+      );
+      _publishRemoteAuthenticationPhase(RemoteAuthenticationPhase.authenticated);
+      _activateShares();
     } catch (error, stackTrace) {
-      _log.severe("Error getting user information from the server [CATCH ALL]", error, stackTrace);
-      dPrint(() => "Error getting user information from the server [CATCH ALL] $error $stackTrace");
+      await _rollbackAuthenticationBootstrap(error, stackTrace);
+    }
+  }
+
+  void _ensureAuthenticationMutationIsCurrent(int generation) {
+    if (generation != _authenticationGeneration || _remoteAuthenticationTermination != null) {
+      throw const AuthenticationMutationCancelledException();
+    }
+  }
+
+  Future<Never> _rollbackAuthenticationBootstrap(Object cause, StackTrace causeStackTrace) async {
+    _requestContext.block();
+    final remoteShareSuspension = _suspendRemoteShares();
+    final failures = <AuthenticationRollbackFailure>[];
+
+    Future<void> attempt(AuthenticationRollbackSurface surface, Future<void> Function() operation) async {
+      try {
+        await operation();
+      } catch (error, stackTrace) {
+        failures.add(AuthenticationRollbackFailure(surface, error, stackTrace));
+      }
     }
 
-    // If the user is null, the login was not successful
-    // and we don't have a local copy of the user from a prior successful login
-    if (user == null) {
-      return false;
+    await attempt(AuthenticationRollbackSurface.sessionReadiness, () => _persistSessionReadiness(false));
+    await remoteShareSuspension;
+    await attempt(AuthenticationRollbackSurface.persistedAuthentication, _clearPersistedAuthentication);
+    await attempt(AuthenticationRollbackSurface.nativeContext, _requestContext.purge);
+    await attempt(AuthenticationRollbackSurface.apiGraph, _apiGraph.purge);
+    await attempt(AuthenticationRollbackSurface.widget, _widgetService.clearCredentialsAndRefresh);
+    _requestContext.block();
+
+    _publishUnauthenticatedState();
+    _publishRemoteAuthenticationPhase(RemoteAuthenticationPhase.reauthenticationRequired);
+
+    if (failures.isNotEmpty) {
+      Error.throwWithStackTrace(
+        AuthenticationBootstrapRollbackException(cause: cause, failures: List.unmodifiable(failures)),
+        failures.first.stackTrace,
+      );
     }
-
-    state = state.copyWith(
-      deviceId: deviceId,
-      userId: user.id,
-      userEmail: user.email,
-      isAuthenticated: true,
-      name: user.name,
-      isAdmin: user.isAdmin,
-    );
-    _publishRemoteAuthenticationPhase(RemoteAuthenticationPhase.authenticated);
-
-    return true;
+    Error.throwWithStackTrace(cause, causeStackTrace);
   }
 
   Future<void> saveWifiName(String wifiName) async {

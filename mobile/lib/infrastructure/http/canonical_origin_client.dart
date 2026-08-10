@@ -53,6 +53,10 @@ final class RequestOriginGuard {
     _context = const RequestOriginContext.blocked();
   }
 
+  void invalidate() {
+    block();
+  }
+
   int block() {
     fence();
     return ++_latestTransition;

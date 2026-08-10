@@ -36,7 +36,7 @@ class AssetMediaRepository {
   final RemoteOriginalUriBuilder _buildRemoteOriginalUri;
   final LocalAssetManagementPort _localAssets;
   final Set<_AssetShareOperation> _shareOperations = {};
-  bool _acceptingShares = true;
+  bool _acceptingRemoteShares = false;
   bool _disposed = false;
 
   AssetMediaRepository({
@@ -60,16 +60,20 @@ class AssetMediaRepository {
   }
 
   ShareOperation shareAssets(List<BaseAsset> assets, {ShareAnchor? anchor}) {
-    if (!_acceptingShares || _disposed) {
-      return const _RejectedShareOperation();
+    final immutableAssets = List<BaseAsset>.unmodifiable(assets);
+    if (_disposed && immutableAssets.isNotEmpty) {
+      return _RejectedShareOperation(_cancelledFailure(immutableAssets.first));
+    }
+    final plan = _compileSharePlan(immutableAssets);
+    if (plan case _RejectedSharePlan(:final failure)) {
+      return _RejectedShareOperation(failure);
     }
     final operation = _AssetShareOperation(
-      assets: List.unmodifiable(assets),
+      plan: plan as _AcceptedSharePlan,
       anchor: anchor,
       localExporter: _localExporter,
       remoteExporter: _remoteExporter,
       shareSheet: _shareSheet,
-      buildRemoteOriginalUri: _buildRemoteOriginalUri,
       onFinished: _shareOperations.remove,
     );
     _shareOperations.add(operation);
@@ -77,8 +81,42 @@ class AssetMediaRepository {
     return operation;
   }
 
+  _SharePlan _compileSharePlan(List<BaseAsset> assets) {
+    final steps = <_ShareExportStep>[];
+    for (final asset in assets) {
+      if (_usesLocalOriginal(asset)) {
+        steps.add(_LocalShareExportStep(asset));
+        continue;
+      }
+
+      final remoteId = asset.remoteId;
+      if (remoteId == null) {
+        return _RejectedSharePlan(_remoteFailure(asset, OriginalExportError.assetMissing));
+      }
+      if (!_acceptingRemoteShares) {
+        return _RejectedSharePlan(_remoteFailure(asset, OriginalExportError.unauthorized));
+      }
+
+      Uri? resource;
+      try {
+        resource = _buildRemoteOriginalUri(remoteId, edited: asset.isEdited);
+      } on Object {
+        return _RejectedSharePlan(_remoteFailure(asset, OriginalExportError.serverUnavailable));
+      }
+      if (resource == null) {
+        return _RejectedSharePlan(_remoteFailure(asset, OriginalExportError.serverUnavailable));
+      }
+      steps.add(_RemoteShareExportStep(asset, resource));
+    }
+    return _AcceptedSharePlan(assets: assets, steps: List.unmodifiable(steps));
+  }
+
+  Future<void> suspendRemoteShares() {
+    _acceptingRemoteShares = false;
+    return _cancelOperations((operation) => operation.usesRemote && !operation.isPresentationOwned);
+  }
+
   Future<void> cancelAll() async {
-    _acceptingShares = false;
     final operations = _shareOperations.toList(growable: false);
     await Future.wait(operations.map((operation) => operation.cancel()));
     await Future.wait(
@@ -86,39 +124,62 @@ class AssetMediaRepository {
     );
   }
 
-  void activateSession() {
+  Future<void> _cancelOperations(bool Function(_AssetShareOperation operation) shouldCancel) async {
+    final operations = _shareOperations.where(shouldCancel).toList(growable: false);
+    await Future.wait(operations.map((operation) => operation.cancel()));
+    await Future.wait(operations.map((operation) => operation.result));
+  }
+
+  void activateRemoteShares() {
     if (!_disposed) {
-      _acceptingShares = true;
+      _acceptingRemoteShares = true;
     }
   }
 
   Future<void> dispose() async {
     _disposed = true;
+    _acceptingRemoteShares = false;
     await cancelAll();
+  }
+
+  static bool _usesLocalOriginal(BaseAsset asset) => asset.localId != null && !asset.isEdited;
+
+  static ShareAssetFailure _remoteFailure(BaseAsset asset, OriginalExportError error) {
+    return ShareAssetFailure(
+      assetId: _assetIdentityForPhase(asset, SharePhase.remoteExport),
+      phase: SharePhase.remoteExport,
+      error: error,
+    );
+  }
+
+  static ShareAssetFailure _cancelledFailure(BaseAsset asset) {
+    final phase = _usesLocalOriginal(asset) ? SharePhase.localExport : SharePhase.remoteExport;
+    return ShareAssetFailure(
+      assetId: _assetIdentityForPhase(asset, phase),
+      phase: phase,
+      error: OriginalExportError.cancelled,
+    );
   }
 }
 
 final class _AssetShareOperation implements ShareOperation {
   _AssetShareOperation({
-    required this.assets,
+    required this.plan,
     required this.anchor,
     required LocalOriginalExportPort localExporter,
     required RemoteOriginalExportPort remoteExporter,
     required ShareSheetPort shareSheet,
-    required RemoteOriginalUriBuilder buildRemoteOriginalUri,
     required void Function(_AssetShareOperation operation) onFinished,
   }) : _localExporter = localExporter,
        _remoteExporter = remoteExporter,
        _shareSheet = shareSheet,
-       _buildRemoteOriginalUri = buildRemoteOriginalUri,
        _onFinished = onFinished;
 
-  final List<BaseAsset> assets;
+  final _AcceptedSharePlan plan;
   final ShareAnchor? anchor;
   final LocalOriginalExportPort _localExporter;
   final RemoteOriginalExportPort _remoteExporter;
   final ShareSheetPort _shareSheet;
-  final RemoteOriginalUriBuilder _buildRemoteOriginalUri;
   final void Function(_AssetShareOperation operation) _onFinished;
   final Completer<ShareResult> _result = Completer();
   final StreamController<ShareProgress> _progress = StreamController.broadcast(sync: true);
@@ -129,6 +190,7 @@ final class _AssetShareOperation implements ShareOperation {
   bool _presentationOwned = false;
 
   bool get isPresentationOwned => _presentationOwned;
+  bool get usesRemote => plan.steps.any((step) => step is _RemoteShareExportStep);
 
   @override
   Future<ShareResult> get result => _result.future;
@@ -152,13 +214,13 @@ final class _AssetShareOperation implements ShareOperation {
   Future<void> _run() async {
     ShareResult outcome;
     try {
-      outcome = assets.isEmpty
+      outcome = plan.assets.isEmpty
           ? const ShareResult.failure(ShareSheetFailure(error: ShareSheetError.unavailable))
           : await _prepareAndShare();
     } on Object {
       outcome = ShareResult.failure(
         ShareAssetFailure(
-          assetId: _assetIdentity(assets.first),
+          assetId: _assetIdentityForPhase(plan.assets.first, SharePhase.cleanup),
           phase: SharePhase.cleanup,
           error: OriginalExportError.writeFailed,
         ),
@@ -166,18 +228,10 @@ final class _AssetShareOperation implements ShareOperation {
     }
 
     final cleanupFailure = await _cleanup();
-    if (_cancelled && _presentationOwned && assets.isNotEmpty) {
-      outcome = _cancelledResult(assets.first, SharePhase.cleanup);
-    } else if (cleanupFailure != null) {
+    if (cleanupFailure != null) {
       outcome = ShareResult.failure(cleanupFailure);
-    } else if (_cancelled && assets.isNotEmpty) {
-      outcome = ShareResult.failure(
-        ShareAssetFailure(
-          assetId: _assetIdentity(assets.first),
-          phase: SharePhase.cleanup,
-          error: OriginalExportError.cancelled,
-        ),
-      );
+    } else if (_cancelled && plan.assets.isNotEmpty && !_isCancellation(outcome)) {
+      outcome = _cancelledResult(plan.assets.first, SharePhase.cleanup);
     }
     _result.complete(outcome);
     await _progress.close();
@@ -185,28 +239,31 @@ final class _AssetShareOperation implements ShareOperation {
   }
 
   Future<ShareResult> _prepareAndShare() async {
-    for (final (index, asset) in assets.indexed) {
+    for (final (index, step) in plan.steps.indexed) {
+      final asset = step.asset;
       if (_cancelled) {
-        return _cancelledResult(asset, _phaseFor(asset));
+        return _cancelledResult(asset, step.phase);
       }
-      final phase = _phaseFor(asset);
+      final phase = step.phase;
       _publish(phase, index);
-      final request = _export(asset);
+      final request = _export(step);
       _activeRequest = request;
       final exportResult = await request.result;
       _activeRequest = null;
       if (exportResult case OriginalExportFailure(:final error)) {
-        return ShareResult.failure(ShareAssetFailure(assetId: _assetIdentity(asset), phase: phase, error: error));
+        return ShareResult.failure(
+          ShareAssetFailure(assetId: _assetIdentityForPhase(asset, phase), phase: phase, error: error),
+        );
       }
       final lease = (exportResult as OriginalExportSuccess).lease;
-      _leases.add((assetId: _assetIdentity(asset), lease: lease));
+      _leases.add((assetId: _assetIdentityForPhase(asset, phase), lease: lease));
       if (_cancelled) {
         return _cancelledResult(asset, phase);
       }
       _publish(phase, index + 1);
     }
 
-    _publish(SharePhase.presentation, assets.length);
+    _publish(SharePhase.presentation, plan.assets.length);
     final presentation = _shareSheet.share(
       ShareSheetRequest(paths: _leases.map((entry) => entry.lease.path), anchor: anchor),
     );
@@ -217,33 +274,26 @@ final class _AssetShareOperation implements ShareOperation {
     return result;
   }
 
-  CancellableRequest<OriginalExportResult> _export(BaseAsset asset) {
-    final localId = asset.localId;
-    if (localId != null && !asset.isEdited) {
+  CancellableRequest<OriginalExportResult> _export(_ShareExportStep step) {
+    final asset = step.asset;
+    if (step case _LocalShareExportStep()) {
       return _localExporter.export(
         LocalOriginalExportRequest(
-          assetId: localId,
+          assetId: asset.localId!,
           suggestedFilename: asset.name,
           policy: LocalOriginalExportPolicy.allowICloud,
         ),
       );
     }
-
-    final remoteId = asset.remoteId;
-    final resource = remoteId == null ? null : _buildRemoteOriginalUri(remoteId, edited: asset.isEdited);
-    if (remoteId == null || resource == null) {
-      return const _CompletedOriginalExportRequest(OriginalExportResult.failure(OriginalExportError.assetMissing));
-    }
-    return _remoteExporter.export(RemoteOriginalExportRequest(resource: resource, suggestedFilename: asset.name));
-  }
-
-  SharePhase _phaseFor(BaseAsset asset) {
-    return asset.localId != null && !asset.isEdited ? SharePhase.localExport : SharePhase.remoteExport;
+    final remote = step as _RemoteShareExportStep;
+    return _remoteExporter.export(
+      RemoteOriginalExportRequest(resource: remote.resource, suggestedFilename: asset.name),
+    );
   }
 
   Future<ShareAssetFailure?> _cleanup() async {
-    if (assets.isNotEmpty) {
-      _publish(SharePhase.cleanup, assets.length);
+    if (plan.assets.isNotEmpty) {
+      _publish(SharePhase.cleanup, plan.assets.length);
     }
     ShareAssetFailure? firstFailure;
     for (final entry in _leases) {
@@ -262,44 +312,84 @@ final class _AssetShareOperation implements ShareOperation {
 
   void _publish(SharePhase phase, int completedCount) {
     if (!_progress.isClosed) {
-      _progress.add(ShareProgress(phase: phase, completedCount: completedCount, totalCount: assets.length));
+      _progress.add(ShareProgress(phase: phase, completedCount: completedCount, totalCount: plan.assets.length));
     }
   }
 
   ShareResult _cancelledResult(BaseAsset asset, SharePhase phase) {
     return ShareResult.failure(
-      ShareAssetFailure(assetId: _assetIdentity(asset), phase: phase, error: OriginalExportError.cancelled),
+      ShareAssetFailure(
+        assetId: _assetIdentityForPhase(asset, phase),
+        phase: phase,
+        error: OriginalExportError.cancelled,
+      ),
     );
   }
 
-  static String _assetIdentity(BaseAsset asset) => asset.localId ?? asset.remoteId ?? asset.name;
+  static bool _isCancellation(ShareResult result) {
+    return result is FailedShareResult &&
+        result.error is ShareAssetFailure &&
+        (result.error as ShareAssetFailure).error == OriginalExportError.cancelled;
+  }
+}
+
+String _assetIdentityForPhase(BaseAsset asset, SharePhase phase) {
+  return phase == SharePhase.remoteExport
+      ? asset.remoteId ?? asset.localId ?? asset.name
+      : asset.localId ?? asset.remoteId ?? asset.name;
 }
 
 final class _RejectedShareOperation implements ShareOperation {
-  const _RejectedShareOperation();
+  const _RejectedShareOperation(this.failure);
+
+  final ShareAssetFailure failure;
 
   @override
   Stream<ShareProgress> get progress => const Stream.empty();
 
   @override
-  Future<ShareResult> get result => Future.value(
-    ShareResult.failure(
-      ShareAssetFailure(assetId: 'share-session', phase: SharePhase.cleanup, error: OriginalExportError.cancelled),
-    ),
-  );
+  Future<ShareResult> get result => Future.value(ShareResult.failure(failure));
 
   @override
   Future<void> cancel() async {}
 }
 
-final class _CompletedOriginalExportRequest implements CancellableRequest<OriginalExportResult> {
-  const _CompletedOriginalExportRequest(this.value);
+sealed class _SharePlan {
+  const _SharePlan();
+}
 
-  final OriginalExportResult value;
+final class _AcceptedSharePlan extends _SharePlan {
+  const _AcceptedSharePlan({required this.assets, required this.steps});
+
+  final List<BaseAsset> assets;
+  final List<_ShareExportStep> steps;
+}
+
+final class _RejectedSharePlan extends _SharePlan {
+  const _RejectedSharePlan(this.failure);
+
+  final ShareAssetFailure failure;
+}
+
+sealed class _ShareExportStep {
+  const _ShareExportStep(this.asset);
+
+  final BaseAsset asset;
+  SharePhase get phase;
+}
+
+final class _LocalShareExportStep extends _ShareExportStep {
+  const _LocalShareExportStep(super.asset);
 
   @override
-  Future<OriginalExportResult> get result => Future.value(value);
+  SharePhase get phase => SharePhase.localExport;
+}
+
+final class _RemoteShareExportStep extends _ShareExportStep {
+  const _RemoteShareExportStep(super.asset, this.resource);
+
+  final Uri resource;
 
   @override
-  Future<void> cancel() async {}
+  SharePhase get phase => SharePhase.remoteExport;
 }

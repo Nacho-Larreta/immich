@@ -53,7 +53,9 @@ void main() {
     final transport = _ProbeTransport();
     final adapter = CurrentSessionEndpointProbeCycleAdapter(
       readSnapshot: () async => EndpointProbeCycleSnapshot(
-        approvedEndpoints: const [],
+        currentEndpoint: null,
+        currentEndpointPolicy: null,
+        externalEndpoints: const [],
         registeredLocalEndpoint: null,
         currentWifiName: null,
         preferredWifiName: null,
@@ -74,7 +76,9 @@ void main() {
 
 EndpointProbeCycleSnapshot _snapshot({required String token, String requestId = 'request'}) {
   return EndpointProbeCycleSnapshot(
-    approvedEndpoints: const ['https://photos.example.test/api'],
+    currentEndpoint: 'https://photos.example.test/api',
+    currentEndpointPolicy: EndpointSchemePolicy.httpsOnly,
+    externalEndpoints: const [],
     registeredLocalEndpoint: null,
     currentWifiName: null,
     preferredWifiName: null,

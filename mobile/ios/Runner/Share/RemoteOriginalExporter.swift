@@ -248,6 +248,7 @@ final class RemoteOriginalExporter: NSObject, @unchecked Sendable {
     let manager = URLSessionManager.shared
     self.init(
       sessionConfiguration: manager.session.configuration,
+      cookieStorage: URLSessionManager.cookieStorage,
       challengeHandler: { session, challenge, task, completion in
         manager.delegate.handleChallenge(session, challenge, completion, task: task)
       },
@@ -261,6 +262,7 @@ final class RemoteOriginalExporter: NSObject, @unchecked Sendable {
 
   init(
     sessionConfiguration: URLSessionConfiguration,
+    cookieStorage: HTTPCookieStorage? = nil,
     challengeHandler: RemoteOriginalExportSessionDelegate.ChallengeHandler? = nil,
     fileStore: any OriginalExportFileStoring = TemporaryOriginalExportFileStore(),
     ioExecutor: any OriginalExportIOExecuting = SerialOriginalExportIOExecutor(),
@@ -272,7 +274,7 @@ final class RemoteOriginalExporter: NSObject, @unchecked Sendable {
   ) {
     precondition(timeout > 0)
     let configuration = sessionConfiguration.copy() as! URLSessionConfiguration
-    let cookieStorage = configuration.httpCookieStorage
+    let cookieStorage = cookieStorage ?? configuration.httpCookieStorage
     configuration.urlCache = nil
     configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
     configuration.httpShouldSetCookies = false
@@ -302,6 +304,13 @@ final class RemoteOriginalExporter: NSObject, @unchecked Sendable {
     self.progressHandler = progressHandler
     super.init()
     delegate.owner = self
+    requestContextObserver = NotificationCenter.default.addObserver(
+      forName: URLSessionManager.requestContextDidChange,
+      object: nil,
+      queue: nil
+    ) { [weak self] _ in
+      self?.cancelAll()
+    }
   }
 
   private let sessionDelegate: RemoteOriginalExportSessionDelegate
@@ -316,6 +325,7 @@ final class RemoteOriginalExporter: NSObject, @unchecked Sendable {
   private let progressHandler: (OriginalExportProgress) -> Void
   private let registry = RequestRegistry<OriginalExportOperation>()
   private let lifecycle = Mutex(false)
+  private var requestContextObserver: NSObjectProtocol?
 
   var peakPendingWriteCount: Int { sessionDelegate.peakPendingWriteCount }
   var activeCount: Int { pool.activeCount }
@@ -474,9 +484,19 @@ final class RemoteOriginalExporter: NSObject, @unchecked Sendable {
       completion()
       return
     }
+    if let requestContextObserver {
+      NotificationCenter.default.removeObserver(requestContextObserver)
+      self.requestContextObserver = nil
+    }
     cancelAll { [session] in
       session.invalidateAndCancel()
       completion()
+    }
+  }
+
+  deinit {
+    if let requestContextObserver {
+      NotificationCenter.default.removeObserver(requestContextObserver)
     }
   }
 

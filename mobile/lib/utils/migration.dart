@@ -12,7 +12,8 @@ Future<void> migrateDatabaseIfNeeded() async {
 
   if (version < 25) {
     final accessToken = Store.tryGet(StoreKey.accessToken);
-    if (accessToken != null && accessToken.isNotEmpty) {
+    final authenticatedSessionReady = Store.tryGet(StoreKey.authenticatedSessionReady) == true;
+    if (authenticatedSessionReady && accessToken != null && accessToken.isNotEmpty) {
       final serverUrls = ApiService.getServerUrls();
       if (serverUrls.isNotEmpty) {
         await NetworkRepository.setHeaders(ApiService.getRequestHeaders(), serverUrls, token: accessToken);

@@ -5,6 +5,7 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/interfaces/anonymous_server_discovery.interface.dart';
 import 'package:immich_mobile/domain/interfaces/auth_request_context.interface.dart';
 import 'package:immich_mobile/domain/interfaces/resolved_server_endpoint_installer.interface.dart';
+import 'package:immich_mobile/domain/interfaces/request_context_lease.interface.dart';
 import 'package:immich_mobile/domain/models/anonymous_server_discovery.model.dart';
 import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/domain/models/logout_outcome.model.dart';
@@ -13,6 +14,7 @@ import 'package:immich_mobile/domain/services/session_mutation_mutex.dart';
 import 'package:immich_mobile/domain/services/user.service.dart';
 import 'package:immich_mobile/infrastructure/adapters/endpoint_activation/endpoint_activation_adapter.dart';
 import 'package:immich_mobile/infrastructure/adapters/endpoint_activation/endpoint_activation_collaborators.dart';
+import 'package:immich_mobile/models/auth/login_response.model.dart';
 import 'package:immich_mobile/providers/auth.provider.dart';
 import 'package:immich_mobile/providers/cached_session.dart';
 import 'package:immich_mobile/providers/remote_authentication.provider.dart';
@@ -23,6 +25,7 @@ import 'package:immich_mobile/services/foreground_upload.service.dart';
 import 'package:immich_mobile/services/secure_storage.service.dart';
 import 'package:immich_mobile/services/widget.service.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:openapi/api.dart';
 
 import '../fixtures/user.stub.dart';
 
@@ -67,7 +70,15 @@ void main() {
         apiEndpoint: Uri.parse('https://fallback.test/api'),
       ),
     );
-    registerFallbackValue(NativeRequestContext(canonicalOrigin: null, accessToken: null, customHeaders: const {}));
+    registerFallbackValue(
+      NativeRequestContext(canonicalOrigin: null, accessToken: null, schemePolicy: null, customHeaders: const {}),
+    );
+    registerFallbackValue(
+      ConfirmedServerEndpoint(
+        apiEndpoint: Uri.parse('https://fallback.test/api'),
+        schemePolicy: EndpointSchemePolicy.httpsOnly,
+      ),
+    );
     registerFallbackValue(const WidgetCredentials(apiEndpoint: null, accessToken: null, customHeaders: null));
   });
 
@@ -222,10 +233,134 @@ void main() {
         cancelRemoteMedia: () async {},
         stopBackup: () {},
         disconnectWebsocket: () {},
+        persistSessionReadiness: (_) async {},
       );
 
       expect(notifier.hydrateCachedSession(), isFalse);
       expect(notifier.state.isAuthenticated, isFalse);
+    });
+  });
+
+  group('AuthNotifier transactional login', () {
+    test('never authenticates from a cached user when fresh bootstrap returns 401', () async {
+      final unauthorized = ApiException(401, 'Unauthorized');
+      final auth = _LoginFixture();
+      when(auth.userService.tryGetMyUser).thenReturn(UserStub.admin);
+      when(auth.userService.refreshMyUser).thenThrow(unauthorized);
+
+      await expectLater(auth.notifier.login('user@test', 'password'), throwsA(same(unauthorized)));
+
+      expect(auth.notifier.state.isAuthenticated, isFalse);
+      expect(auth.shareActivations, 0);
+      expect(auth.shareSuspensions, 1);
+      expect(auth.widgetCredentialWrites, 0);
+      expect(auth.phases.last, RemoteAuthenticationPhase.reauthenticationRequired);
+      verifyNever(auth.userService.tryGetMyUser);
+      verify(auth.authService.clearRemoteAuthentication).called(1);
+    });
+
+    test('rolls back a non-401 OAuth bootstrap failure without publishing a partial session', () async {
+      final failure = StateError('preferences unavailable');
+      final auth = _LoginFixture();
+      when(auth.userService.refreshMyUser).thenThrow(failure);
+
+      await expectLater(auth.notifier.saveAuthInfo(accessToken: 'oauth-token'), throwsA(same(failure)));
+
+      expect(auth.notifier.state.isAuthenticated, isFalse);
+      expect(auth.shareActivations, 0);
+      expect(auth.shareSuspensions, 1);
+      expect(auth.widgetCredentialWrites, 0);
+      expect(auth.persistedTokens, ['oauth-token']);
+      expect(auth.persistedAccessToken, isNull);
+      verify(auth.authService.clearRemoteAuthentication).called(1);
+      verify(auth.widgetService.clearCredentialsAndRefresh).called(1);
+    });
+
+    test('attempts every rollback surface and remains fenced when cleanup is incomplete', () async {
+      final auth = _LoginFixture();
+      when(auth.userService.refreshMyUser).thenThrow(StateError('bootstrap failed'));
+      when(auth.authService.clearRemoteAuthentication).thenThrow(StateError('store cleanup failed'));
+      when(auth.widgetService.clearCredentialsAndRefresh).thenThrow(StateError('widget cleanup failed'));
+      auth.requestContext.purgeError = StateError('native cleanup failed');
+      auth.apiGraph.purgeError = StateError('graph cleanup failed');
+
+      await expectLater(
+        auth.notifier.login('user@test', 'password'),
+        throwsA(
+          isA<AuthenticationBootstrapRollbackException>()
+              .having((error) => error.failures.map((failure) => failure.surface), 'rollback surfaces', [
+                AuthenticationRollbackSurface.persistedAuthentication,
+                AuthenticationRollbackSurface.nativeContext,
+                AuthenticationRollbackSurface.apiGraph,
+                AuthenticationRollbackSurface.widget,
+              ]),
+        ),
+      );
+
+      expect(auth.requestContext.blocked, isTrue);
+      expect(auth.requestContext.events, isNot(contains('network.publishCleared')));
+      expect(auth.notifier.state.isAuthenticated, isFalse);
+      verify(auth.authService.clearRemoteAuthentication).called(1);
+      verify(auth.widgetService.clearCredentialsAndRefresh).called(1);
+      expect(auth.apiGraph.purgeCalls, 1);
+    });
+
+    test('serializes concurrent unauthorized bootstraps and leaves authentication cleared', () async {
+      final auth = _LoginFixture();
+      var refreshCalls = 0;
+      when(auth.userService.refreshMyUser).thenAnswer((_) async {
+        refreshCalls++;
+        throw ApiException(401, 'Unauthorized $refreshCalls');
+      });
+
+      final first = auth.notifier.login('first@test', 'password');
+      final second = auth.notifier.login('second@test', 'password');
+
+      await expectLater(first, throwsA(isA<ApiException>().having((error) => error.code, 'code', 401)));
+      await expectLater(second, throwsA(isA<ApiException>().having((error) => error.code, 'code', 401)));
+      expect(refreshCalls, 2);
+      expect(auth.notifier.state.isAuthenticated, isFalse);
+      expect(auth.shareActivations, 0);
+      verify(auth.authService.clearRemoteAuthentication).called(2);
+    });
+
+    test('publishes shares and authenticated state only after a fresh user and native context succeed', () async {
+      final auth = _LoginFixture();
+      when(auth.userService.refreshMyUser).thenAnswer((_) async => UserStub.admin);
+
+      final response = await auth.notifier.login('user@test', 'password');
+
+      expect(response.accessToken, 'password-token');
+      expect(auth.notifier.state.isAuthenticated, isTrue);
+      expect(auth.notifier.state.userId, UserStub.admin.id);
+      expect(auth.shareActivations, 1);
+      expect(auth.shareSuspensions, 0);
+      expect(auth.widgetCredentialWrites, 1);
+      expect(auth.requestContext.installs.single.canonicalOrigin, Uri.parse('https://photos.example.test'));
+      expect(auth.requestContext.installs.single.schemePolicy, EndpointSchemePolicy.httpsOnly);
+      expect(auth.persistedAccessToken, 'password-token');
+      expect(auth.phases.last, RemoteAuthenticationPhase.authenticated);
+    });
+
+    test('logout wins a race with login without publishing stale authenticated state', () async {
+      final auth = _LoginFixture();
+      final remoteLogin = Completer<LoginResponse>();
+      when(() => auth.authService.login(any(), any())).thenAnswer((_) => remoteLogin.future);
+      when(auth.userService.refreshMyUser).thenAnswer((_) async => UserStub.admin);
+
+      final login = auth.notifier.login('user@test', 'password');
+      await pumpEventQueue();
+      final logout = auth.notifier.logout();
+      remoteLogin.complete(_loginResponse);
+
+      await expectLater(login, throwsA(isA<AuthenticationMutationCancelledException>()));
+      await logout;
+      expect(auth.notifier.state.isAuthenticated, isFalse);
+      expect(auth.shareActivations, 0);
+      expect(auth.widgetCredentialWrites, 0);
+      expect(auth.requestContext.installs, isEmpty);
+      expect(auth.persistedTokens, isEmpty);
+      verifyNever(auth.userService.refreshMyUser);
     });
   });
 
@@ -241,6 +376,56 @@ void main() {
 
       expect(remoteCancellationCalls, 1);
       verify(auth.authService.clearRemoteAuthentication).called(1);
+    });
+
+    test('persists the session tombstone before cancellation or remote side effects', () async {
+      final events = <String>[];
+      final auth = _LogoutFixture(
+        mutex: SessionMutationMutex(),
+        persistSessionReadiness: (ready) async => events.add('readiness:$ready'),
+        invalidateSession: () async => events.add('reachability.cancel'),
+        cancelRemoteMedia: () async => events.add('remote-media.cancel'),
+        suspendRemoteShares: () async => events.add('shares.suspend'),
+        onRemoteLogout: () => events.add('remote.logout'),
+      );
+
+      await auth.notifier.logout();
+
+      expect(events.first, 'readiness:false');
+      expect(
+        events,
+        containsAllInOrder([
+          'readiness:false',
+          'shares.suspend',
+          'reachability.cancel',
+          'remote-media.cancel',
+          'remote.logout',
+        ]),
+      );
+    });
+
+    test('tombstone write failure blocks the context and starts no cancellation or remote work', () async {
+      final failure = StateError('tombstone unavailable');
+      var sideEffects = 0;
+      final auth = _LogoutFixture(
+        mutex: SessionMutationMutex(),
+        persistSessionReadiness: (_) async => throw failure,
+        invalidateSession: () async => sideEffects++,
+        cancelRemoteMedia: () async => sideEffects++,
+        suspendRemoteShares: () async => sideEffects++,
+        cancelShares: () async => sideEffects++,
+        stopBackup: () => sideEffects++,
+        disconnectWebsocket: () => sideEffects++,
+      );
+
+      await expectLater(auth.notifier.logout(), throwsA(same(failure)));
+
+      expect(auth.requestContext.blocked, isTrue);
+      expect(sideEffects, 0);
+      verifyNever(auth.authService.invalidateRemoteSession);
+      verifyNever(auth.authService.clearRemoteAuthentication);
+      verifyNever(auth.backgroundUploads.cancel);
+      verifyNever(auth.foregroundUploads.cancel);
     });
 
     test('cancels active shares before clearing the session', () async {
@@ -407,6 +592,7 @@ void main() {
         cancelRemoteMedia: () async {},
         stopBackup: () {},
         disconnectWebsocket: () {},
+        persistSessionReadiness: (_) async {},
       );
       notifier.hydrateCachedSession();
 
@@ -460,6 +646,7 @@ void main() {
         cancelRemoteMedia: () async {},
         stopBackup: () {},
         disconnectWebsocket: () {},
+        persistSessionReadiness: (_) async {},
       );
       notifier.hydrateCachedSession();
 
@@ -545,6 +732,31 @@ void main() {
   });
 
   group('AuthNotifier.requireReauthentication', () {
+    test('suspends remote shares after the durable tombstone without strongly cancelling local shares', () async {
+      final releaseInvalidation = Completer<void>();
+      var remoteSharesSuspended = false;
+      var strongShareCancellations = 0;
+      final auth = _LogoutFixture(
+        mutex: SessionMutationMutex(),
+        suspendRemoteShares: () {
+          remoteSharesSuspended = true;
+          return Future.value();
+        },
+        cancelShares: () async => strongShareCancellations++,
+        invalidateSession: () => releaseInvalidation.future,
+      );
+
+      final termination = auth.notifier.requireReauthentication();
+
+      expect(remoteSharesSuspended, isFalse);
+      await pumpEventQueue();
+      expect(remoteSharesSuspended, isTrue);
+      expect(strongShareCancellations, 0);
+      releaseInvalidation.complete();
+      await termination;
+      expect(strongShareCancellations, 0);
+    });
+
     test('invalidates only operational remote credentials and publishes the reauthentication state', () async {
       final phases = <RemoteAuthenticationPhase>[];
       final auth = _LogoutFixture(mutex: SessionMutationMutex(), publishRemoteAuthenticationPhase: phases.add);
@@ -623,7 +835,8 @@ void main() {
     test('applies a late logout escalation before completing the shared future', () async {
       final cleanupStarted = Completer<void>();
       final releaseCleanup = Completer<void>();
-      final auth = _LogoutFixture(mutex: SessionMutationMutex());
+      var strongShareCancellations = 0;
+      final auth = _LogoutFixture(mutex: SessionMutationMutex(), cancelShares: () async => strongShareCancellations++);
       when(auth.authService.clearRemoteAuthentication).thenAnswer((_) async {
         cleanupStarted.complete();
         await releaseCleanup.future;
@@ -637,13 +850,19 @@ void main() {
 
       verify(auth.authService.invalidateRemoteSession).called(1);
       verify(auth.authService.clearRemoteAuthentication).called(1);
+      expect(strongShareCancellations, 1);
     });
 
     test('applies a late forget escalation and publishes unconfigured before completing', () async {
       final cleanupStarted = Completer<void>();
       final releaseCleanup = Completer<void>();
       final phases = <RemoteAuthenticationPhase>[];
-      final auth = _LogoutFixture(mutex: SessionMutationMutex(), publishRemoteAuthenticationPhase: phases.add);
+      var strongShareCancellations = 0;
+      final auth = _LogoutFixture(
+        mutex: SessionMutationMutex(),
+        publishRemoteAuthenticationPhase: phases.add,
+        cancelShares: () async => strongShareCancellations++,
+      );
       when(auth.authService.clearRemoteAuthentication).thenAnswer((_) async {
         cleanupStarted.complete();
         await releaseCleanup.future;
@@ -657,6 +876,7 @@ void main() {
 
       verify(auth.authService.invalidateRemoteSession).called(1);
       verify(auth.authService.forgetServer).called(1);
+      expect(strongShareCancellations, 1);
       expect(phases.last, RemoteAuthenticationPhase.unconfigured);
     });
 
@@ -782,11 +1002,23 @@ final class _RecordingAuthRequestContext implements AuthRequestContextPort {
   var blocked = false;
   Object? purgeError;
   final purgeCompleted = Completer<void>();
+  final installs = <({Uri canonicalOrigin, String accessToken, EndpointSchemePolicy schemePolicy})>[];
 
   @override
   void block() {
     events.add('network.block');
     blocked = true;
+  }
+
+  @override
+  Future<void> install({
+    required Uri canonicalOrigin,
+    required String accessToken,
+    required EndpointSchemePolicy schemePolicy,
+    required Map<String, String> customHeaders,
+  }) async {
+    events.add('network.install');
+    installs.add((canonicalOrigin: canonicalOrigin, accessToken: accessToken, schemePolicy: schemePolicy));
   }
 
   @override
@@ -829,6 +1061,7 @@ final class _LogoutFixture {
     void Function()? onRemoteLogout,
     Future<void> Function()? invalidateSession,
     Future<void> Function()? cancelRemoteMedia,
+    Future<void> Function()? suspendRemoteShares,
     Future<void> Function()? cancelShares,
     void Function()? activateShares,
     void Function()? stopBackup,
@@ -836,6 +1069,7 @@ final class _LogoutFixture {
     void Function(RemoteAuthenticationPhase)? publishRemoteAuthenticationPhase,
     Object? apiGraphPurgeError,
     Object? localSessionClearError,
+    Future<void> Function(bool)? persistSessionReadiness,
   }) {
     apiGraph.purgeError = apiGraphPurgeError;
     when(() => secureStorage.delete(any())).thenAnswer((_) async {});
@@ -869,10 +1103,12 @@ final class _LogoutFixture {
       publishRemoteAuthenticationPhase: publishRemoteAuthenticationPhase,
       invalidateSession: invalidateSession ?? () async {},
       cancelRemoteMedia: cancelRemoteMedia ?? () async {},
+      suspendRemoteShares: suspendRemoteShares ?? () async {},
       cancelShares: cancelShares ?? () async {},
       activateShares: activateShares ?? () {},
       stopBackup: stopBackup ?? () {},
       disconnectWebsocket: disconnectWebsocket ?? () {},
+      persistSessionReadiness: persistSessionReadiness ?? (_) async {},
     );
     notifier.hydrateCachedSession();
   }
@@ -885,6 +1121,90 @@ final class _LogoutFixture {
   final ref = _MockRef();
   final requestContext = _RecordingAuthRequestContext(<String>[]);
   final apiGraph = _RecordingAuthApiGraph(<String>[]);
+  late final AuthNotifier notifier;
+}
+
+const _loginResponse = LoginResponse(
+  accessToken: 'password-token',
+  isAdmin: true,
+  name: 'Admin',
+  profileImagePath: '',
+  shouldChangePassword: false,
+  userEmail: 'user@test',
+  userId: 'user-1',
+);
+
+final class _LoginFixture {
+  _LoginFixture() {
+    when(() => authService.login(any(), any())).thenAnswer((_) async => _loginResponse);
+    when(authService.clearRemoteAuthentication).thenAnswer((_) async {});
+    when(authService.invalidateRemoteSession).thenAnswer((_) async {});
+    when(widgetService.clearCredentialsAndRefresh).thenAnswer((_) async {});
+    when(() => secureStorage.delete(any())).thenAnswer((_) async {});
+    when(backgroundUploads.cancel).thenAnswer((_) async => 0);
+    when(foregroundUploads.cancel).thenReturn(null);
+    when(() => ref.read(backgroundUploadServiceProvider)).thenReturn(backgroundUploads);
+    when(() => ref.read(foregroundUploadServiceProvider)).thenReturn(foregroundUploads);
+    when(cachedSessionReader.read).thenReturn(null);
+
+    notifier = AuthNotifier(
+      authService,
+      apiService,
+      userService,
+      secureStorage,
+      widgetService,
+      requestContext,
+      apiGraph,
+      SessionMutationMutex(),
+      ref,
+      cachedSessionReader: cachedSessionReader,
+      anonymousServerDiscovery: _MockAnonymousServerDiscovery(),
+      serverEndpointInstaller: _MockResolvedServerEndpointInstaller(),
+      hasConfiguredServer: () => true,
+      readConfiguredEndpoint: () => Uri.parse('https://photos.example.test/immich/api'),
+      readConfiguredEndpointPolicy: () => EndpointSchemePolicy.httpsOnly,
+      readCustomHeaders: () => const {'x-client': 'mobile'},
+      publishRemoteAuthenticationPhase: phases.add,
+      invalidateSession: () async {},
+      cancelRemoteMedia: () async {},
+      suspendRemoteShares: () async => shareSuspensions++,
+      cancelShares: () async {},
+      activateShares: () => shareActivations++,
+      stopBackup: () {},
+      disconnectWebsocket: () {},
+      persistAccessToken: (token) async {
+        persistedTokens.add(token);
+        persistedAccessToken = token;
+      },
+      clearPersistedAuthentication: () async {
+        await authService.clearRemoteAuthentication();
+        persistedAccessToken = null;
+      },
+      persistSessionReadiness: (ready) async => readinessWrites.add(ready),
+      readOrCreateDeviceId: () async => 'device-1',
+      persistDeviceIdentity: (_) async {},
+      publishWidgetCredentials: (_) async => widgetCredentialWrites++,
+    );
+  }
+
+  final authService = _MockAuthService();
+  final apiService = _MockApiService();
+  final userService = _MockUserService();
+  final secureStorage = _MockSecureStorageService();
+  final widgetService = _MockWidgetService();
+  final backgroundUploads = _MockBackgroundUploadService();
+  final foregroundUploads = _MockForegroundUploadService();
+  final cachedSessionReader = _MockCachedSessionReader();
+  final ref = _MockRef();
+  final requestContext = _RecordingAuthRequestContext(<String>[]);
+  final apiGraph = _RecordingAuthApiGraph(<String>[]);
+  final phases = <RemoteAuthenticationPhase>[];
+  final persistedTokens = <String>[];
+  String? persistedAccessToken;
+  final readinessWrites = <bool>[];
+  var shareActivations = 0;
+  var shareSuspensions = 0;
+  var widgetCredentialWrites = 0;
   late final AuthNotifier notifier;
 }
 
@@ -914,11 +1234,17 @@ final class _ActivationFixture {
       NativeRequestContext(
         canonicalOrigin: Uri.parse('https://old.test'),
         accessToken: 'old-token',
+        schemePolicy: EndpointSchemePolicy.httpsOnly,
         customHeaders: const {},
       ),
     );
     when(() => nativeContext.replace(any())).thenAnswer((_) async {});
-    when(endpointStore.read).thenReturn(Uri.parse('https://old.test/api'));
+    when(endpointStore.read).thenReturn(
+      ConfirmedServerEndpoint(
+        apiEndpoint: Uri.parse('https://old.test/api'),
+        schemePolicy: EndpointSchemePolicy.httpsOnly,
+      ),
+    );
     when(() => endpointStore.write(any())).thenAnswer((_) async {});
     when(widgetCredentials.snapshot).thenAnswer(
       (_) async => const WidgetCredentials(apiEndpoint: null, accessToken: 'old-token', customHeaders: null),
@@ -929,6 +1255,7 @@ final class _ActivationFixture {
       session: session,
       apiGraph: apiGraph,
       nativeContext: nativeContext,
+      requestContextLease: const _NoopRequestContextLease(),
       endpointStore: endpointStore,
       widgetCredentials: widgetCredentials,
       checkpoint: checkpoint,
@@ -952,4 +1279,26 @@ final class _ActivationFixture {
     sessionEpoch: 3,
     probeGeneration: 7,
   );
+}
+
+final class _NoopRequestContextLease implements RequestContextLeasePort {
+  const _NoopRequestContextLease();
+
+  @override
+  RequestContextActivationLease? beginActivation(EndpointSchemePolicy policy) => null;
+
+  @override
+  bool commitActivation(RequestContextActivationLease lease) => false;
+
+  @override
+  bool isCurrent(RequestContextActivationLease lease) => false;
+
+  @override
+  void abandonActivation(RequestContextActivationLease lease) {}
+
+  @override
+  bool invalidateForTransportReview() => false;
+
+  @override
+  void invalidateAfterValidationFailure() {}
 }

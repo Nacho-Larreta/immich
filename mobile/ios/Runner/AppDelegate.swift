@@ -2,10 +2,27 @@ import native_video_player
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
+  private static var isXCTestHost: Bool {
+    ProcessInfo.processInfo.environment["IMMICH_XCTEST_HOST"] == "1"
+  }
+
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
+    URLSessionManager.initializeBlockedRequestContext()
+
+    return finishLaunchingAfterRequestContextInitialization(
+      application,
+      launchOptions: launchOptions
+    )
+  }
+
+  func finishLaunchingAfterRequestContextInitialization(
+    _ application: UIApplication,
+    launchOptions: [UIApplication.LaunchOptionsKey: Any]?
+  ) -> Bool {
+
     // Required for flutter_local_notification
     if #available(iOS 10.0, *) {
       UNUserNotificationCenter.current().delegate = self as UNUserNotificationCenterDelegate
@@ -15,10 +32,18 @@ import native_video_player
     URLSessionManager.patchBackgroundDownloader()
     BackgroundWorkerApiImpl.registerBackgroundWorkers()
 
+    guard Self.shouldBootstrapFlutter(isXCTestHost: Self.isXCTestHost) else {
+      return true
+    }
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
+  static func shouldBootstrapFlutter(isXCTestHost: Bool) -> Bool {
+    !isXCTestHost
+  }
+
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
+    guard Self.shouldBootstrapFlutter(isXCTestHost: Self.isXCTestHost) else { return }
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
     let messenger = engineBridge.applicationRegistrar.messenger()
     AppDelegate.registerPlugins(with: engineBridge.pluginRegistry, messenger: messenger)

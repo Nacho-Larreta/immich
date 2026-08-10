@@ -106,6 +106,17 @@ void main() {
       verify(() => mockDriftStoreRepo.upsert<String>(StoreKey.accessToken, newAccessToken)).called(1);
       expect(sut.tryGet(StoreKey.accessToken), newAccessToken);
     });
+
+    test('does not lose a committed write when an older full snapshot arrives late', () async {
+      const replacement = 'committed-token';
+      when(() => mockDriftStoreRepo.upsert<String>(StoreKey.accessToken, replacement)).thenAnswer((_) async => true);
+
+      await sut.put(StoreKey.accessToken, replacement);
+      controller.add([const StoreDto(StoreKey.backgroundBackup, _kBackgroundBackup)]);
+      await pumpEventQueue();
+
+      expect(sut.tryGet(StoreKey.accessToken), replacement);
+    });
   });
 
   group('Store Service watch:', () {
@@ -148,6 +159,25 @@ void main() {
     test('Removes the value from the cache', () async {
       await sut.delete(StoreKey.accessToken);
       expect(sut.tryGet(StoreKey.accessToken), isNull);
+    });
+
+    test('does not revive a deleted credential from a stale repository snapshot', () async {
+      await sut.delete(StoreKey.accessToken);
+
+      controller.add([const StoreDto(StoreKey.accessToken, _kAccessToken)]);
+      await pumpEventQueue();
+
+      expect(sut.tryGet(StoreKey.accessToken), isNull);
+    });
+
+    test('allows a later explicit write to replace the delete tombstone', () async {
+      const replacement = 'replacement-token';
+      when(() => mockDriftStoreRepo.upsert<String>(StoreKey.accessToken, replacement)).thenAnswer((_) async => true);
+      await sut.delete(StoreKey.accessToken);
+
+      await sut.put(StoreKey.accessToken, replacement);
+
+      expect(sut.tryGet(StoreKey.accessToken), replacement);
     });
   });
 

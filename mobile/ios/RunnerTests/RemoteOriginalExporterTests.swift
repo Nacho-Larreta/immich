@@ -234,6 +234,49 @@ final class RemoteOriginalExporterTests: XCTestCase {
     XCTAssertEqual(recorder.count, 1)
   }
 
+  func testInvalidationTimeoutCancelsActiveExport() throws {
+    let started = expectation(description: "remote export started")
+    let completed = expectation(description: "remote export cancelled")
+    let recorder = CompletionRecorder<OriginalExportResult>()
+    ControllableURLProtocol.setRequestHandler { request in
+      XCTAssertTrue(request.respond(statusCode: 200, headers: ["Content-Length": "12"]))
+      XCTAssertTrue(request.send(Data("partial".utf8)))
+      started.fulfill()
+    }
+
+    exporter.export(
+      request: RemoteOriginalExportRequest(
+        requestId: 41,
+        url: "https://photos.example.test/api/assets/1/original",
+        origin: "https://photos.example.test",
+        suggestedName: "photo.jpg"
+      )
+    ) { result in
+      recorder.record(result)
+      completed.fulfill()
+    }
+    wait(for: [started], timeout: 1)
+
+    URLSessionManager.overrideSessionInvalidationBarrierForTesting { false }
+    defer { URLSessionManager.overrideSessionInvalidationBarrierForTesting(nil) }
+    XCTAssertThrowsError(
+      try URLSessionManager.replaceRequestContext(
+        headers: [:],
+        canonicalOrigin: "https://photos.example.test",
+        token: "replacement-token"
+      )
+    )
+
+    wait(for: [completed], timeout: 1)
+    XCTAssertEqual(try recorder.result?.get().error, .cancelled)
+    XCTAssertTrue(
+      store.destinations.allSatisfy {
+        !FileManager.default.fileExists(atPath: $0.part.path)
+          && !FileManager.default.fileExists(atPath: $0.committed.path)
+      }
+    )
+  }
+
   func testDiskOpenFailureIsTypedAndCleansLease() throws {
     store.openFailure = .storageUnavailable
     ControllableURLProtocol.setRequestHandler { request in

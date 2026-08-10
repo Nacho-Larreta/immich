@@ -14,17 +14,21 @@ typedef EndpointProbeCycleSnapshotReader = Future<EndpointProbeCycleSnapshot> Fu
 
 final class EndpointProbeCycleSnapshot {
   EndpointProbeCycleSnapshot({
-    required Iterable<String> approvedEndpoints,
+    required this.currentEndpoint,
+    required this.currentEndpointPolicy,
+    required Iterable<String> externalEndpoints,
     required this.registeredLocalEndpoint,
     required this.currentWifiName,
     required this.preferredWifiName,
     required this.expectedUserId,
     required this.accessToken,
     required Map<String, String> customHeaders,
-  }) : approvedEndpoints = List.unmodifiable(approvedEndpoints),
+  }) : externalEndpoints = List.unmodifiable(externalEndpoints),
        customHeaders = Map.unmodifiable(customHeaders);
 
-  final List<String> approvedEndpoints;
+  final String? currentEndpoint;
+  final EndpointSchemePolicy? currentEndpointPolicy;
+  final List<String> externalEndpoints;
   final String? registeredLocalEndpoint;
   final String? currentWifiName;
   final String? preferredWifiName;
@@ -92,7 +96,9 @@ final class _CurrentSessionEndpointProbeCycleOperation implements CancellableReq
         return;
       }
       final candidates = candidateBuilder.build(
-        approvedEndpoints: snapshot.approvedEndpoints,
+        currentEndpoint: snapshot.currentEndpoint,
+        currentEndpointPolicy: snapshot.currentEndpointPolicy,
+        externalEndpoints: snapshot.externalEndpoints,
         registeredLocalEndpoint: snapshot.registeredLocalEndpoint,
         currentWifiName: snapshot.currentWifiName,
         preferredWifiName: snapshot.preferredWifiName,

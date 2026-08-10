@@ -10,6 +10,8 @@ class StoreService {
 
   /// In-memory cache. Keys are [StoreKey.id]
   final Map<int, Object?> _cache = {};
+  final Map<int, Object?> _committedWrites = {};
+  final Set<int> _deletedKeys = {};
   StreamSubscription<List<StoreDto>>? _storeUpdateSubscription;
 
   StoreService._({required DriftStoreRepository isarStoreRepository}) : _storeRepository = isarStoreRepository;
@@ -46,15 +48,30 @@ class StoreService {
   }
 
   StreamSubscription<List<StoreDto>> _listenForChange() => _storeRepository.watchAll().listen((snapshot) {
+    final snapshotValues = Map<int, Object?>.fromEntries(
+      snapshot
+          .where((entry) => !_deletedKeys.contains(entry.key.id))
+          .map((entry) => MapEntry(entry.key.id, entry.value)),
+    );
+    for (final committedWrite in _committedWrites.entries.toList()) {
+      if (snapshotValues.containsKey(committedWrite.key) &&
+          snapshotValues[committedWrite.key] == committedWrite.value) {
+        _committedWrites.remove(committedWrite.key);
+      } else {
+        snapshotValues[committedWrite.key] = committedWrite.value;
+      }
+    }
     _cache
       ..clear()
-      ..addEntries(snapshot.map((entry) => MapEntry(entry.key.id, entry.value)));
+      ..addAll(snapshotValues);
   });
 
   /// Disposes the store and cancels the subscription. To reuse the store call init() again
   Future<void> dispose() async {
     await _storeUpdateSubscription?.cancel();
     _cache.clear();
+    _committedWrites.clear();
+    _deletedKeys.clear();
   }
 
   /// Returns the cached value for [key], or `null`
@@ -74,6 +91,8 @@ class StoreService {
   Future<void> put<U extends StoreKey<T>, T>(U key, T value) async {
     if (_cache[key.id] == value) return;
     await _storeRepository.upsert(key, value);
+    _deletedKeys.remove(key.id);
+    _committedWrites[key.id] = value;
     _cache[key.id] = value;
   }
 
@@ -82,14 +101,33 @@ class StoreService {
 
   /// Removes the value for [key]
   Future<void> delete<T>(StoreKey<T> key) async {
-    await _storeRepository.delete(key);
-    _cache.remove(key.id);
+    final hadCachedValue = _cache.containsKey(key.id);
+    final cachedValue = _cache[key.id];
+    final hadCommittedWrite = _committedWrites.containsKey(key.id);
+    final committedValue = _committedWrites[key.id];
+    _deletedKeys.add(key.id);
+    _committedWrites.remove(key.id);
+    try {
+      await _storeRepository.delete(key);
+      _cache.remove(key.id);
+    } catch (_) {
+      _deletedKeys.remove(key.id);
+      if (hadCachedValue) {
+        _cache[key.id] = cachedValue;
+      }
+      if (hadCommittedWrite) {
+        _committedWrites[key.id] = committedValue;
+      }
+      rethrow;
+    }
   }
 
   /// Clears all values from the store (cache and DB)
   Future<void> clear() async {
     await _storeRepository.deleteAll();
     _cache.clear();
+    _committedWrites.clear();
+    _deletedKeys.addAll(StoreKey.values.map((key) => key.id));
   }
 }
 

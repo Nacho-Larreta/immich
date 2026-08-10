@@ -2,10 +2,12 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
+import 'package:immich_mobile/domain/interfaces/request_context_lease.interface.dart';
 import 'package:immich_mobile/domain/models/offline_result.model.dart';
 import 'package:immich_mobile/domain/services/session_mutation_mutex.dart';
 import 'package:immich_mobile/infrastructure/adapters/endpoint_activation/endpoint_activation_adapter.dart';
 import 'package:immich_mobile/infrastructure/adapters/endpoint_activation/endpoint_activation_collaborators.dart';
+import 'package:immich_mobile/infrastructure/adapters/endpoint_activation/registered_local_http_lease_adapter.dart';
 
 void main() {
   group('EndpointActivationAdapter', () {
@@ -59,6 +61,70 @@ void main() {
       expect(nativeCalls, 2);
     });
 
+    test('stale local HTTP replace is fenced and purged before any activation is published', () async {
+      final replaceGate = Completer<void>();
+      final harness = _Harness(
+        replaceGate: replaceGate,
+        leaseBuilder: (native) => RegisteredLocalHttpLeaseAdapter(
+          readActivePolicy: () => null,
+          blockRequests: native.block,
+          purgeRequestContext: native.purge,
+        ),
+      );
+      final operation = harness.adapter.activate(
+        harness.request(schemePolicy: EndpointSchemePolicy.registeredLocalHttp),
+      );
+      await harness.native.replaceStarted.future;
+
+      expect(harness.lease.invalidateForTransportReview(), isTrue);
+      expect(harness.native.blocked, isTrue);
+      replaceGate.complete();
+
+      expect(
+        await operation.result,
+        const OfflineResult<EndpointActivationReceipt>.failure(OfflineErrorCode.cancelled),
+      );
+      expect(harness.native.blockCalls, greaterThanOrEqualTo(2));
+      expect(harness.native.purgeCalls, greaterThanOrEqualTo(2));
+      expect(harness.native.current.accessToken, isNull);
+      expect(harness.graph.currentEndpoint, Uri.parse('https://old.test/api'));
+      expect(harness.store.current.apiEndpoint, Uri.parse('https://old.test/api'));
+      expect(harness.widget.current.accessToken, 'old-token');
+
+      final fresh = await harness.adapter
+          .activate(harness.request(schemePolicy: EndpointSchemePolicy.registeredLocalHttp))
+          .result;
+      expect(fresh, isA<OfflineSuccess<EndpointActivationReceipt>>());
+    });
+
+    test('transport change after local HTTP commit purges instead of restoring the previous context', () async {
+      late _Harness harness;
+      harness = _Harness(
+        checkpoint: (step) async {
+          if (step == EndpointActivationStep.nativeContext) {
+            expect(harness.lease.invalidateForTransportReview(), isTrue);
+            throw StateError('transport changed after native commit');
+          }
+        },
+        leaseBuilder: (native) => RegisteredLocalHttpLeaseAdapter(
+          readActivePolicy: () => EndpointSchemePolicy.registeredLocalHttp,
+          blockRequests: native.block,
+          purgeRequestContext: native.purge,
+        ),
+      );
+
+      final result = await harness.adapter
+          .activate(harness.request(schemePolicy: EndpointSchemePolicy.registeredLocalHttp))
+          .result;
+
+      expect(result, const OfflineResult<EndpointActivationReceipt>.failure(OfflineErrorCode.serverUnavailable));
+      expect(harness.native.current.accessToken, isNull);
+      expect(harness.widget.current.accessToken, isNull);
+      expect(harness.graph.currentEndpoint, Uri());
+      expect(harness.rollbackEvents, isNot(contains('native.replace')));
+      expect(harness.rollbackEvents, containsAll(['native.clear', 'widget.clear', 'graph.prepare', 'graph.install']));
+    });
+
     for (final failedStep in EndpointActivationStep.values) {
       test('rolls back in reverse order after ${failedStep.name}', () async {
         final harness = _Harness(
@@ -75,7 +141,7 @@ void main() {
         expect(harness.rollbackEvents, _expectedRollback(failedStep));
         expect(harness.native.current.canonicalOrigin, Uri.parse('https://old.test'));
         expect(harness.graph.currentEndpoint, Uri.parse('https://old.test/api'));
-        expect(harness.store.current, Uri.parse('https://old.test/api'));
+        expect(harness.store.current.apiEndpoint, Uri.parse('https://old.test/api'));
         expect(harness.widget.current.accessToken, 'old-token');
         if (failedStep.index >= EndpointActivationStep.apiGraph.index) {
           expect(harness.graph.installedGraphs.last, isNot(same(harness.graph.initialGraph)));
@@ -273,15 +339,20 @@ final class _Harness {
   _Harness({
     EndpointActivationCheckpoint? checkpoint,
     FutureOr<void> Function()? beforePrepare,
+    Completer<void>? replaceGate,
+    RequestContextLeasePort Function(_Native native)? leaseBuilder,
     Duration stalePurgeAttemptTimeout = const Duration(seconds: 5),
   }) {
     graph.currentClientIdentity = () => native.clientIdentity;
     graph.beforePrepare = beforePrepare;
+    native.replaceGate = replaceGate;
+    lease = leaseBuilder?.call(native) ?? _Lease();
     adapter = EndpointActivationAdapter(
       mutex: SessionMutationMutex(),
       session: session,
       apiGraph: graph,
       nativeContext: native,
+      requestContextLease: lease,
       endpointStore: store,
       widgetCredentials: widget,
       checkpoint: checkpoint,
@@ -293,6 +364,7 @@ final class _Harness {
   late final session = _Session();
   late final graph = _Graph(events);
   late final native = _Native(events);
+  late final RequestContextLeasePort lease;
   late final store = _Store(events);
   late final widget = _Widget(events);
   late final EndpointActivationAdapter adapter;
@@ -303,17 +375,61 @@ final class _Harness {
     return events.skip(firstRollback).map((event) => event.replaceAll('.rollback', '')).toList();
   }
 
-  EndpointActivationRequest request({int probeGeneration = 7, String userId = 'cached-user'}) {
+  EndpointActivationRequest request({
+    int probeGeneration = 7,
+    String userId = 'cached-user',
+    EndpointSchemePolicy schemePolicy = EndpointSchemePolicy.httpsOnly,
+  }) {
+    final canonicalOrigin = schemePolicy == EndpointSchemePolicy.httpsOnly
+        ? Uri.parse('https://photos.test')
+        : Uri.parse('http://photos.test');
     return EndpointActivationRequest(
       endpoint: ValidatedEndpointProbeResult(
-        canonicalOrigin: Uri.parse('https://photos.test'),
-        apiEndpoint: Uri.parse('https://photos.test/family/api'),
+        canonicalOrigin: canonicalOrigin,
+        apiEndpoint: canonicalOrigin.replace(path: '/family/api'),
         userId: userId,
-        schemePolicy: EndpointSchemePolicy.httpsOnly,
+        schemePolicy: schemePolicy,
       ),
       sessionEpoch: 3,
       probeGeneration: probeGeneration,
     );
+  }
+}
+
+final class _Lease implements RequestContextLeasePort {
+  RequestContextActivationLease? pending;
+  var revision = 0;
+
+  @override
+  RequestContextActivationLease? beginActivation(EndpointSchemePolicy policy) {
+    if (policy != EndpointSchemePolicy.registeredLocalHttp) return null;
+    return pending = RequestContextActivationLease(revision);
+  }
+
+  @override
+  bool commitActivation(RequestContextActivationLease lease) {
+    if (!identical(pending, lease)) return false;
+    pending = null;
+    return lease.transportRevision == revision;
+  }
+
+  @override
+  bool isCurrent(RequestContextActivationLease lease) => lease.transportRevision == revision;
+
+  @override
+  void abandonActivation(RequestContextActivationLease lease) {
+    if (identical(pending, lease)) pending = null;
+  }
+
+  @override
+  bool invalidateForTransportReview() {
+    revision++;
+    return pending != null;
+  }
+
+  @override
+  void invalidateAfterValidationFailure() {
+    revision++;
   }
 }
 
@@ -405,9 +521,14 @@ final class _Native implements NativeRequestContextPort {
   var clientIdentity = 1;
   var clearFailuresRemaining = 0;
   var blocked = false;
+  var blockCalls = 0;
+  var purgeCalls = 0;
+  Completer<void>? replaceGate;
+  final replaceStarted = Completer<void>();
   NativeRequestContext current = NativeRequestContext(
     canonicalOrigin: Uri.parse('https://old.test'),
     accessToken: 'old-token',
+    schemePolicy: EndpointSchemePolicy.httpsOnly,
     customHeaders: const {'Old': 'header'},
   );
 
@@ -415,12 +536,14 @@ final class _Native implements NativeRequestContextPort {
   NativeRequestContext snapshot() => NativeRequestContext(
     canonicalOrigin: current.canonicalOrigin,
     accessToken: current.accessToken,
+    schemePolicy: current.schemePolicy,
     customHeaders: current.customHeaders,
   );
 
   @override
   void block() {
     events.add('native.block.rollback');
+    blockCalls++;
     blocked = true;
   }
 
@@ -430,6 +553,10 @@ final class _Native implements NativeRequestContextPort {
     current = context;
     replaced = true;
     clientIdentity++;
+    if (!replaceStarted.isCompleted) replaceStarted.complete();
+    final gate = replaceGate;
+    replaceGate = null;
+    await gate?.future;
     if (failAfterMutation) {
       failAfterMutation = false;
       throw StateError('native replacement reply was lost');
@@ -439,12 +566,18 @@ final class _Native implements NativeRequestContextPort {
   @override
   Future<void> purge() async {
     events.add('native.clear.rollback');
+    purgeCalls++;
     clientIdentity++;
     if (clearFailuresRemaining > 0) {
       clearFailuresRemaining--;
       throw StateError('native clear failed');
     }
-    current = NativeRequestContext(canonicalOrigin: null, accessToken: null, customHeaders: const {});
+    current = NativeRequestContext(
+      canonicalOrigin: null,
+      accessToken: null,
+      schemePolicy: null,
+      customHeaders: const {},
+    );
   }
 
   @override
@@ -457,14 +590,17 @@ final class _Store implements ConfirmedEndpointStorePort {
   _Store(this.events);
 
   final List<String> events;
-  var current = Uri.parse('https://old.test/api');
+  var current = ConfirmedServerEndpoint(
+    apiEndpoint: Uri.parse('https://old.test/api'),
+    schemePolicy: EndpointSchemePolicy.httpsOnly,
+  );
   var wroteActivation = false;
 
   @override
-  Uri? read() => current;
+  ConfirmedServerEndpoint? read() => current;
 
   @override
-  Future<void> write(Uri? endpoint) async {
+  Future<void> write(ConfirmedServerEndpoint? endpoint) async {
     if (wroteActivation) events.add('store.write.rollback');
     if (endpoint != null) current = endpoint;
     wroteActivation = true;

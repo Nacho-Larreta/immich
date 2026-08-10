@@ -91,6 +91,21 @@ void main() {
       expect(result, const EndpointProbeResult.rejected(OfflineErrorCode.wrongServer));
     });
 
+    test('rejects an HTTPS to HTTP redirect even when the host is unchanged', () async {
+      final transport = _FakeProbeHttpTransport((session) {
+        session.respond(
+          '/.well-known/immich',
+          effectiveUri: Uri.parse('http://photos.example.test/.well-known/immich'),
+          redirectChain: [Uri.parse('http://photos.example.test/.well-known/immich')],
+        );
+      });
+      final adapter = EndpointProbeAdapter(transport: transport);
+
+      final result = await adapter.probe(_request()).result;
+
+      expect(result, const EndpointProbeResult.rejected(OfflineErrorCode.wrongServer));
+    });
+
     test('rejects another Immich user without touching authentication state', () async {
       final transport = _FakeProbeHttpTransport((session) {
         session.respond('/.well-known/immich', statusCode: 404);

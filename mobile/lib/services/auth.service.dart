@@ -36,6 +36,7 @@ class AuthService {
   final NetworkService _networkService;
   final BackgroundSyncManager _backgroundSyncManager;
   final AppSettingsService _appSettingsService;
+  final AuthenticationPersistence _authenticationPersistence;
   final _log = Logger("AuthService");
 
   AuthService(
@@ -44,8 +45,9 @@ class AuthService {
     this._apiService,
     this._networkService,
     this._backgroundSyncManager,
-    this._appSettingsService,
-  );
+    this._appSettingsService, {
+    AuthenticationPersistence authenticationPersistence = const StoreAuthenticationPersistence(),
+  }) : _authenticationPersistence = authenticationPersistence;
 
   Future<bool> validateAuxilaryServerUrl(String url) async {
     bool isValid = false;
@@ -78,26 +80,42 @@ class AuthService {
     }
   }
 
-  Future<void> clearRemoteAuthentication() {
-    return Future.wait([Store.delete(StoreKey.accessToken), Store.delete(StoreKey.assetETag)]);
+  Future<void> clearRemoteAuthentication() async {
+    await _persistSessionTombstone();
+    await _authenticationPersistence.delete(StoreKey.accessToken);
+    await _authenticationPersistence.delete(StoreKey.assetETag);
   }
 
   Future<void> forgetServer() async {
+    await _persistSessionTombstone();
     await _backgroundSyncManager.cancel();
+    for (final key in [
+      StoreKey.currentUser,
+      StoreKey.accessToken,
+      StoreKey.assetETag,
+      StoreKey.customHeaders,
+      StoreKey.autoEndpointSwitching,
+      StoreKey.preferredWifiName,
+      StoreKey.localEndpoint,
+      StoreKey.externalEndpointList,
+      StoreKey.serverUrl,
+      StoreKey.serverEndpoint,
+      StoreKey.serverEndpointSchemePolicy,
+    ]) {
+      await _authenticationPersistence.delete(key);
+    }
     await Future.wait([
       _authRepository.clearLocalData(),
-      Store.delete(StoreKey.currentUser),
-      Store.delete(StoreKey.accessToken),
-      Store.delete(StoreKey.assetETag),
-      Store.delete(StoreKey.customHeaders),
-      Store.delete(StoreKey.autoEndpointSwitching),
-      Store.delete(StoreKey.preferredWifiName),
-      Store.delete(StoreKey.localEndpoint),
-      Store.delete(StoreKey.externalEndpointList),
-      Store.delete(StoreKey.serverUrl),
-      Store.delete(StoreKey.serverEndpoint),
       _appSettingsService.setSetting(AppSettingsEnum.enableBackup, false),
     ]);
+  }
+
+  Future<void> _persistSessionTombstone() async {
+    try {
+      await _authenticationPersistence.markSessionNotReady();
+    } catch (error, stackTrace) {
+      Error.throwWithStackTrace(AuthenticatedSessionTombstoneWriteFailure(error), stackTrace);
+    }
   }
 
   Future<void> changePassword(String newPassword) {
@@ -178,4 +196,29 @@ class AuthService {
   Future<void> setupPinCode(String pinCode) {
     return _authApiRepository.setupPinCode(pinCode);
   }
+}
+
+abstract interface class AuthenticationPersistence {
+  Future<void> markSessionNotReady();
+
+  Future<void> delete<T>(StoreKey<T> key);
+}
+
+final class StoreAuthenticationPersistence implements AuthenticationPersistence {
+  const StoreAuthenticationPersistence();
+
+  @override
+  Future<void> markSessionNotReady() => Store.put(StoreKey.authenticatedSessionReady, false);
+
+  @override
+  Future<void> delete<T>(StoreKey<T> key) => Store.delete(key);
+}
+
+final class AuthenticatedSessionTombstoneWriteFailure implements Exception {
+  const AuthenticatedSessionTombstoneWriteFailure(this.cause);
+
+  final Object cause;
+
+  @override
+  String toString() => 'Unable to durably block the authenticated session: $cause';
 }

@@ -135,7 +135,7 @@ class ShareActionButton extends ConsumerWidget {
 
     ImmichToast.show(
       context: context,
-      msg: _failureMessageKey((result as FailedShareResult).error).t(context: context),
+      msg: shareFailureMessageKey((result as FailedShareResult).error).t(context: context),
       gravity: ToastGravity.BOTTOM,
       toastType: ToastType.error,
     );
@@ -145,26 +145,6 @@ class ShareActionButton extends ConsumerWidget {
     return result is FailedShareResult &&
         result.error is ShareAssetFailure &&
         (result.error as ShareAssetFailure).error == OriginalExportError.cancelled;
-  }
-
-  static String _failureMessageKey(ShareFailureDetail failure) {
-    if (failure case ShareAssetFailure(:final error)) {
-      return switch (error) {
-        OriginalExportError.mediaNotLocal || OriginalExportError.iCloudUnavailable => 'asset_not_found_on_icloud',
-        OriginalExportError.assetMissing ||
-        OriginalExportError.cancelled ||
-        OriginalExportError.timeout ||
-        OriginalExportError.unauthorized ||
-        OriginalExportError.wrongServer ||
-        OriginalExportError.serverUnavailable ||
-        OriginalExportError.httpFailure ||
-        OriginalExportError.storageUnavailable ||
-        OriginalExportError.writeFailed ||
-        OriginalExportError.cleanupFailed => 'scaffold_body_error_occurred',
-        OriginalExportError.leaseNotFound || OriginalExportError.platformUnsupported => 'scaffold_body_error_occurred',
-      };
-    }
-    return 'scaffold_body_error_occurred';
   }
 
   @override
@@ -177,4 +157,25 @@ class ShareActionButton extends ConsumerWidget {
       onPressed: () => _onTap(context, ref),
     );
   }
+}
+
+String shareFailureMessageKey(ShareFailureDetail failure) {
+  if (failure case ShareAssetFailure(:final error)) {
+    return switch (error) {
+      OriginalExportError.mediaNotLocal || OriginalExportError.iCloudUnavailable => 'asset_not_found_on_icloud',
+      OriginalExportError.unauthorized => 'timeline_source_reauthentication_required',
+      OriginalExportError.serverUnavailable => 'timeline_source_server_offline',
+      OriginalExportError.assetMissing ||
+      OriginalExportError.cancelled ||
+      OriginalExportError.timeout ||
+      OriginalExportError.wrongServer ||
+      OriginalExportError.httpFailure ||
+      OriginalExportError.storageUnavailable ||
+      OriginalExportError.writeFailed ||
+      OriginalExportError.cleanupFailed ||
+      OriginalExportError.leaseNotFound ||
+      OriginalExportError.platformUnsupported => 'scaffold_body_error_occurred',
+    };
+  }
+  return 'scaffold_body_error_occurred';
 }

@@ -24,6 +24,8 @@ mobile/lib/infrastructure/repositories/db.repository.steps.dart linguist-generat
 mobile/test/drift/main/generated/** -diff -merge
 mobile/test/drift/main/generated/** linguist-generated=true
 
+mobile/pubspec.lock whitespace=cr-at-eol
+
 open-api/typescript-sdk/fetch-client.ts -diff -merge
 open-api/typescript-sdk/fetch-client.ts linguist-generated=true
 

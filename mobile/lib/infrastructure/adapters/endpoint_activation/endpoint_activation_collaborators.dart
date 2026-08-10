@@ -1,4 +1,5 @@
 import 'package:immich_mobile/domain/models/network_uri.model.dart';
+import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 
 final class ActivationSessionSnapshot {
   ActivationSessionSnapshot({
@@ -43,12 +44,21 @@ final class NativeRequestContext {
   NativeRequestContext({
     required this.canonicalOrigin,
     required this.accessToken,
+    required this.schemePolicy,
     required Map<String, String> customHeaders,
   }) : customHeaders = Map.unmodifiable(customHeaders) {
     final Uri? origin = canonicalOrigin;
     final String? token = accessToken;
     if (origin != null) {
       validateHttpOrigin(origin, 'canonicalOrigin');
+      final policy = schemePolicy;
+      if (policy == null) {
+        throw ArgumentError('A canonical origin requires an endpoint scheme policy');
+      }
+      validateEndpointSchemePolicy(origin, policy);
+    }
+    if (origin == null && schemePolicy != null) {
+      throw ArgumentError('An endpoint scheme policy requires a canonical origin');
     }
     if (token != null && (token.isEmpty || origin == null)) {
       throw ArgumentError('An access token requires a non-empty canonical origin');
@@ -57,6 +67,7 @@ final class NativeRequestContext {
 
   final Uri? canonicalOrigin;
   final String? accessToken;
+  final EndpointSchemePolicy? schemePolicy;
   final Map<String, String> customHeaders;
 }
 
@@ -72,10 +83,25 @@ abstract interface class NativeRequestContextPort {
   void publishCleared();
 }
 
-abstract interface class ConfirmedEndpointStorePort {
-  Uri? read();
+final class ConfirmedServerEndpoint {
+  ConfirmedServerEndpoint({
+    required this.apiEndpoint,
+    required this.schemePolicy,
+    this.authenticatedSessionReady = true,
+  }) {
+    validateHttpEndpoint(apiEndpoint, 'apiEndpoint');
+    validateEndpointSchemePolicy(Uri.parse(apiEndpoint.origin), schemePolicy);
+  }
 
-  Future<void> write(Uri? endpoint);
+  final Uri apiEndpoint;
+  final EndpointSchemePolicy schemePolicy;
+  final bool authenticatedSessionReady;
+}
+
+abstract interface class ConfirmedEndpointStorePort {
+  ConfirmedServerEndpoint? read();
+
+  Future<void> write(ConfirmedServerEndpoint? endpoint);
 }
 
 final class WidgetCredentials {

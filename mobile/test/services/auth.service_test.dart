@@ -2,6 +2,7 @@ import 'package:drift/drift.dart' hide isNull;
 import 'package:drift/native.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/services/store.service.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
@@ -62,7 +63,10 @@ void main() {
       await Store.put(StoreKey.serverUrl, 'https://photos.example.test');
       await Store.put(StoreKey.serverEndpoint, 'https://photos.example.test/api');
       await Store.put(StoreKey.accessToken, 'token');
+      await Store.put(StoreKey.serverEndpointSchemePolicy, EndpointSchemePolicy.httpsOnly.name);
+      await Store.put(StoreKey.authenticatedSessionReady, true);
       await Store.put(StoreKey.customHeaders, '{"x-server-a-key":"secret"}');
+      await pumpEventQueue();
       when(() => backgroundSyncManager.cancel()).thenAnswer((_) async {});
       when(() => authRepository.clearLocalData()).thenAnswer((_) async {});
       when(() => appSettingsService.setSetting(AppSettingsEnum.enableBackup, false)).thenAnswer((_) async {});
@@ -72,6 +76,8 @@ void main() {
       expect(Store.tryGet(StoreKey.serverUrl), isNull);
       expect(Store.tryGet(StoreKey.serverEndpoint), isNull);
       expect(Store.tryGet(StoreKey.accessToken), isNull);
+      expect(Store.tryGet(StoreKey.serverEndpointSchemePolicy), isNull);
+      expect(Store.tryGet(StoreKey.authenticatedSessionReady), isFalse);
       expect(Store.tryGet(StoreKey.customHeaders), isNull);
       expect(Store.tryGet(StoreKey.currentUser), isNull);
       verify(() => backgroundSyncManager.cancel()).called(1);
@@ -83,6 +89,8 @@ void main() {
       const endpoint = 'https://photos.example.test/api';
       await Store.put(StoreKey.serverEndpoint, endpoint);
       await Store.put(StoreKey.accessToken, 'expired-token');
+      await Store.put(StoreKey.authenticatedSessionReady, true);
+      await pumpEventQueue();
       when(() => authApiRepository.logout()).thenThrow(Exception('Server error'));
       when(() => backgroundSyncManager.cancel()).thenAnswer((_) async {});
       when(() => authRepository.clearLocalData()).thenAnswer((_) async {});
@@ -94,8 +102,94 @@ void main() {
       verify(() => authApiRepository.logout()).called(1);
       expect(Store.tryGet(StoreKey.serverEndpoint), endpoint);
       expect(Store.tryGet(StoreKey.accessToken), isNull);
+      expect(Store.tryGet(StoreKey.authenticatedSessionReady), isFalse);
       verifyNever(() => authRepository.clearLocalData());
     });
+
+    for (final cleanup in ['clearRemoteAuthentication', 'forgetServer']) {
+      test('$cleanup writes the durable tombstone before every destructive store write', () async {
+        final persistence = _RecordingAuthenticationPersistence();
+        final service = AuthService(
+          authApiRepository,
+          authRepository,
+          apiService,
+          networkService,
+          backgroundSyncManager,
+          appSettingsService,
+          authenticationPersistence: persistence,
+        );
+        when(() => backgroundSyncManager.cancel()).thenAnswer((_) async {});
+        when(() => authRepository.clearLocalData()).thenAnswer((_) async {});
+        when(() => appSettingsService.setSetting(AppSettingsEnum.enableBackup, false)).thenAnswer((_) async {});
+
+        if (cleanup == 'clearRemoteAuthentication') {
+          await service.clearRemoteAuthentication();
+        } else {
+          await service.forgetServer();
+        }
+
+        expect(persistence.writes.first, 'put:authenticatedSessionReady:false');
+        expect(persistence.readiness, isFalse);
+      });
+
+      for (final failingWrite in [2, 3]) {
+        test('$cleanup remains tombstoned when write $failingWrite fails', () async {
+          final persistence = _RecordingAuthenticationPersistence(failingWrite: failingWrite);
+          final service = AuthService(
+            authApiRepository,
+            authRepository,
+            apiService,
+            networkService,
+            backgroundSyncManager,
+            appSettingsService,
+            authenticationPersistence: persistence,
+          );
+          when(() => backgroundSyncManager.cancel()).thenAnswer((_) async {});
+
+          final cleanupFuture = cleanup == 'clearRemoteAuthentication'
+              ? service.clearRemoteAuthentication()
+              : service.forgetServer();
+
+          await expectLater(cleanupFuture, throwsA(isA<StateError>()));
+          expect(persistence.readiness, isFalse);
+          expect(persistence.writes.first, 'put:authenticatedSessionReady:false');
+          expect(persistence.writes, hasLength(failingWrite));
+          verifyNever(() => authRepository.clearLocalData());
+          verifyNever(() => appSettingsService.setSetting(AppSettingsEnum.enableBackup, false));
+        });
+      }
+    }
+
+    for (final cleanup in ['clearRemoteAuthentication', 'forgetServer']) {
+      test('$cleanup fails closed when the tombstone cannot be written', () async {
+        final failure = StateError('database unavailable');
+        final persistence = _RecordingAuthenticationPersistence(failingWrite: 1, failure: failure);
+        final service = AuthService(
+          authApiRepository,
+          authRepository,
+          apiService,
+          networkService,
+          backgroundSyncManager,
+          appSettingsService,
+          authenticationPersistence: persistence,
+        );
+
+        final cleanupFuture = cleanup == 'clearRemoteAuthentication'
+            ? service.clearRemoteAuthentication()
+            : service.forgetServer();
+
+        await expectLater(
+          cleanupFuture,
+          throwsA(
+            isA<AuthenticatedSessionTombstoneWriteFailure>().having((error) => error.cause, 'cause', same(failure)),
+          ),
+        );
+        expect(persistence.writes, ['put:authenticatedSessionReady:false']);
+        expect(persistence.readiness, isTrue);
+        verifyNever(() => backgroundSyncManager.cancel());
+        verifyNever(() => authRepository.clearLocalData());
+      });
+    }
   });
 
   group('setOpenApiServiceEndpoint', () {
@@ -239,4 +333,32 @@ void main() {
       verify(() => apiService.resolveAndSetEndpoint('https://external.endpoint')).called(1);
     });
   });
+}
+
+final class _RecordingAuthenticationPersistence implements AuthenticationPersistence {
+  _RecordingAuthenticationPersistence({this.failingWrite, this.failure});
+
+  final int? failingWrite;
+  final Object? failure;
+  final writes = <String>[];
+  bool readiness = true;
+
+  @override
+  Future<void> markSessionNotReady() async {
+    writes.add('put:authenticatedSessionReady:false');
+    _throwIfCurrentWriteFails();
+    readiness = false;
+  }
+
+  @override
+  Future<void> delete<T>(StoreKey<T> key) async {
+    writes.add('delete:${key.name}');
+    _throwIfCurrentWriteFails();
+  }
+
+  void _throwIfCurrentWriteFails() {
+    if (writes.length == failingWrite) {
+      throw failure ?? StateError('write ${writes.length} failed');
+    }
+  }
 }

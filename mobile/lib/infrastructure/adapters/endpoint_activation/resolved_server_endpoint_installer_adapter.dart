@@ -1,5 +1,6 @@
 import 'package:immich_mobile/domain/interfaces/resolved_server_endpoint_installer.interface.dart';
 import 'package:immich_mobile/domain/models/anonymous_server_discovery.model.dart';
+import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/domain/services/session_mutation_mutex.dart';
 import 'package:immich_mobile/infrastructure/adapters/endpoint_activation/endpoint_activation_collaborators.dart';
 
@@ -28,6 +29,9 @@ final class ResolvedServerEndpointInstallerAdapter implements ResolvedServerEndp
   }
 
   Future<void> _install(DiscoveredServerEndpoint endpoint) async {
+    final schemePolicy = endpoint.canonicalOrigin.scheme == 'https'
+        ? EndpointSchemePolicy.httpsOnly
+        : EndpointSchemePolicy.explicitlyApprovedHttp;
     final previousEndpoint = _apiGraph.currentEndpoint;
     final previousStoredEndpoint = _endpointStore.read();
     final preparedGraph = await _apiGraph.prepare(endpoint.apiEndpoint);
@@ -36,10 +40,21 @@ final class ResolvedServerEndpointInstallerAdapter implements ResolvedServerEndp
     _apiGraph.block();
     try {
       await _nativeContext.replace(
-        NativeRequestContext(canonicalOrigin: endpoint.canonicalOrigin, accessToken: null, customHeaders: const {}),
+        NativeRequestContext(
+          canonicalOrigin: endpoint.canonicalOrigin,
+          accessToken: null,
+          schemePolicy: schemePolicy,
+          customHeaders: const {},
+        ),
       );
       await _apiGraph.install(preparedGraph);
-      await _endpointStore.write(endpoint.apiEndpoint);
+      await _endpointStore.write(
+        ConfirmedServerEndpoint(
+          apiEndpoint: endpoint.apiEndpoint,
+          schemePolicy: schemePolicy,
+          authenticatedSessionReady: false,
+        ),
+      );
       await _installDeviceInfoHeaders();
     } catch (installationError, installationStackTrace) {
       final rollbackError = await _rollback(graph: previousGraph, storedEndpoint: previousStoredEndpoint);
@@ -50,7 +65,7 @@ final class ResolvedServerEndpointInstallerAdapter implements ResolvedServerEndp
     }
   }
 
-  Future<Object?> _rollback({required PreparedApiGraph graph, required Uri? storedEndpoint}) async {
+  Future<Object?> _rollback({required PreparedApiGraph graph, required ConfirmedServerEndpoint? storedEndpoint}) async {
     Object? firstError;
 
     void recordError(Object error) {

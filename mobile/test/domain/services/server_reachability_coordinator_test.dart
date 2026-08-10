@@ -8,6 +8,7 @@ import 'package:immich_mobile/domain/interfaces/endpoint_activation.interface.da
 import 'package:immich_mobile/domain/interfaces/endpoint_probe_cycle.interface.dart';
 import 'package:immich_mobile/domain/interfaces/reachability_state_publisher.interface.dart';
 import 'package:immich_mobile/domain/interfaces/reconciliation.interface.dart';
+import 'package:immich_mobile/domain/interfaces/request_context_lease.interface.dart';
 import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/domain/models/offline_result.model.dart';
 import 'package:immich_mobile/domain/models/server_reachability.model.dart';
@@ -88,30 +89,104 @@ void main() {
     await harness.dispose();
   });
 
-  test('ignores repeated available events while a successful pipeline is running', () async {
+  for (final localLeaseActive in [false, true]) {
+    final context = localLeaseActive ? 'registered-local HTTP lease' : 'HTTPS or approved HTTP context';
+    test('available transport review stales a pending probe for $context and reruns', () async {
+      final lease = _RequestContextLease(localActive: localLeaseActive);
+      final harness = _Harness(requestContextLease: lease);
+      final staleProbe = harness.probes.enqueuePending(completesOnCancel: false);
+      harness.probes.enqueueCompleted(_validatedEndpoint());
+      harness.activations.enqueueSuccess();
+      harness.reconciliations.enqueueSuccess();
+      await harness.startSession();
+
+      harness.connectivity.emit(TransportAvailability.available);
+      harness.scheduler.elapse(const Duration(milliseconds: 750));
+      await pumpEventQueue();
+      final staleIdentity = harness.probes.identities.single;
+
+      harness.connectivity.emit(TransportAvailability.available);
+
+      expect(harness.epochs.current, isNot(staleIdentity));
+      expect(lease.blocked, localLeaseActive);
+      await pumpEventQueue();
+      expect(staleProbe.cancelCount, 1);
+
+      staleProbe.complete(_validatedEndpoint());
+      await pumpEventQueue();
+
+      expect(harness.activations.requests, isEmpty);
+      expect(harness.publisher.states.where((state) => state.phase == ReachabilityPhase.online), isEmpty);
+
+      harness.scheduler.elapse(const Duration(milliseconds: 750));
+      await pumpEventQueue();
+
+      expect(harness.probes.identities, hasLength(2));
+      expect(harness.probes.identities.last, isNot(staleIdentity));
+      expect(harness.activations.requests, hasLength(1));
+      expect(harness.reconciliations.requests, hasLength(1));
+      await harness.dispose();
+    });
+  }
+
+  test('available transport review stales a pending activation and reruns without publishing it', () async {
     final harness = _Harness();
-    final firstProbe = harness.probes.enqueuePending();
     harness.probes.enqueueCompleted(_validatedEndpoint());
+    harness.probes.enqueueCompleted(_validatedEndpoint());
+    final staleActivation = harness.activations.enqueuePending();
     harness.activations.enqueueSuccess();
-    harness.activations.enqueueSuccess();
-    harness.reconciliations.enqueueSuccess();
     harness.reconciliations.enqueueSuccess();
     await harness.startSession();
 
+    await harness.runCycle();
+    final staleIdentity = harness.activations.requests.single;
+
     harness.connectivity.emit(TransportAvailability.available);
-    harness.scheduler.elapse(const Duration(milliseconds: 750));
+
+    expect(harness.epochs.current.probeGeneration, isNot(staleIdentity.probeGeneration));
     await pumpEventQueue();
-    harness.connectivity.emit(TransportAvailability.available);
-    harness.connectivity.emit(TransportAvailability.available);
-    firstProbe.complete(_validatedEndpoint());
-    await pumpEventQueue();
-    harness.scheduler.elapse(const Duration(seconds: 1));
+    expect(staleActivation.cancelCount, 1);
+
+    staleActivation.complete(
+      OfflineResult.success(
+        EndpointActivationReceipt(
+          endpoint: staleIdentity.endpoint,
+          sessionEpoch: staleIdentity.sessionEpoch,
+          probeGeneration: staleIdentity.probeGeneration,
+        ),
+      ),
+    );
     await pumpEventQueue();
 
-    expect(harness.probes.identities, hasLength(1));
-    expect(harness.activations.requests, hasLength(1));
+    expect(harness.reconciliations.requests, isEmpty);
+    expect(harness.publisher.states.where((state) => state.phase == ReachabilityPhase.online), isEmpty);
+
+    harness.scheduler.elapse(const Duration(milliseconds: 750));
+    await pumpEventQueue();
+
+    expect(harness.activations.requests, hasLength(2));
     expect(harness.reconciliations.requests, hasLength(1));
     expect(harness.publisher.states.where((state) => state.phase == ReachabilityPhase.online), hasLength(1));
+    await harness.dispose();
+  });
+
+  test('available to available transport review invalidates a local lease before the next probe', () async {
+    final connectivity = _ConnectivityMonitor(initialAvailability: Future.value(TransportAvailability.available));
+    final lease = _RequestContextLease(localActive: true);
+    final harness = _Harness(connectivity: connectivity, requestContextLease: lease);
+    final probe = harness.probes.enqueuePending();
+
+    await harness.startSession();
+    connectivity.emit(TransportAvailability.available);
+
+    expect(lease.transportInvalidations, 2);
+    expect(lease.blocked, isTrue);
+    expect(harness.probes.identities, isEmpty);
+    harness.scheduler.elapse(const Duration(milliseconds: 750));
+    await pumpEventQueue();
+    expect(harness.probes.identities, hasLength(1));
+
+    probe.complete(const EndpointProbeResult.rejected(OfflineErrorCode.cancelled));
     await harness.dispose();
   });
 
@@ -270,7 +345,8 @@ void main() {
   });
 
   test('publishes offline when a cycle has no valid candidates', () async {
-    final harness = _Harness();
+    final lease = _RequestContextLease();
+    final harness = _Harness(requestContextLease: lease);
     harness.probes.enqueueCompleted(const EndpointProbeResult.rejected(OfflineErrorCode.serverUnavailable));
     await harness.startSession();
 
@@ -278,6 +354,7 @@ void main() {
 
     expect(harness.coordinator.state.phase, ReachabilityPhase.offline);
     expect(harness.activations.requests, isEmpty);
+    expect(lease.validationFailureInvalidations, 1);
     await harness.dispose();
   });
 
@@ -391,11 +468,14 @@ void main() {
 }
 
 final class _Harness {
-  _Harness({_ConnectivityMonitor? connectivity}) : connectivity = connectivity ?? _ConnectivityMonitor();
+  _Harness({_ConnectivityMonitor? connectivity, RequestContextLeasePort? requestContextLease})
+    : connectivity = connectivity ?? _ConnectivityMonitor(),
+      requestContextLease = requestContextLease ?? const _NoopRequestContextLease();
 
   final scheduler = ManualReachabilityScheduler();
   final epochs = SessionEpochController();
   final _ConnectivityMonitor connectivity;
+  final RequestContextLeasePort requestContextLease;
   final probes = _ProbeCycles();
   final activations = _Activations();
   final reconciliations = _Reconciliations();
@@ -409,6 +489,7 @@ final class _Harness {
     reconciliations: reconciliations,
     statePublisher: publisher,
     scheduler: scheduler,
+    requestContextLease: requestContextLease,
   );
 
   Future<void> startSession() async {
@@ -423,6 +504,63 @@ final class _Harness {
   }
 
   Future<void> dispose() => coordinator.dispose();
+}
+
+final class _RequestContextLease implements RequestContextLeasePort {
+  _RequestContextLease({this.localActive = false});
+
+  final bool localActive;
+  var transportInvalidations = 0;
+  var validationFailureInvalidations = 0;
+  var blocked = false;
+
+  @override
+  RequestContextActivationLease? beginActivation(EndpointSchemePolicy policy) => null;
+
+  @override
+  bool commitActivation(RequestContextActivationLease lease) => false;
+
+  @override
+  bool isCurrent(RequestContextActivationLease lease) => false;
+
+  @override
+  void abandonActivation(RequestContextActivationLease lease) {}
+
+  @override
+  bool invalidateForTransportReview() {
+    if (!localActive) return false;
+    transportInvalidations++;
+    blocked = true;
+    return true;
+  }
+
+  @override
+  void invalidateAfterValidationFailure() {
+    validationFailureInvalidations++;
+    blocked = true;
+  }
+}
+
+final class _NoopRequestContextLease implements RequestContextLeasePort {
+  const _NoopRequestContextLease();
+
+  @override
+  RequestContextActivationLease? beginActivation(EndpointSchemePolicy policy) => null;
+
+  @override
+  bool commitActivation(RequestContextActivationLease lease) => false;
+
+  @override
+  bool isCurrent(RequestContextActivationLease lease) => false;
+
+  @override
+  void abandonActivation(RequestContextActivationLease lease) {}
+
+  @override
+  bool invalidateForTransportReview() => false;
+
+  @override
+  void invalidateAfterValidationFailure() {}
 }
 
 final class _ConnectivityMonitor implements ConnectivityMonitorPort {
@@ -462,10 +600,10 @@ final class _ProbeCycles implements EndpointProbeCyclePort {
   final Queue<CancellableRequest<EndpointProbeResult>> _operations = Queue();
   final List<ReachabilityIdentity> identities = [];
 
-  _ControlledRequest<EndpointProbeResult> enqueuePending({Object? cancelError}) {
+  _ControlledRequest<EndpointProbeResult> enqueuePending({Object? cancelError, bool? completesOnCancel}) {
     final operation = _ControlledRequest<EndpointProbeResult>(
       const EndpointProbeResult.rejected(OfflineErrorCode.cancelled),
-      completesOnCancel: cancelError == null,
+      completesOnCancel: completesOnCancel ?? cancelError == null,
       cancelError: cancelError,
     );
     _operations.add(operation);

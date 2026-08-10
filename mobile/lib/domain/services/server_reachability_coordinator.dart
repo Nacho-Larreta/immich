@@ -7,6 +7,7 @@ import 'package:immich_mobile/domain/interfaces/endpoint_probe_cycle.interface.d
 import 'package:immich_mobile/domain/interfaces/reachability_scheduler.interface.dart';
 import 'package:immich_mobile/domain/interfaces/reachability_state_publisher.interface.dart';
 import 'package:immich_mobile/domain/interfaces/reconciliation.interface.dart';
+import 'package:immich_mobile/domain/interfaces/request_context_lease.interface.dart';
 import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/domain/models/offline_result.model.dart';
 import 'package:immich_mobile/domain/models/server_reachability.model.dart';
@@ -21,6 +22,7 @@ final class ServerReachabilityCoordinator {
     required ReconciliationPort reconciliations,
     required ReachabilityStatePublisherPort statePublisher,
     required ReachabilitySchedulerPort scheduler,
+    required RequestContextLeasePort requestContextLease,
     this.debounce = const Duration(milliseconds: 750),
   }) : _epochs = epochs,
        _connectivity = connectivity,
@@ -29,6 +31,7 @@ final class ServerReachabilityCoordinator {
        _reconciliations = reconciliations,
        _statePublisher = statePublisher,
        _scheduler = scheduler,
+       _requestContextLease = requestContextLease,
        _state = ReachabilityState(
          phase: ReachabilityPhase.unknown,
          sessionEpoch: epochs.current.sessionEpoch,
@@ -46,6 +49,7 @@ final class ServerReachabilityCoordinator {
   final ReconciliationPort _reconciliations;
   final ReachabilityStatePublisherPort _statePublisher;
   final ReachabilitySchedulerPort _scheduler;
+  final RequestContextLeasePort _requestContextLease;
   final Duration debounce;
 
   ReachabilityState _state;
@@ -162,12 +166,24 @@ final class ServerReachabilityCoordinator {
       return;
     }
     _availabilityRevision++;
+    _requestContextLease.invalidateForTransportReview();
+    _invalidatePipelineForTransportReview(availability);
     if (_availability == availability) {
+      switch (availability) {
+        case TransportAvailability.unknown:
+          _cancelScheduledCycle();
+        case TransportAvailability.unavailable:
+          return;
+        case TransportAvailability.available:
+          _handleAvailable();
+      }
       return;
     }
     _availability = availability;
     switch (availability) {
       case TransportAvailability.unknown:
+        _cancelScheduledCycle();
+        _rerunRequested = false;
         return;
       case TransportAvailability.unavailable:
         _handleUnavailable();
@@ -177,12 +193,23 @@ final class ServerReachabilityCoordinator {
   }
 
   void _handleUnavailable() {
-    _epochs.invalidateProbeGeneration();
     _cancelScheduledCycle();
     _rerunRequested = false;
     if (_sessionActive && !_paused) {
       _publish(ReachabilityPhase.offline, identity: _epochs.current, confirmedEndpoint: _state.confirmedEndpoint);
     }
+  }
+
+  void _invalidatePipelineForTransportReview(TransportAvailability reviewedAvailability) {
+    final run = _pipeline;
+    if (run == null && reviewedAvailability != TransportAvailability.unavailable) {
+      return;
+    }
+    _epochs.invalidateProbeGeneration();
+    if (run == null) {
+      return;
+    }
+    _rerunRequested = reviewedAvailability == TransportAvailability.available && _sessionActive && !_paused;
     unawaited(_cancelPipelineAndWait());
   }
 
@@ -230,11 +257,13 @@ final class ServerReachabilityCoordinator {
     try {
       probeResult = await _runProbe(run);
     } on Object {
+      _requestContextLease.invalidateAfterValidationFailure();
       _publishOfflineIfCurrent(run.identity);
       return;
     }
     if (!_isCurrent(run.identity) || probeResult is! ValidatedEndpointProbeResult) {
       if (_isCurrent(run.identity) && probeResult is RejectedEndpointProbeResult) {
+        _requestContextLease.invalidateAfterValidationFailure();
         _publishProbeFailure(probeResult, run.identity);
       }
       return;
@@ -244,6 +273,7 @@ final class ServerReachabilityCoordinator {
     try {
       activationResult = await _runActivation(run, probeResult);
     } on Object {
+      _requestContextLease.invalidateAfterValidationFailure();
       _publishOfflineIfCurrent(run.identity);
       return;
     }
@@ -252,6 +282,7 @@ final class ServerReachabilityCoordinator {
     }
     final receipt = activationResult.valueOrNull;
     if (receipt == null) {
+      _requestContextLease.invalidateAfterValidationFailure();
       _publishEffectFailure(activationResult.errorOrNull, run.identity);
       return;
     }

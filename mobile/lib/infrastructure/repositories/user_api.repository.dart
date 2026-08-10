@@ -14,8 +14,9 @@ class UserApiRepository extends ApiRepository {
   UsersApi get _api => _apiService.usersApi;
 
   Future<UserDto?> getMyUser() async {
-    final (adminDto, preferenceDto) = await (_api.getMyUser(), _api.getMyPreferences()).wait;
+    final adminDto = await _api.getMyUser();
     if (adminDto == null) return null;
+    final preferenceDto = await _api.getMyPreferences();
 
     return UserConverter.fromAdminDto(adminDto, preferenceDto);
   }

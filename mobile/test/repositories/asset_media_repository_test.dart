@@ -14,6 +14,26 @@ import 'package:immich_mobile/repositories/asset_media.repository.dart';
 
 void main() {
   group('AssetMediaRepository.shareAssets', () {
+    test('shares local images and videos while remote shares are suspended', () async {
+      final local = _LocalExporter([
+        OriginalExportResult.success(_Lease('/tmp/immich-share-local/photo.jpg')),
+        OriginalExportResult.success(_Lease('/tmp/immich-share-local/video.mov')),
+      ]);
+      final remote = _RemoteExporter([]);
+      final sheet = _ShareSheet();
+      final repository = _repository(local: local, remote: remote, sheet: sheet);
+
+      final result = await repository.shareAssets([
+        _localAsset('image'),
+        _localAsset('video', type: AssetType.video),
+      ]).result;
+
+      expect(result, isA<SuccessfulShareResult>());
+      expect(local.requests.map((request) => request.assetId), ['image', 'video']);
+      expect(remote.requests, isEmpty);
+      expect(sheet.requests.single.paths, hasLength(2));
+    });
+
     test('returns a typed local failure and never presents a partial share', () async {
       final local = _LocalExporter([const OriginalExportResult.failure(OriginalExportError.assetMissing)]);
       final sheet = _ShareSheet();
@@ -61,7 +81,12 @@ void main() {
       final result = await operation.result;
 
       expect(controlled.cancelCount, 1);
-      expect(result, isA<FailedShareResult>());
+      expect(
+        result,
+        ShareResult.failure(
+          ShareAssetFailure(assetId: 'one', phase: SharePhase.localExport, error: OriginalExportError.cancelled),
+        ),
+      );
       expect(lateLease.releaseCount, 1);
     });
 
@@ -151,17 +176,185 @@ void main() {
       await repository.cancelAll().timeout(const Duration(seconds: 1));
       expect(lease.isAvailable, isTrue);
 
-      final rejected = await repository.shareAssets([_localAsset('rejected')]).result;
-      expect((rejected as FailedShareResult).error, isA<ShareAssetFailure>());
-      expect(local.requests, hasLength(1));
-
       presentation.complete(ShareResult.success(actualCount: 1, disposition: ShareDisposition.dismissed));
-      expect(await operation.result, isA<FailedShareResult>());
+      expect(
+        await operation.result,
+        ShareResult.failure(
+          ShareAssetFailure(assetId: 'one', phase: SharePhase.cleanup, error: OriginalExportError.cancelled),
+        ),
+      );
       expect(lease.isAvailable, isFalse);
 
-      repository.activateSession();
       local.results.add(OriginalExportResult.success(_Lease('/tmp/immich-share-reactivated/photo.jpg')));
       expect(await repository.shareAssets([_localAsset('reactivated')]).result, isA<SuccessfulShareResult>());
+    });
+
+    test('remote suspension leaves an active local export and its native presentation untouched', () async {
+      final export = _ControlledRequest<OriginalExportResult>();
+      final local = _LocalExporter([], controlled: export);
+      final repository = _repository(local: local);
+      final operation = repository.shareAssets([_localAsset('local')]);
+      await pumpEventQueue();
+
+      await repository.suspendRemoteShares();
+      final lease = _Lease('/tmp/immich-share-local-survives/photo.jpg');
+      export.complete(OriginalExportResult.success(lease));
+
+      expect(await operation.result, isA<SuccessfulShareResult>());
+      expect(export.cancelCount, 0);
+      expect(lease.releaseCount, 1);
+    });
+
+    test('remote suspension cancels an active remote export once and cleans its late lease', () async {
+      final export = _ControlledRequest<OriginalExportResult>();
+      final remote = _RemoteExporter([], controlled: export);
+      final repository = _repository(remote: remote)..activateRemoteShares();
+      final operation = repository.shareAssets([_remoteAsset('remote')]);
+      await pumpEventQueue();
+
+      final suspension = repository.suspendRemoteShares();
+      await pumpEventQueue();
+      expect(export.cancelCount, 1);
+      final lease = _Lease('/tmp/immich-share-remote-late/photo.jpg');
+      export.complete(OriginalExportResult.success(lease));
+      await suspension;
+
+      expect(
+        await operation.result,
+        ShareResult.failure(
+          ShareAssetFailure(assetId: 'remote', phase: SharePhase.remoteExport, error: OriginalExportError.cancelled),
+        ),
+      );
+      expect(lease.releaseCount, 1);
+    });
+
+    test('distinguishes missing, unauthorized, and unavailable remote preflight failures', () async {
+      var uriBuilds = 0;
+      final suspendedRemote = _RemoteExporter([]);
+      final suspended = _repository(
+        remote: suspendedRemote,
+        buildRemoteOriginalUri: (id, {required edited}) {
+          uriBuilds++;
+          return Uri.parse('https://photos.test/api/assets/$id/original');
+        },
+      );
+
+      expect(
+        await suspended.shareAssets([_localAsset('edited-missing', isEdited: true)]).result,
+        ShareResult.failure(
+          ShareAssetFailure(
+            assetId: 'edited-missing',
+            phase: SharePhase.remoteExport,
+            error: OriginalExportError.assetMissing,
+          ),
+        ),
+      );
+      expect(
+        await suspended.shareAssets([_remoteAsset('unauthorized')]).result,
+        ShareResult.failure(
+          ShareAssetFailure(
+            assetId: 'unauthorized',
+            phase: SharePhase.remoteExport,
+            error: OriginalExportError.unauthorized,
+          ),
+        ),
+      );
+      expect(uriBuilds, 0);
+      expect(
+        await suspended.shareAssets([_localAsset('merged-edited', remoteId: 'merged-remote', isEdited: true)]).result,
+        ShareResult.failure(
+          ShareAssetFailure(
+            assetId: 'merged-remote',
+            phase: SharePhase.remoteExport,
+            error: OriginalExportError.unauthorized,
+          ),
+        ),
+      );
+      expect(uriBuilds, 0);
+      expect(suspendedRemote.requests, isEmpty);
+
+      final unavailableRemote = _RemoteExporter([]);
+      final unavailable = _repository(remote: unavailableRemote, buildRemoteOriginalUri: (_, {required edited}) => null)
+        ..activateRemoteShares();
+      expect(
+        await unavailable.shareAssets([_remoteAsset('offline')]).result,
+        ShareResult.failure(
+          ShareAssetFailure(
+            assetId: 'offline',
+            phase: SharePhase.remoteExport,
+            error: OriginalExportError.serverUnavailable,
+          ),
+        ),
+      );
+      expect(unavailableRemote.requests, isEmpty);
+      expect(
+        await unavailable.shareAssets([
+          _localAsset('merged-edited', remoteId: 'merged-offline', isEdited: true),
+        ]).result,
+        ShareResult.failure(
+          ShareAssetFailure(
+            assetId: 'merged-offline',
+            phase: SharePhase.remoteExport,
+            error: OriginalExportError.serverUnavailable,
+          ),
+        ),
+      );
+    });
+
+    test('offline mixed-batch preflight invokes no exporter or native sheet', () async {
+      final local = _LocalExporter([OriginalExportResult.success(_Lease('/tmp/should-not-exist/photo.jpg'))]);
+      final remote = _RemoteExporter([]);
+      final sheet = _ShareSheet();
+      final repository = _repository(
+        local: local,
+        remote: remote,
+        sheet: sheet,
+        buildRemoteOriginalUri: (_, {required edited}) => null,
+      )..activateRemoteShares();
+
+      final result = await repository.shareAssets([_localAsset('local'), _remoteAsset('remote')]).result;
+
+      expect(result, isA<FailedShareResult>());
+      expect(local.requests, isEmpty);
+      expect(remote.requests, isEmpty);
+      expect(sheet.requests, isEmpty);
+    });
+
+    test('remote presentation keeps ownership and result when authentication is suspended', () async {
+      final lease = _Lease('/tmp/immich-share-remote-owned/photo.jpg');
+      final presentation = _ControlledRequest<ShareResult>();
+      final repository = _repository(
+        remote: _RemoteExporter([OriginalExportResult.success(lease)]),
+        sheet: _ShareSheet(controlled: presentation),
+      )..activateRemoteShares();
+      final operation = repository.shareAssets([_remoteAsset('remote')]);
+      await pumpEventQueue();
+
+      await repository.suspendRemoteShares();
+      expect(lease.isAvailable, isTrue);
+      final expected = ShareResult.success(actualCount: 1, disposition: ShareDisposition.completed);
+      presentation.complete(expected);
+
+      expect(await operation.result, expected);
+      expect(presentation.cancelCount, 0);
+      expect(lease.releaseCount, 1);
+    });
+
+    test('dispose rejects local shares and cannot be reversed by remote activation', () async {
+      final local = _LocalExporter([]);
+      final repository = _repository(local: local);
+
+      await repository.dispose();
+      repository.activateRemoteShares();
+      final result = await repository.shareAssets([_localAsset('local')]).result;
+
+      expect(
+        result,
+        ShareResult.failure(
+          ShareAssetFailure(assetId: 'local', phase: SharePhase.localExport, error: OriginalExportError.cancelled),
+        ),
+      );
+      expect(local.requests, isEmpty);
     });
 
     test('merged unedited prefers local while edited uses the remote original endpoint', () async {
@@ -169,6 +362,7 @@ void main() {
       final remote = _RemoteExporter([OriginalExportResult.success(_Lease('/tmp/immich-share-remote/photo.jpg'))]);
       final sheet = _ShareSheet(result: ShareResult.success(actualCount: 2, disposition: ShareDisposition.unknown));
       final repository = _repository(local: local, remote: remote, sheet: sheet);
+      repository.activateRemoteShares();
 
       final result = await repository.shareAssets([
         _localAsset('local', remoteId: 'remote-local'),
@@ -182,13 +376,19 @@ void main() {
   });
 }
 
-AssetMediaRepository _repository({_LocalExporter? local, _RemoteExporter? remote, _ShareSheet? sheet}) {
+AssetMediaRepository _repository({
+  _LocalExporter? local,
+  _RemoteExporter? remote,
+  _ShareSheet? sheet,
+  RemoteOriginalUriBuilder? buildRemoteOriginalUri,
+}) {
   return AssetMediaRepository(
     localExporter: local ?? _LocalExporter([]),
     remoteExporter: remote ?? _RemoteExporter([]),
     shareSheet: sheet ?? _ShareSheet(),
-    buildRemoteOriginalUri: (id, {required edited}) =>
-        Uri.parse('https://photos.test/api/assets/$id/original?edited=$edited'),
+    buildRemoteOriginalUri:
+        buildRemoteOriginalUri ??
+        (id, {required edited}) => Uri.parse('https://photos.test/api/assets/$id/original?edited=$edited'),
     localAssets: _LocalAssetManagement(),
   );
 }
@@ -201,15 +401,29 @@ final class _LocalAssetManagement implements LocalAssetManagementPort {
   Future<String?> getOriginalFilename(String assetId) async => null;
 }
 
-LocalAsset _localAsset(String id, {String? remoteId, bool isEdited = false}) {
+LocalAsset _localAsset(String id, {String? remoteId, bool isEdited = false, AssetType type = AssetType.image}) {
   return LocalAsset(
     id: id,
     remoteId: remoteId,
     name: 'same.jpg',
+    type: type,
+    createdAt: DateTime(2026),
+    updatedAt: DateTime(2026),
+    playbackStyle: type == AssetType.video ? AssetPlaybackStyle.video : AssetPlaybackStyle.image,
+    isEdited: isEdited,
+  );
+}
+
+RemoteAsset _remoteAsset(String id, {String? localId, bool isEdited = false}) {
+  return RemoteAsset(
+    id: id,
+    localId: localId,
+    name: 'same.jpg',
+    ownerId: 'owner',
+    checksum: null,
     type: AssetType.image,
     createdAt: DateTime(2026),
     updatedAt: DateTime(2026),
-    playbackStyle: AssetPlaybackStyle.image,
     isEdited: isEdited,
   );
 }
@@ -229,15 +443,16 @@ final class _LocalExporter implements LocalOriginalExportPort {
 }
 
 final class _RemoteExporter implements RemoteOriginalExportPort {
-  _RemoteExporter(this.results);
+  _RemoteExporter(this.results, {this.controlled});
 
   final List<OriginalExportResult> results;
+  final _ControlledRequest<OriginalExportResult>? controlled;
   final List<RemoteOriginalExportRequest> requests = [];
 
   @override
   CancellableRequest<OriginalExportResult> export(RemoteOriginalExportRequest request) {
     requests.add(request);
-    return _CompletedRequest(results.removeAt(0));
+    return controlled ?? _CompletedRequest(results.removeAt(0));
   }
 }
 

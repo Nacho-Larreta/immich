@@ -5,7 +5,9 @@ final class EndpointCandidateBuilder {
   const EndpointCandidateBuilder();
 
   List<EndpointProbeRequest> build({
-    required Iterable<String> approvedEndpoints,
+    required String? currentEndpoint,
+    required EndpointSchemePolicy? currentEndpointPolicy,
+    required Iterable<String> externalEndpoints,
     required String? registeredLocalEndpoint,
     required String? currentWifiName,
     required String? preferredWifiName,
@@ -32,14 +34,32 @@ final class EndpointCandidateBuilder {
       );
     }
 
-    if (_isPreferredWifi(currentWifiName, preferredWifiName)) {
-      final localEndpoint = _canonicalApiEndpoint(registeredLocalEndpoint);
+    final activeEndpoint = _canonicalApiEndpoint(currentEndpoint);
+    final localEndpoint = _canonicalApiEndpoint(registeredLocalEndpoint);
+    final onPreferredWifi = _isPreferredWifi(currentWifiName, preferredWifiName);
+    if (onPreferredWifi) {
       if (localEndpoint != null) {
-        addCandidate(localEndpoint, _policyFor(localEndpoint));
+        final policy =
+            activeEndpoint == localEndpoint && currentEndpointPolicy == EndpointSchemePolicy.explicitlyApprovedHttp
+            ? EndpointSchemePolicy.explicitlyApprovedHttp
+            : localEndpoint.scheme == 'https'
+            ? EndpointSchemePolicy.httpsOnly
+            : EndpointSchemePolicy.registeredLocalHttp;
+        addCandidate(localEndpoint, policy);
       }
     }
 
-    for (final rawEndpoint in approvedEndpoints) {
+    if (activeEndpoint != null &&
+        _canProbeCurrentEndpoint(
+          activeEndpoint: activeEndpoint,
+          currentPolicy: currentEndpointPolicy,
+          registeredLocalEndpoint: localEndpoint,
+          onPreferredWifi: onPreferredWifi,
+        )) {
+      addCandidate(activeEndpoint, currentEndpointPolicy!);
+    }
+
+    for (final rawEndpoint in externalEndpoints) {
       final endpoint = _canonicalApiEndpoint(rawEndpoint);
       if (endpoint == null || endpoint.scheme != 'https') {
         continue;
@@ -55,8 +75,19 @@ bool _isPreferredWifi(String? currentWifiName, String? preferredWifiName) {
   return preferredWifiName != null && preferredWifiName.isNotEmpty && currentWifiName == preferredWifiName;
 }
 
-EndpointSchemePolicy _policyFor(Uri endpoint) {
-  return endpoint.scheme == 'http' ? EndpointSchemePolicy.approvedLocalHttp : EndpointSchemePolicy.httpsOnly;
+bool _canProbeCurrentEndpoint({
+  required Uri activeEndpoint,
+  required EndpointSchemePolicy? currentPolicy,
+  required Uri? registeredLocalEndpoint,
+  required bool onPreferredWifi,
+}) {
+  if (currentPolicy == null) return false;
+  if (activeEndpoint.scheme == 'https') return currentPolicy == EndpointSchemePolicy.httpsOnly;
+  return switch (currentPolicy) {
+    EndpointSchemePolicy.explicitlyApprovedHttp => true,
+    EndpointSchemePolicy.registeredLocalHttp => onPreferredWifi && activeEndpoint == registeredLocalEndpoint,
+    EndpointSchemePolicy.httpsOnly => false,
+  };
 }
 
 Uri? _canonicalApiEndpoint(String? rawEndpoint) {

@@ -11,7 +11,8 @@ environment:
 dependencies:
   async: ^2.13.1
   auto_route: ^11.1.0
-  background_downloader: ^9.5.4
+  background_downloader:
+    path: packages/background_downloader
   cast: ^2.1.0
   collection: ^1.19.1
   connectivity_plus: ^6.1.5

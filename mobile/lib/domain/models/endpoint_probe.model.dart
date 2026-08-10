@@ -1,7 +1,15 @@
 import 'package:immich_mobile/domain/models/network_uri.model.dart';
 import 'package:immich_mobile/domain/models/offline_result.model.dart';
 
-enum EndpointSchemePolicy { httpsOnly, approvedLocalHttp }
+enum EndpointSchemePolicy { httpsOnly, explicitlyApprovedHttp, registeredLocalHttp }
+
+EndpointSchemePolicy? parseEndpointSchemePolicy(String? value) {
+  if (value == null) return null;
+  for (final policy in EndpointSchemePolicy.values) {
+    if (policy.name == value) return policy;
+  }
+  return null;
+}
 
 final class EndpointProbeRequest {
   EndpointProbeRequest({
@@ -14,7 +22,7 @@ final class EndpointProbeRequest {
   }) {
     validateHttpOrigin(candidateOrigin, 'candidateOrigin');
     _validateApiEndpoint(candidateApiEndpoint, candidateOrigin, 'candidateApiEndpoint');
-    _validateSchemePolicy(candidateOrigin, schemePolicy);
+    validateEndpointSchemePolicy(candidateOrigin, schemePolicy);
     if (expectedUserId.isEmpty) {
       throw ArgumentError.value(expectedUserId, 'expectedUserId', 'Must not be empty');
     }
@@ -51,7 +59,7 @@ final class ValidatedEndpointProbeResult extends EndpointProbeResult {
   }) {
     validateHttpOrigin(canonicalOrigin, 'canonicalOrigin');
     _validateApiEndpoint(apiEndpoint, canonicalOrigin, 'apiEndpoint');
-    _validateSchemePolicy(canonicalOrigin, schemePolicy);
+    validateEndpointSchemePolicy(canonicalOrigin, schemePolicy);
     if (userId.isEmpty) {
       throw ArgumentError.value(userId, 'userId', 'Must not be empty');
     }
@@ -119,9 +127,12 @@ void _validateGeneration(int value, String argumentName) {
   }
 }
 
-void _validateSchemePolicy(Uri origin, EndpointSchemePolicy schemePolicy) {
-  if (origin.scheme == 'http' && schemePolicy != EndpointSchemePolicy.approvedLocalHttp) {
-    throw ArgumentError.value(origin, 'canonicalOrigin', 'HTTP requires an approved local exception');
+void validateEndpointSchemePolicy(Uri origin, EndpointSchemePolicy schemePolicy) {
+  if (origin.scheme == 'https' && schemePolicy != EndpointSchemePolicy.httpsOnly) {
+    throw ArgumentError.value(origin, 'canonicalOrigin', 'HTTPS requires the strict HTTPS policy');
+  }
+  if (origin.scheme == 'http' && schemePolicy == EndpointSchemePolicy.httpsOnly) {
+    throw ArgumentError.value(origin, 'canonicalOrigin', 'HTTP requires an explicit approval');
   }
 }
 
