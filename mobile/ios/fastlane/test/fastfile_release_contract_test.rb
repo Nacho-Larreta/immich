@@ -112,6 +112,19 @@ class FastfileReleaseContractTest < Minitest::Test
     refute_match(/\b(sh|system|exec)\s*\(/, method_source("validate_exact_ipa!"))
   end
 
+  def test_local_and_embedded_profiles_use_the_shared_mobileprovision_decoder
+    verify_profiles = method_source("verify_profiles!")
+    runtime_factory = method_source("exact_release_runtime")
+
+    assert_includes FASTFILE, 'require_relative "mobileprovision_decoder"'
+    assert_includes verify_profiles, "mobileprovision_decoder.call(path)"
+    assert_includes verify_profiles, "rescue MobileProvisionDecoder::Error"
+    assert_includes verify_profiles, "SigningPreparation::InvalidPlan, MobileProvisionDecoder::FAILURE_MESSAGE"
+    assert_includes runtime_factory, "profile_decoder: mobileprovision_decoder"
+    refute_includes FASTFILE, "FastlaneCore::ProvisioningProfile.parse"
+    assert_includes RUNTIME, "profile_decoder: @profile_decoder"
+  end
+
   def test_exact_upload_waits_and_never_distributes_externally_or_selects_signing
     lane = lane_source("nacho_upload_exact_prod")
 

@@ -15,6 +15,7 @@
 
 require_relative "exact_release_runtime"
 require_relative "installed_signing_identity"
+require_relative "mobileprovision_decoder"
 require_relative "production_build_plan"
 require_relative "release_build_guard"
 require_relative "signing_preparation"
@@ -116,9 +117,11 @@ platform :ios do
         expected_bundle_id: "#{BASE_BUNDLE_ID}#{profile.bundle_id_suffix}",
         certificate_sha256: fingerprint
       ) do |path|
-        FastlaneCore::ProvisioningProfile.parse(path)
+        mobileprovision_decoder.call(path)
       end
     end
+  rescue MobileProvisionDecoder::Error
+    raise SigningPreparation::InvalidPlan, MobileProvisionDecoder::FAILURE_MESSAGE
   end
 
   def with_private_file_umask
@@ -142,10 +145,19 @@ platform :ios do
   def exact_release_runtime
     @exact_release_runtime ||= ExactReleaseRuntime::Service.new(
       bundle_id: BASE_BUNDLE_ID,
-      profile_parser: lambda do |path|
-        FastlaneCore::ProvisioningProfile.parse(path)
-      end
+      profile_decoder: mobileprovision_decoder,
+      argv_runner: exact_release_argv_runner
     )
+  end
+
+  def mobileprovision_decoder
+    @mobileprovision_decoder ||= MobileProvisionDecoder::Decoder.new(
+      argv_runner: exact_release_argv_runner
+    )
+  end
+
+  def exact_release_argv_runner
+    @exact_release_argv_runner ||= ExactReleaseRuntime::ArgvRunner.new
   end
 
   def validate_exact_ipa!(ipa_path, contract)

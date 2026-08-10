@@ -9,6 +9,7 @@ require "shellwords"
 require "tmpdir"
 require "zip"
 require_relative "installed_signing_identity"
+require_relative "mobileprovision_decoder"
 require_relative "signing_preparation"
 require_relative "testflight_release_artifact"
 
@@ -52,13 +53,13 @@ module ExactReleaseRuntime
   class IpaInspection
     DITTO = "/usr/bin/ditto"
     CODESIGN = "/usr/bin/codesign"
-    SECURITY = "/usr/bin/security"
     MAX_ENTRY_COUNT = 50_000
     MAX_TOTAL_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024
 
-    def initialize(contract:, argv_runner:)
+    def initialize(contract:, argv_runner:, profile_decoder:)
       @contract = contract
       @argv_runner = argv_runner
+      @profile_decoder = profile_decoder
       @directory = Dir.mktmpdir("immich-exact-ipa-")
       File.chmod(0o700, @directory)
       @ipa_path = nil
@@ -105,14 +106,14 @@ module ExactReleaseRuntime
       prepare!(ipa_path)
       profile_path = File.join(extracted_bundle_path(archive_bundle_path), "embedded.mobileprovision")
       profile = regular_owned_file!(profile_path, "Embedded provisioning profile")
-      result = run!([SECURITY, "cms", "-D", "-i", profile])
-      values = parse_plist_data(result.stdout)
-      uuid = values["UUID"] if values.is_a?(Hash)
+      uuid = @profile_decoder.call(profile)["UUID"]
       unless uuid.is_a?(String) && uuid.match?(TestFlightReleaseArtifact::Contract::PROFILE_UUID)
         raise Error, "Embedded provisioning profile UUID is invalid"
       end
 
       uuid
+    rescue MobileProvisionDecoder::Error
+      raise Error, "Embedded provisioning profile could not be decoded"
     end
 
     def verify!(ipa_path, archive_bundle_path)
@@ -277,12 +278,12 @@ module ExactReleaseRuntime
   end
 
   class Service
-    def initialize(bundle_id:, profile_parser:, argv_runner: ArgvRunner.new,
+    def initialize(bundle_id:, profile_decoder: nil, argv_runner: ArgvRunner.new,
                    tracked_configuration_paths: TRACKED_CONFIGURATION_PATHS,
                    tracked_configuration_root: IOS_PROJECT_ROOT)
       @bundle_id = bundle_id
-      @profile_parser = profile_parser
       @argv_runner = argv_runner
+      @profile_decoder = profile_decoder || MobileProvisionDecoder::Decoder.new(argv_runner: argv_runner)
       @tracked_configuration_root = validated_configuration_root!(tracked_configuration_root)
       @tracked_configuration_paths = validated_configuration_paths!(tracked_configuration_paths)
     end
@@ -317,7 +318,7 @@ module ExactReleaseRuntime
           expected_bundle_id: profile.bundle_id,
           certificate_sha256: plan.signing_certificate_sha256
         ) do |path|
-          profile_data = @profile_parser.call(path)
+          profile_data = @profile_decoder.call(path)
         end
         uuid = profile_data && profile_data["UUID"]
         unless uuid.is_a?(String) && uuid.match?(TestFlightReleaseArtifact::Contract::PROFILE_UUID)
@@ -331,6 +332,8 @@ module ExactReleaseRuntime
       end
 
       uuids.freeze
+    rescue MobileProvisionDecoder::Error
+      raise Error, MobileProvisionDecoder::FAILURE_MESSAGE
     end
 
     def tracked_configuration_digest
@@ -417,7 +420,11 @@ module ExactReleaseRuntime
     private
 
     def with_inspection(contract)
-      inspection = IpaInspection.new(contract: contract, argv_runner: @argv_runner)
+      inspection = IpaInspection.new(
+        contract: contract,
+        argv_runner: @argv_runner,
+        profile_decoder: @profile_decoder
+      )
       yield inspection
     ensure
       inspection&.cleanup!

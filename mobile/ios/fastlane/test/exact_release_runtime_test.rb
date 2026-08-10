@@ -95,6 +95,26 @@ class ExactReleaseRuntimeTest < Minitest::Test
     end
   end
 
+  class RecordingProfileDecoder
+    attr_reader :paths
+
+    def initialize(contract:, local_profiles:)
+      @contract = contract
+      @local_profiles = local_profiles
+      @paths = []
+    end
+
+    def call(path)
+      @paths << path
+      return @local_profiles.fetch(path) if @local_profiles.key?(path)
+
+      bundle = @contract.bundles.find do |candidate|
+        path.end_with?("#{candidate.archive_path}/embedded.mobileprovision")
+      end
+      { "UUID" => bundle&.provisioning_profile_uuid }
+    end
+  end
+
   def test_build_and_snapshot_validation_share_the_exact_contract_without_real_commands
     Dir.mktmpdir do |directory|
       ipa = File.join(directory, "release.ipa")
@@ -146,7 +166,11 @@ class ExactReleaseRuntimeTest < Minitest::Test
       ipa = File.join(directory, "release.ipa")
       create_ipa(ipa)
       runner = FakeArtifactRunner.new(contract)
-      inspection = ExactReleaseRuntime::IpaInspection.new(contract: contract, argv_runner: runner)
+      inspection = ExactReleaseRuntime::IpaInspection.new(
+        contract: contract,
+        argv_runner: runner,
+        profile_decoder: MobileProvisionDecoder::Decoder.new(argv_runner: runner)
+      )
       bundle = contract.bundles.first
 
       assert_equal CERTIFICATE_SHA256, inspection.signing_certificate_sha256(ipa, bundle.archive_path)
@@ -175,7 +199,7 @@ class ExactReleaseRuntimeTest < Minitest::Test
     end
     runtime = ExactReleaseRuntime::Service.new(
       bundle_id: BUNDLE_ID,
-      profile_parser: ->(path) { parsed.fetch(path) },
+      profile_decoder: ->(path) { parsed.fetch(path) },
       argv_runner: Object.new,
       tracked_configuration_paths: []
     )
@@ -192,6 +216,94 @@ class ExactReleaseRuntimeTest < Minitest::Test
 
     assert_equal PROFILE_UUIDS, result
     assert result.frozen?
+  end
+
+  def test_service_uses_the_same_decoder_for_local_and_embedded_profiles
+    profiles = PROFILE_UUIDS.each_key.with_index.map do |bundle_id, index|
+      Profile.new(bundle_id: bundle_id, path: "/profiles/#{index}.mobileprovision")
+    end
+    plan = ProfilePlan.new(profiles: profiles, signing_certificate_sha256: CERTIFICATE_SHA256)
+    local_profiles = profiles.to_h do |profile|
+      [profile.path, { "UUID" => PROFILE_UUIDS.fetch(profile.bundle_id) }]
+    end
+
+    Dir.mktmpdir do |directory|
+      ipa = File.join(directory, "release.ipa")
+      create_ipa(ipa)
+      File.chmod(0o600, ipa)
+      release_contract = contract
+      runner = FakeArtifactRunner.new(release_contract)
+      decoder = RecordingProfileDecoder.new(contract: release_contract, local_profiles: local_profiles)
+      runtime = ExactReleaseRuntime::Service.new(
+        bundle_id: BUNDLE_ID,
+        profile_decoder: decoder,
+        argv_runner: runner,
+        tracked_configuration_paths: []
+      )
+      verifier = lambda do |path:, expected_bundle_id:, certificate_sha256:, &block|
+        assert_equal PROFILE_UUIDS.fetch(expected_bundle_id), block.call(path).fetch("UUID")
+        assert_equal CERTIFICATE_SHA256, certificate_sha256
+        true
+      end
+
+      SigningPreparation::ProfileVerifier.stub(:verify_file!, verifier) do
+        assert_equal PROFILE_UUIDS, runtime.verified_profile_uuids!(plan)
+      end
+      assert runtime.validate_exact_ipa!(ipa, release_contract)
+
+      assert_equal profiles.map(&:path), decoder.paths.first(3)
+      assert_equal release_contract.bundles.map(&:archive_path).sort,
+                   decoder.paths.drop(3).map { |path| embedded_archive_path(path) }.sort
+    end
+  end
+
+  def test_service_translates_profile_decoder_failure_to_its_sanitized_error
+    profile = Profile.new(bundle_id: BUNDLE_ID, path: "/private/profile.mobileprovision")
+    plan = ProfilePlan.new(profiles: [profile], signing_certificate_sha256: CERTIFICATE_SHA256)
+    failing_decoder = lambda do |_path|
+      raise MobileProvisionDecoder::Error, "backend detail"
+    end
+    runtime = ExactReleaseRuntime::Service.new(
+      bundle_id: BUNDLE_ID,
+      profile_decoder: failing_decoder,
+      argv_runner: Object.new,
+      tracked_configuration_paths: []
+    )
+    verifier = lambda do |path:, expected_bundle_id:, certificate_sha256:, &block|
+      block.call(path)
+    end
+
+    error = SigningPreparation::ProfileVerifier.stub(:verify_file!, verifier) do
+      assert_raises(ExactReleaseRuntime::Error) { runtime.verified_profile_uuids!(plan) }
+    end
+
+    assert_equal "Provisioning profile could not be decoded", error.message
+    refute_includes error.message, "backend detail"
+  end
+
+  def test_ipa_inspection_translates_profile_decoder_failure_to_its_sanitized_error
+    Dir.mktmpdir do |directory|
+      ipa = File.join(directory, "release.ipa")
+      create_ipa(ipa)
+      runner = FakeArtifactRunner.new(contract)
+      failing_decoder = lambda do |_path|
+        raise MobileProvisionDecoder::Error, "backend detail"
+      end
+      inspection = ExactReleaseRuntime::IpaInspection.new(
+        contract: contract,
+        argv_runner: runner,
+        profile_decoder: failing_decoder
+      )
+
+      error = assert_raises(ExactReleaseRuntime::Error) do
+        inspection.provisioning_profile_uuid(ipa, contract.bundles.first.archive_path)
+      end
+
+      assert_equal "Embedded provisioning profile could not be decoded", error.message
+      refute_includes error.message, "backend detail"
+    ensure
+      inspection&.cleanup!
+    end
   end
 
   def test_archive_preflight_rejects_symlink_and_special_entries_before_ditto
@@ -282,7 +394,11 @@ class ExactReleaseRuntimeTest < Minitest::Test
 
   def assert_archive_preflight_rejected(entries)
     runner = FakeArtifactRunner.new(contract)
-    inspection = ExactReleaseRuntime::IpaInspection.new(contract: contract, argv_runner: runner)
+    inspection = ExactReleaseRuntime::IpaInspection.new(
+      contract: contract,
+      argv_runner: runner,
+      profile_decoder: MobileProvisionDecoder::Decoder.new(argv_runner: runner)
+    )
 
     assert_raises(ExactReleaseRuntime::Error) do
       Zip::File.stub(:open, ->(_path, &block) { block.call(entries) }) do
@@ -311,7 +427,6 @@ class ExactReleaseRuntimeTest < Minitest::Test
   def service(argv_runner:, tracked_paths: [], tracked_root: ExactReleaseRuntime::IOS_PROJECT_ROOT)
     ExactReleaseRuntime::Service.new(
       bundle_id: BUNDLE_ID,
-      profile_parser: ->(_path) { raise "not used" },
       argv_runner: argv_runner,
       tracked_configuration_paths: tracked_paths,
       tracked_configuration_root: tracked_root
@@ -322,5 +437,10 @@ class ExactReleaseRuntimeTest < Minitest::Test
     Zip::File.open(path, create: true) do |archive|
       archive.get_output_stream("marker") { |stream| stream.write("ipa") }
     end
+  end
+
+  def embedded_archive_path(path)
+    marker = "Payload/"
+    path.delete_prefix(path[0...path.index(marker)]).delete_suffix("/embedded.mobileprovision")
   end
 end
