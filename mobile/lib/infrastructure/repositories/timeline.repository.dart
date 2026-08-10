@@ -3,9 +3,11 @@ import 'dart:async';
 import 'package:drift/drift.dart';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:immich_mobile/constants/constants.dart';
+import 'package:immich_mobile/domain/interfaces/main_timeline_query.interface.dart';
 import 'package:immich_mobile/domain/models/album/album.model.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/timeline.model.dart';
+import 'package:immich_mobile/domain/models/timeline_source_filter.model.dart';
 import 'package:immich_mobile/domain/services/timeline.service.dart';
 import 'package:immich_mobile/infrastructure/entities/local_asset.entity.dart';
 import 'package:immich_mobile/infrastructure/entities/remote_asset.entity.dart';
@@ -31,7 +33,7 @@ class TimelineMapOptions {
   });
 }
 
-class DriftTimelineRepository extends DriftDatabaseRepository {
+class DriftTimelineRepository extends DriftDatabaseRepository implements MainTimelineQueryPort {
   final Drift _db;
 
   const DriftTimelineRepository(super._db) : _db = _db;
@@ -48,26 +50,37 @@ class DriftTimelineRepository extends DriftDatabaseRepository {
         .map((users) => users..add(userId));
   }
 
-  TimelineQuery main(List<String> userIds, GroupAssetsBy groupBy) => (
-    bucketSource: () => _watchMainBucket(userIds, groupBy: groupBy),
-    assetSource: (offset, count) => _getMainBucketAssets(userIds, offset: offset, count: count),
-    origin: TimelineOrigin.main,
+  @override
+  MainTimelineQuery main(List<String> userIds, GroupAssetsBy groupBy, TimelineSourceFilter source) => (
+    bucketSource: () => _watchMainBucket(userIds, source: source, groupBy: groupBy),
+    assetSource: (offset, count) => _getMainBucketAssets(userIds, source: source, offset: offset, count: count),
   );
 
-  Stream<List<Bucket>> _watchMainBucket(List<String> userIds, {GroupAssetsBy groupBy = GroupAssetsBy.day}) {
+  Stream<List<Bucket>> _watchMainBucket(
+    List<String> userIds, {
+    required TimelineSourceFilter source,
+    GroupAssetsBy groupBy = GroupAssetsBy.day,
+  }) {
     if (groupBy == GroupAssetsBy.none) {
       throw UnsupportedError("GroupAssetsBy.none is not supported for watchMainBucket");
     }
 
-    return _db.mergedAssetDrift.mergedBucket(userIds: userIds, groupBy: groupBy.index).map((row) {
+    return _db.mergedAssetDrift.mergedBucket(userIds: userIds, groupBy: groupBy.index, sourceFilter: source.index).map((
+      row,
+    ) {
       final date = row.bucketDate.truncateDate(groupBy);
       return TimeBucket(date: date, assetCount: row.assetCount);
     }).watch();
   }
 
-  Future<List<BaseAsset>> _getMainBucketAssets(List<String> userIds, {required int offset, required int count}) {
+  Future<List<BaseAsset>> _getMainBucketAssets(
+    List<String> userIds, {
+    required TimelineSourceFilter source,
+    required int offset,
+    required int count,
+  }) {
     return _db.mergedAssetDrift
-        .mergedAsset(userIds: userIds, limit: (_) => Limit(count, offset))
+        .mergedAsset(userIds: userIds, sourceFilter: source.index, limit: (_) => Limit(count, offset))
         .map(
           (row) => row.remoteId != null && row.ownerId != null
               ? RemoteAsset(

@@ -331,11 +331,18 @@ class ScrubberState extends ConsumerState<Scrubber> with TickerProviderStateMixi
     final maxScrollExtent = _scrollController.position.maxScrollExtent;
     final viewportHeight = _scrollController.position.viewportDimension;
 
-    final targetScrollOffset = layoutSegment.startOffset;
-    final centeredOffset = targetScrollOffset - (viewportHeight / 4) + 100 + (widget.monthSegmentSnappingOffset ?? 0.0);
+    final target = calculateMonthSnapTarget(
+      segmentStartOffset: layoutSegment.startOffset,
+      viewportHeight: viewportHeight,
+      preGridScrollExtent: widget.monthSegmentSnappingOffset ?? 0.0,
+      maxScrollExtent: maxScrollExtent,
+    );
 
-    _scrollController.jumpTo(centeredOffset.clamp(0.0, maxScrollExtent));
+    _scrollController.jumpTo(target);
   }
+
+  @visibleForTesting
+  void snapToLayoutSegmentForTest(int layoutSegmentIndex) => _scrollToLayoutSegment(layoutSegmentIndex);
 
   void _onDragEnd(DragEndDetails _) {
     _labelAnimationController.reverse();
@@ -390,6 +397,7 @@ class ScrubberState extends ConsumerState<Scrubber> with TickerProviderStateMixi
               end: 0,
               child: RepaintBoundary(
                 child: GestureDetector(
+                  key: const ValueKey('timeline-scrubber-thumb'),
                   onVerticalDragStart: _onDragStart,
                   onVerticalDragUpdate: _onDragUpdate,
                   onVerticalDragEnd: _onDragEnd,
@@ -401,6 +409,17 @@ class ScrubberState extends ConsumerState<Scrubber> with TickerProviderStateMixi
       ),
     );
   }
+}
+
+@visibleForTesting
+double calculateMonthSnapTarget({
+  required double segmentStartOffset,
+  required double viewportHeight,
+  required double preGridScrollExtent,
+  required double maxScrollExtent,
+}) {
+  final centeredOffset = segmentStartOffset - (viewportHeight / 4) + 100 + preGridScrollExtent;
+  return centeredOffset.clamp(0.0, maxScrollExtent);
 }
 
 class _SegmentsLayer extends StatelessWidget {

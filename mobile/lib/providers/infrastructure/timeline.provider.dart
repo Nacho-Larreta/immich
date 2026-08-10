@@ -1,14 +1,19 @@
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:immich_mobile/domain/interfaces/main_timeline_query.interface.dart';
+import 'package:immich_mobile/domain/services/main_timeline_factory.dart';
 import 'package:immich_mobile/domain/services/timeline.service.dart';
 import 'package:immich_mobile/infrastructure/repositories/timeline.repository.dart';
 import 'package:immich_mobile/presentation/widgets/timeline/timeline.state.dart';
 import 'package:immich_mobile/providers/infrastructure/db.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/setting.provider.dart';
+import 'package:immich_mobile/providers/timeline/timeline_source_filter.provider.dart';
 import 'package:immich_mobile/providers/user.provider.dart';
 
 final timelineRepositoryProvider = Provider<DriftTimelineRepository>(
   (ref) => DriftTimelineRepository(ref.watch(driftProvider)),
 );
+
+final mainTimelineQueryProvider = Provider<MainTimelineQueryPort>((ref) => ref.watch(timelineRepositoryProvider));
 
 final timelineArgsProvider = Provider.autoDispose<TimelineArgs>(
   (ref) => throw UnimplementedError('Will be overridden through a ProviderScope.'),
@@ -17,7 +22,8 @@ final timelineArgsProvider = Provider.autoDispose<TimelineArgs>(
 final timelineServiceProvider = Provider<TimelineService>(
   (ref) {
     final timelineUsers = ref.watch(timelineUsersProvider).valueOrNull ?? [];
-    final timelineService = ref.watch(timelineFactoryProvider).main(timelineUsers);
+    final source = ref.watch(timelineSourceSelectionProvider.select((selection) => selection.effectiveSource));
+    final timelineService = ref.watch(mainTimelineFactoryProvider).create(timelineUsers, source);
     ref.onDispose(timelineService.dispose);
     return timelineService;
   },
@@ -31,6 +37,11 @@ final timelineFactoryProvider = Provider<TimelineFactory>(
     timelineRepository: ref.watch(timelineRepositoryProvider),
     settingsService: ref.watch(settingsProvider),
   ),
+);
+
+final mainTimelineFactoryProvider = Provider<MainTimelineFactory>(
+  (ref) =>
+      MainTimelineFactory(queries: ref.watch(mainTimelineQueryProvider), settingsService: ref.watch(settingsProvider)),
 );
 
 final timelineUsersProvider = StreamProvider<List<String>>((ref) {

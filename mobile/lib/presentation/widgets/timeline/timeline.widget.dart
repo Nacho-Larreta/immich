@@ -27,14 +27,13 @@ import 'package:immich_mobile/providers/infrastructure/setting.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/timeline.provider.dart';
 import 'package:immich_mobile/providers/timeline/multiselect.provider.dart';
 import 'package:immich_mobile/widgets/common/immich_sliver_app_bar.dart';
-import 'package:immich_mobile/widgets/common/mesmerizing_sliver_app_bar.dart';
 import 'package:immich_mobile/widgets/common/selection_sliver_app_bar.dart';
+import 'package:immich_mobile/widgets/common/scaffold_error_body.dart';
 
 class Timeline extends StatelessWidget {
   const Timeline({
     super.key,
     this.topSliverWidget,
-    this.topSliverWidgetHeight,
     this.bottomSliverWidget,
     this.showStorageIndicator = false,
     this.withStack = false,
@@ -46,11 +45,12 @@ class Timeline extends StatelessWidget {
     this.readOnly = false,
     this.persistentBottomBar = false,
     this.loadingWidget,
+    this.emptyWidget,
+    this.errorWidgetBuilder,
     this.onInteractive,
   });
 
   final Widget? topSliverWidget;
-  final double? topSliverWidgetHeight;
   final Widget? bottomSliverWidget;
   final bool showStorageIndicator;
   final Widget? appBar;
@@ -62,6 +62,8 @@ class Timeline extends StatelessWidget {
   final bool readOnly;
   final bool persistentBottomBar;
   final Widget? loadingWidget;
+  final Widget? emptyWidget;
+  final Widget Function(Object? error, StackTrace? stack)? errorWidgetBuilder;
   final VoidCallback? onInteractive;
 
   @override
@@ -86,7 +88,6 @@ class Timeline extends StatelessWidget {
           ],
           child: _SliverTimeline(
             topSliverWidget: topSliverWidget,
-            topSliverWidgetHeight: topSliverWidgetHeight,
             bottomSliverWidget: bottomSliverWidget,
             appBar: appBar,
             bottomSheet: bottomSheet,
@@ -95,6 +96,8 @@ class Timeline extends StatelessWidget {
             snapToMonth: snapToMonth,
             maxWidth: constraints.maxWidth,
             loadingWidget: loadingWidget,
+            emptyWidget: emptyWidget,
+            errorWidgetBuilder: errorWidgetBuilder,
             onInteractive: onInteractive,
           ),
         ),
@@ -117,7 +120,6 @@ class _AlwaysReadOnlyNotifier extends ReadOnlyModeNotifier {
 class _SliverTimeline extends ConsumerStatefulWidget {
   const _SliverTimeline({
     this.topSliverWidget,
-    this.topSliverWidgetHeight,
     this.bottomSliverWidget,
     this.appBar,
     this.bottomSheet,
@@ -126,11 +128,12 @@ class _SliverTimeline extends ConsumerStatefulWidget {
     this.snapToMonth = true,
     this.maxWidth,
     this.loadingWidget,
+    this.emptyWidget,
+    this.errorWidgetBuilder,
     this.onInteractive,
   });
 
   final Widget? topSliverWidget;
-  final double? topSliverWidgetHeight;
   final Widget? bottomSliverWidget;
   final Widget? appBar;
   final Widget? bottomSheet;
@@ -139,6 +142,8 @@ class _SliverTimeline extends ConsumerStatefulWidget {
   final bool snapToMonth;
   final double? maxWidth;
   final Widget? loadingWidget;
+  final Widget? emptyWidget;
+  final Widget Function(Object? error, StackTrace? stack)? errorWidgetBuilder;
   final VoidCallback? onInteractive;
 
   @override
@@ -383,57 +388,60 @@ class _SliverTimelineState extends ConsumerState<_SliverTimeline> {
       },
       child: asyncSegments.widgetWhen(
         onLoading: widget.loadingWidget != null ? () => widget.loadingWidget! : null,
+        onError: (error, stackTrace) => _fallbackScrollView(
+          widget.errorWidgetBuilder?.call(error, stackTrace) ?? ScaffoldErrorBody(errorMsg: error?.toString()),
+        ),
         onData: (segments) {
           final childCount = (segments.lastOrNull?.lastIndex ?? -1) + 1;
-          final double appBarExpandedHeight = widget.appBar != null && widget.appBar is MesmerizingSliverAppBar
-              ? 200
-              : 0;
           final topPadding = context.padding.top + (widget.appBar == null ? 0 : kToolbarHeight) + 10;
 
           const bottomSheetOpenModifier = 120.0;
           final contentBottomPadding = context.padding.bottom + (isMultiSelectEnabled ? bottomSheetOpenModifier : 0);
           final scrubberBottomPadding = contentBottomPadding + kScrubberThumbHeight;
 
-          final grid = CustomScrollView(
+          CustomScrollView buildGrid([Widget? preGridExtentObserver]) => CustomScrollView(
             primary: true,
             physics: _scrollPhysics,
             cacheExtent: maxHeight * 2,
             slivers: [
               if (isSelectionMode) const SelectionSliverAppBar() else if (widget.appBar != null) widget.appBar!,
               if (widget.topSliverWidget != null) widget.topSliverWidget!,
-              _SliverSegmentedList(
-                segments: segments,
-                delegate: SliverChildBuilderDelegate(
-                  (ctx, index) {
-                    if (index >= childCount) return null;
-                    final segment = segments.findByIndex(index);
-                    return segment?.builder(ctx, index) ?? const SizedBox.shrink();
-                  },
-                  childCount: childCount,
-                  addAutomaticKeepAlives: false,
-                  // We add repaint boundary around tiles, so skip the auto boundaries
-                  addRepaintBoundaries: false,
+              if (preGridExtentObserver != null) preGridExtentObserver,
+              if (segments.isEmpty)
+                SliverFillRemaining(hasScrollBody: false, child: widget.emptyWidget ?? const SizedBox.shrink())
+              else
+                _SliverSegmentedList(
+                  segments: segments,
+                  delegate: SliverChildBuilderDelegate(
+                    (ctx, index) {
+                      if (index >= childCount) return null;
+                      final segment = segments.findByIndex(index);
+                      return segment?.builder(ctx, index) ?? const SizedBox.shrink();
+                    },
+                    childCount: childCount,
+                    addAutomaticKeepAlives: false,
+                    // We add repaint boundary around tiles, so skip the auto boundaries
+                    addRepaintBoundaries: false,
+                  ),
                 ),
-              ),
               if (widget.bottomSliverWidget != null) widget.bottomSliverWidget!,
               SliverPadding(padding: EdgeInsets.only(bottom: contentBottomPadding)),
             ],
           );
 
           final Widget timeline;
-          if (widget.withScrubber) {
-            timeline = Scrubber(
+          if (widget.withScrubber && segments.isNotEmpty) {
+            timeline = MeasuredTimelineScrubber(
               snapToMonth: widget.snapToMonth,
               layoutSegments: segments,
               timelineHeight: maxHeight,
               topPadding: topPadding,
               bottomPadding: scrubberBottomPadding,
-              monthSegmentSnappingOffset: widget.topSliverWidgetHeight ?? 0 + appBarExpandedHeight,
               hasAppBar: widget.appBar != null,
-              child: grid,
+              scrollViewBuilder: buildGrid,
             );
           } else {
-            timeline = grid;
+            timeline = buildGrid();
           }
 
           return TimelineInteractiveFrame(
@@ -501,6 +509,84 @@ class _SliverTimelineState extends ConsumerState<_SliverTimeline> {
       ),
     );
   }
+
+  Widget _fallbackScrollView(Widget body) => PrimaryScrollController(
+    controller: _scrollController,
+    child: CustomScrollView(
+      primary: true,
+      slivers: [
+        if (widget.appBar != null) widget.appBar!,
+        if (widget.topSliverWidget != null) widget.topSliverWidget!,
+        SliverFillRemaining(hasScrollBody: false, child: body),
+      ],
+    ),
+  );
+}
+
+typedef TimelineScrollViewBuilder = CustomScrollView Function(Widget preGridExtentObserver);
+
+class MeasuredTimelineScrubber extends StatefulWidget {
+  const MeasuredTimelineScrubber({
+    super.key,
+    required this.layoutSegments,
+    required this.timelineHeight,
+    required this.topPadding,
+    required this.bottomPadding,
+    required this.snapToMonth,
+    required this.hasAppBar,
+    required this.scrollViewBuilder,
+    this.scrubberKey,
+  });
+
+  final List<Segment> layoutSegments;
+  final double timelineHeight;
+  final double topPadding;
+  final double bottomPadding;
+  final bool snapToMonth;
+  final bool hasAppBar;
+  final TimelineScrollViewBuilder scrollViewBuilder;
+  final GlobalKey<ScrubberState>? scrubberKey;
+
+  @override
+  State<MeasuredTimelineScrubber> createState() => _MeasuredTimelineScrubberState();
+}
+
+class _MeasuredTimelineScrubberState extends State<MeasuredTimelineScrubber> {
+  double _preGridScrollExtent = 0;
+
+  void _updatePreGridScrollExtent(double extent) {
+    if (!mounted) return;
+    if ((_preGridScrollExtent - extent).abs() < precisionErrorTolerance) return;
+    setState(() => _preGridScrollExtent = extent);
+  }
+
+  @override
+  Widget build(BuildContext context) => Scrubber(
+    key: widget.scrubberKey,
+    layoutSegments: widget.layoutSegments,
+    timelineHeight: widget.timelineHeight,
+    topPadding: widget.topPadding,
+    bottomPadding: widget.bottomPadding,
+    monthSegmentSnappingOffset: _preGridScrollExtent,
+    snapToMonth: widget.snapToMonth,
+    hasAppBar: widget.hasAppBar,
+    child: widget.scrollViewBuilder(_PreGridExtentObserver(onExtentChanged: _updatePreGridScrollExtent)),
+  );
+}
+
+class _PreGridExtentObserver extends StatelessWidget {
+  const _PreGridExtentObserver({required this.onExtentChanged});
+
+  final ValueChanged<double> onExtentChanged;
+
+  @override
+  Widget build(BuildContext context) => SliverLayoutBuilder(
+    builder: (context, constraints) {
+      final extent = constraints.precedingScrollExtent;
+      WidgetsBinding.instance.addPostFrameCallback((_) => onExtentChanged(extent));
+      return const SliverToBoxAdapter(child: SizedBox.shrink());
+    },
+  );
 }
 
 class TimelineInteractiveGate {

@@ -76,6 +76,9 @@ enum StoreKey<T> {
   // Image viewer navigation settings
   tapToNavigate<bool>._(141),
 
+  // Main timeline
+  timelineSourceFilter<int>._(142),
+
   // Experimental stuff
   photoManagerCustomFilter<bool>._(1000),
   betaPromptShown<bool>._(1001),

@@ -37,7 +37,6 @@ class DriftTrashPage extends StatelessWidget {
           centerTitle: true,
           elevation: 0,
         ),
-        topSliverWidgetHeight: 24,
         topSliverWidget: Consumer(
           builder: (context, ref, child) {
             final trashDays = ref.watch(serverInfoProvider.select((v) => v.serverConfig.trashDays));

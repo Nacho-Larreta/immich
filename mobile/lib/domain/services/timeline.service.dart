@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:collection/collection.dart';
 import 'package:immich_mobile/constants/constants.dart';
+import 'package:immich_mobile/domain/interfaces/main_timeline_query.interface.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/events.model.dart';
 import 'package:immich_mobile/domain/models/setting.model.dart';
@@ -50,8 +51,6 @@ class TimelineFactory {
     // We do not support auto grouping in the new timeline yet, fallback to day grouping
     return group == GroupAssetsBy.auto ? GroupAssetsBy.day : group;
   }
-
-  TimelineService main(List<String> timelineUsers) => TimelineService(_timelineRepository.main(timelineUsers, groupBy));
 
   TimelineService localAlbum({required String albumId}) =>
       TimelineService(_timelineRepository.localAlbum(albumId, groupBy));
@@ -103,6 +102,9 @@ class TimelineService {
 
   TimelineService(TimelineQuery query)
     : this._(assetSource: query.assetSource, bucketSource: query.bucketSource, origin: query.origin);
+
+  TimelineService.main(MainTimelineQuery query)
+    : this._(assetSource: query.assetSource, bucketSource: query.bucketSource, origin: TimelineOrigin.main);
 
   TimelineService._({
     required TimelineAssetSource assetSource,
