@@ -47,22 +47,6 @@ class AuthService {
     this._appSettingsService,
   );
 
-  /// Validates the provided server URL by resolving and setting the endpoint.
-  /// Also sets the device info header and stores the valid URL.
-  ///
-  /// [url] - The server URL to be validated.
-  ///
-  /// Returns the validated and resolved server URL as a [String].
-  ///
-  /// Throws an exception if the URL cannot be resolved or set.
-  Future<String> validateServerUrl(String url) async {
-    final validUrl = await _apiService.resolveAndSetEndpoint(url);
-    await _apiService.setDeviceInfoHeader();
-    await Store.put(StoreKey.serverUrl, validUrl);
-
-    return validUrl;
-  }
-
   Future<bool> validateAuxilaryServerUrl(String url) async {
     bool isValid = false;
 
@@ -86,18 +70,6 @@ class AuthService {
     return _authApiRepository.login(email, password);
   }
 
-  /// Performs user logout operation by making a server request and clearing local data.
-  ///
-  /// This method attempts to log out the user through the authentication API repository.
-  /// If the server request fails, the error is logged but local data is still cleared.
-  /// The local data cleanup is guaranteed to execute regardless of the server request outcome.
-  ///
-  /// Throws any unhandled exceptions from the API request or local data clearing operations.
-  Future<void> logout() async {
-    await invalidateRemoteSession();
-    await clearLocalSession();
-  }
-
   Future<void> invalidateRemoteSession() async {
     try {
       await _authApiRepository.logout();
@@ -106,33 +78,25 @@ class AuthService {
     }
   }
 
-  Future<void> clearLocalSession() async {
-    await clearLocalData();
-    await _appSettingsService.setSetting(AppSettingsEnum.enableBackup, false);
+  Future<void> clearRemoteAuthentication() {
+    return Future.wait([Store.delete(StoreKey.accessToken), Store.delete(StoreKey.assetETag)]);
   }
 
-  /// Clears all local authentication-related data.
-  ///
-  /// This method performs a concurrent deletion of:
-  /// - Authentication repository data
-  /// - Current user information
-  /// - Access token
-  /// - Asset ETag
-  ///
-  /// All deletions are executed in parallel using [Future.wait].
-  Future<void> clearLocalData() async {
-    // Cancel any ongoing background sync operations before clearing data
+  Future<void> forgetServer() async {
     await _backgroundSyncManager.cancel();
     await Future.wait([
       _authRepository.clearLocalData(),
       Store.delete(StoreKey.currentUser),
       Store.delete(StoreKey.accessToken),
       Store.delete(StoreKey.assetETag),
+      Store.delete(StoreKey.customHeaders),
       Store.delete(StoreKey.autoEndpointSwitching),
       Store.delete(StoreKey.preferredWifiName),
       Store.delete(StoreKey.localEndpoint),
       Store.delete(StoreKey.externalEndpointList),
+      Store.delete(StoreKey.serverUrl),
       Store.delete(StoreKey.serverEndpoint),
+      _appSettingsService.setSetting(AppSettingsEnum.enableBackup, false),
     ]);
   }
 

@@ -30,8 +30,10 @@ final class SessionWork {
   final Future<void> Function({required bool full}) _syncLocal;
   final Future<void> Function() _cancelLocalSync;
 
-  void activate({Uri? confirmedEndpoint, required bool fullLocalSync}) {
-    _activateSession(confirmedEndpoint: confirmedEndpoint);
+  void activate({Uri? confirmedEndpoint, bool hasRemoteAuthentication = true, required bool fullLocalSync}) {
+    if (hasRemoteAuthentication) {
+      _activateSession(confirmedEndpoint: confirmedEndpoint);
+    }
     triggerLocalSync(full: fullLocalSync);
   }
 

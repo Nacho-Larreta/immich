@@ -45,10 +45,10 @@ class StoreService {
     }
   }
 
-  StreamSubscription<List<StoreDto>> _listenForChange() => _storeRepository.watchAll().listen((events) {
-    for (final event in events) {
-      _cache[event.key.id] = event.value;
-    }
+  StreamSubscription<List<StoreDto>> _listenForChange() => _storeRepository.watchAll().listen((snapshot) {
+    _cache
+      ..clear()
+      ..addEntries(snapshot.map((entry) => MapEntry(entry.key.id, entry.value)));
   });
 
   /// Disposes the store and cancels the subscription. To reuse the store call init() again

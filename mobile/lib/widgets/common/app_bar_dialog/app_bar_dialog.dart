@@ -124,7 +124,7 @@ class ImmichAppBarDialog extends HookConsumerWidget {
                     isLoggingOut.value = true;
                     await ref.read(authProvider.notifier).logout().whenComplete(() => isLoggingOut.value = false);
 
-                    unawaited(context.replaceRoute(const LoginRoute()));
+                    unawaited(context.replaceRoute(localShellAfterLogout()));
                   },
                 );
               },

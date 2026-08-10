@@ -16,12 +16,34 @@ void main() {
       cancelLocalSync: () async {},
     );
 
-    work.activate(confirmedEndpoint: Uri.parse('https://photos.example.test/api'), fullLocalSync: true);
+    work.activate(
+      confirmedEndpoint: Uri.parse('https://photos.example.test/api'),
+      hasRemoteAuthentication: true,
+      fullLocalSync: true,
+    );
 
     expect(events, ['activate:https://photos.example.test/api', 'syncLocal:true']);
     expect(localSync.isCompleted, isFalse);
     localSync.complete();
     await pumpEventQueue();
+  });
+
+  test('starts local sync without activating remote work when no remote authentication exists', () async {
+    final events = <String>[];
+    final work = SessionWork(
+      activateSession: ({confirmedEndpoint}) => events.add('activate:$confirmedEndpoint'),
+      syncLocal: ({required full}) async => events.add('syncLocal:$full'),
+      cancelLocalSync: () async {},
+    );
+
+    work.activate(
+      confirmedEndpoint: Uri.parse('https://photos.example.test/api'),
+      hasRemoteAuthentication: false,
+      fullLocalSync: false,
+    );
+    await pumpEventQueue();
+
+    expect(events, ['syncLocal:false']);
   });
 
   test('can re-dispatch local-only sync after lifecycle cancellation', () async {

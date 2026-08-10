@@ -2,7 +2,10 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:immich_mobile/domain/interfaces/anonymous_server_discovery.interface.dart';
 import 'package:immich_mobile/domain/interfaces/auth_request_context.interface.dart';
+import 'package:immich_mobile/domain/interfaces/resolved_server_endpoint_installer.interface.dart';
+import 'package:immich_mobile/domain/models/anonymous_server_discovery.model.dart';
 import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/domain/models/offline_result.model.dart';
 import 'package:immich_mobile/domain/services/session_mutation_mutex.dart';
@@ -11,6 +14,7 @@ import 'package:immich_mobile/infrastructure/adapters/endpoint_activation/endpoi
 import 'package:immich_mobile/infrastructure/adapters/endpoint_activation/endpoint_activation_collaborators.dart';
 import 'package:immich_mobile/providers/auth.provider.dart';
 import 'package:immich_mobile/providers/cached_session.dart';
+import 'package:immich_mobile/providers/remote_authentication.provider.dart';
 import 'package:immich_mobile/services/api.service.dart';
 import 'package:immich_mobile/services/auth.service.dart';
 import 'package:immich_mobile/services/background_upload.service.dart';
@@ -24,6 +28,8 @@ import '../fixtures/user.stub.dart';
 class _MockApiService extends Mock implements ApiService {}
 
 class _MockAuthService extends Mock implements AuthService {}
+
+class _MockAnonymousServerDiscovery extends Mock implements AnonymousServerDiscoveryPort {}
 
 class _MockBackgroundUploadService extends Mock implements BackgroundUploadService {}
 
@@ -39,6 +45,8 @@ class _MockUserService extends Mock implements UserService {}
 
 class _MockWidgetService extends Mock implements WidgetService {}
 
+class _MockResolvedServerEndpointInstaller extends Mock implements ResolvedServerEndpointInstallerPort {}
+
 class _MockEndpointApiGraph extends Mock implements EndpointApiGraphPort {}
 
 class _MockNativeRequestContext extends Mock implements NativeRequestContextPort {}
@@ -52,8 +60,90 @@ final class _PreparedApiGraph extends Fake implements PreparedApiGraph {}
 void main() {
   setUpAll(() {
     registerFallbackValue(Uri.parse('https://fallback.test/api'));
+    registerFallbackValue(
+      DiscoveredServerEndpoint(
+        canonicalOrigin: Uri.parse('https://fallback.test'),
+        apiEndpoint: Uri.parse('https://fallback.test/api'),
+      ),
+    );
     registerFallbackValue(NativeRequestContext(canonicalOrigin: null, accessToken: null, customHeaders: const {}));
     registerFallbackValue(const WidgetCredentials(apiEndpoint: null, accessToken: null, customHeaders: null));
+  });
+
+  group('AuthNotifier.validateServerUrl', () {
+    test('forgets server A before installing server B without touching local media', () async {
+      final events = <String>[];
+      final discovery = _MockAnonymousServerDiscovery();
+      final installer = _MockResolvedServerEndpointInstaller();
+      final serverB = DiscoveredServerEndpoint(
+        canonicalOrigin: Uri.parse('https://server-b.example.test'),
+        apiEndpoint: Uri.parse('https://server-b.example.test/api'),
+      );
+      when(() => discovery.discover('https://server-b.example.test')).thenAnswer((_) async => serverB);
+      when(() => installer.installResolvedServerEndpoint(serverB)).thenAnswer((_) async => events.add('install B'));
+      final auth = _LogoutFixture(
+        mutex: SessionMutationMutex(),
+        anonymousServerDiscovery: discovery,
+        serverEndpointInstaller: installer,
+        readConfiguredEndpoint: () => Uri.parse('https://server-a.example.test/api'),
+      );
+      when(auth.authService.forgetServer).thenAnswer((_) async => events.add('forget A'));
+
+      final endpoint = await auth.notifier.validateServerUrl('https://server-b.example.test');
+
+      expect(endpoint, serverB.apiEndpoint.toString());
+      expect(events, containsAllInOrder(['forget A', 'install B']));
+      verify(auth.authService.forgetServer).called(1);
+      verify(() => installer.installResolvedServerEndpoint(serverB)).called(1);
+      expect(auth.notifier.state.isAuthenticated, isFalse);
+    });
+
+    test('reinstalls the endpoint without purging remote cache when canonical origin is unchanged', () async {
+      final discovery = _MockAnonymousServerDiscovery();
+      final installer = _MockResolvedServerEndpointInstaller();
+      final endpoint = DiscoveredServerEndpoint(
+        canonicalOrigin: Uri.parse('https://photos.example.test'),
+        apiEndpoint: Uri.parse('https://photos.example.test/immich/api'),
+      );
+      when(() => discovery.discover(any())).thenAnswer((_) async => endpoint);
+      when(() => installer.installResolvedServerEndpoint(endpoint)).thenAnswer((_) async {});
+      final auth = _LogoutFixture(
+        mutex: SessionMutationMutex(),
+        anonymousServerDiscovery: discovery,
+        serverEndpointInstaller: installer,
+        readConfiguredEndpoint: () => Uri.parse('https://photos.example.test/api'),
+      );
+
+      await auth.notifier.validateServerUrl('https://photos.example.test');
+
+      verifyNever(auth.authService.forgetServer);
+      verify(() => installer.installResolvedServerEndpoint(endpoint)).called(1);
+    });
+
+    test('installs a first server without running remote purge', () async {
+      final phases = <RemoteAuthenticationPhase>[];
+      final discovery = _MockAnonymousServerDiscovery();
+      final installer = _MockResolvedServerEndpointInstaller();
+      final endpoint = DiscoveredServerEndpoint(
+        canonicalOrigin: Uri.parse('https://first.example.test'),
+        apiEndpoint: Uri.parse('https://first.example.test/api'),
+      );
+      when(() => discovery.discover(any())).thenAnswer((_) async => endpoint);
+      when(() => installer.installResolvedServerEndpoint(endpoint)).thenAnswer((_) async {});
+      final auth = _LogoutFixture(
+        mutex: SessionMutationMutex(),
+        anonymousServerDiscovery: discovery,
+        serverEndpointInstaller: installer,
+        readConfiguredEndpoint: () => null,
+        publishRemoteAuthenticationPhase: phases.add,
+      );
+
+      await auth.notifier.validateServerUrl('https://first.example.test');
+
+      verifyNever(auth.authService.forgetServer);
+      verify(() => installer.installResolvedServerEndpoint(endpoint)).called(1);
+      expect(phases.last, RemoteAuthenticationPhase.reauthenticationRequired);
+    });
   });
 
   group('AuthNotifier.hydrateCachedSession', () {
@@ -83,9 +173,10 @@ void main() {
         _RecordingAuthApiGraph(<String>[]),
         SessionMutationMutex(),
         _MockRef(),
+        anonymousServerDiscovery: _MockAnonymousServerDiscovery(),
+        serverEndpointInstaller: _MockResolvedServerEndpointInstaller(),
         cachedSessionReader: reader,
         invalidateSession: () async {},
-        cancelLocalMedia: () async {},
         cancelRemoteMedia: () async {},
         activateShares: () => shareActivations++,
         stopBackup: () {},
@@ -123,9 +214,10 @@ void main() {
         _RecordingAuthApiGraph(<String>[]),
         SessionMutationMutex(),
         _MockRef(),
+        anonymousServerDiscovery: _MockAnonymousServerDiscovery(),
+        serverEndpointInstaller: _MockResolvedServerEndpointInstaller(),
         cachedSessionReader: reader,
         invalidateSession: () async {},
-        cancelLocalMedia: () async {},
         cancelRemoteMedia: () async {},
         stopBackup: () {},
         disconnectWebsocket: () {},
@@ -137,6 +229,19 @@ void main() {
   });
 
   group('AuthNotifier.logout', () {
+    test('cancels remote work and clears only remote authentication', () async {
+      var remoteCancellationCalls = 0;
+      final auth = _LogoutFixture(
+        mutex: SessionMutationMutex(),
+        cancelRemoteMedia: () async => remoteCancellationCalls++,
+      );
+
+      await auth.notifier.logout();
+
+      expect(remoteCancellationCalls, 1);
+      verify(auth.authService.clearRemoteAuthentication).called(1);
+    });
+
     test('cancels active shares before clearing the session', () async {
       final events = <String>[];
       final auth = _LogoutFixture(
@@ -191,25 +296,21 @@ void main() {
       expect(auth.notifier.state.isAuthenticated, isFalse);
     });
 
-    test('cancels both media pipelines exactly once when one cancellation fails', () async {
-      var localCancellationCalls = 0;
+    test('cancels remote media exactly once and still clears authentication when cancellation fails', () async {
       var remoteCancellationCalls = 0;
       final auth = _LogoutFixture(
         mutex: SessionMutationMutex(),
-        cancelLocalMedia: () async {
-          localCancellationCalls++;
-          throw StateError('local media cancel failed');
-        },
         cancelRemoteMedia: () async {
           remoteCancellationCalls++;
+          throw StateError('remote media cancel failed');
         },
       );
 
       await expectLater(auth.notifier.logout(), throwsA(isA<StateError>()));
 
-      expect(localCancellationCalls, 1);
       expect(remoteCancellationCalls, 1);
       verify(auth.authService.invalidateRemoteSession).called(1);
+      verify(auth.authService.clearRemoteAuthentication).called(1);
       expect(auth.notifier.state.isAuthenticated, isFalse);
     });
 
@@ -265,7 +366,7 @@ void main() {
       final reader = _authenticatedSessionReader();
       when(() => secureStorage.delete(any())).thenAnswer((_) async {});
       when(authService.invalidateRemoteSession).thenAnswer((_) async => events.add('remote.logout'));
-      when(authService.clearLocalSession).thenAnswer((_) async {});
+      when(authService.clearRemoteAuthentication).thenAnswer((_) async {});
       when(widgetService.clearCredentialsAndRefresh).thenAnswer((_) async {
         widgetClearStarted.complete();
         await widgetGate.future;
@@ -284,9 +385,10 @@ void main() {
         _RecordingAuthApiGraph(events),
         SessionMutationMutex(),
         ref,
+        anonymousServerDiscovery: _MockAnonymousServerDiscovery(),
+        serverEndpointInstaller: _MockResolvedServerEndpointInstaller(),
         cachedSessionReader: reader,
         invalidateSession: () async {},
-        cancelLocalMedia: () async {},
         cancelRemoteMedia: () async {},
         stopBackup: () {},
         disconnectWebsocket: () {},
@@ -298,7 +400,7 @@ void main() {
 
       expect(requestContext.blocked, isTrue);
       expect(notifier.state.isAuthenticated, isTrue);
-      expect(events, containsAllInOrder(['remote.logout', 'network.block', 'graph.purge', 'network.purge']));
+      expect(events, containsAllInOrder(['network.block', 'remote.logout', 'graph.purge', 'network.purge']));
 
       widgetGate.complete();
       await logout;
@@ -320,7 +422,7 @@ void main() {
       final requestContext = _RecordingAuthRequestContext(<String>[])..purgeError = StateError('native clear failed');
       when(() => secureStorage.delete(any())).thenAnswer((_) async {});
       when(authService.invalidateRemoteSession).thenAnswer((_) async {});
-      when(authService.clearLocalSession).thenAnswer((_) async {});
+      when(authService.clearRemoteAuthentication).thenAnswer((_) async {});
       when(widgetService.clearCredentialsAndRefresh).thenAnswer((_) async {});
       when(backgroundUploads.cancel).thenAnswer((_) async => 0);
       when(foregroundUploads.cancel).thenReturn(null);
@@ -336,9 +438,10 @@ void main() {
         _RecordingAuthApiGraph(<String>[]),
         SessionMutationMutex(),
         ref,
+        anonymousServerDiscovery: _MockAnonymousServerDiscovery(),
+        serverEndpointInstaller: _MockResolvedServerEndpointInstaller(),
         cachedSessionReader: _authenticatedSessionReader(),
         invalidateSession: () async {},
-        cancelLocalMedia: () async {},
         cancelRemoteMedia: () async {},
         stopBackup: () {},
         disconnectWebsocket: () {},
@@ -425,6 +528,223 @@ void main() {
       verifyNever(() => activation.apiGraph.prepare(any()));
     });
   });
+
+  group('AuthNotifier.requireReauthentication', () {
+    test('invalidates only operational remote credentials and publishes the reauthentication state', () async {
+      final phases = <RemoteAuthenticationPhase>[];
+      final auth = _LogoutFixture(mutex: SessionMutationMutex(), publishRemoteAuthenticationPhase: phases.add);
+
+      await auth.notifier.requireReauthentication();
+
+      verifyNever(auth.authService.invalidateRemoteSession);
+      verify(auth.authService.clearRemoteAuthentication).called(1);
+      verify(auth.widgetService.clearCredentialsAndRefresh).called(1);
+      expect(auth.apiGraph.purgeCalls, 1);
+      expect(auth.notifier.state.isAuthenticated, isFalse);
+      expect(phases, [RemoteAuthenticationPhase.authenticated, RemoteAuthenticationPhase.reauthenticationRequired]);
+    });
+
+    test('blocks requests before waiting for remote cancellation', () async {
+      final cancellationStarted = Completer<void>();
+      final releaseCancellation = Completer<void>();
+      final auth = _LogoutFixture(
+        mutex: SessionMutationMutex(),
+        cancelRemoteMedia: () async {
+          cancellationStarted.complete();
+          await releaseCancellation.future;
+        },
+      );
+
+      final operation = auth.notifier.requireReauthentication();
+      await cancellationStarted.future;
+
+      expect(auth.requestContext.blocked, isTrue);
+      releaseCancellation.complete();
+      await operation;
+    });
+
+    test('escalates reauthentication to one remote logout when logout arrives during cancellation', () async {
+      final cancellationStarted = Completer<void>();
+      final releaseCancellation = Completer<void>();
+      final auth = _LogoutFixture(
+        mutex: SessionMutationMutex(),
+        cancelRemoteMedia: () async {
+          cancellationStarted.complete();
+          await releaseCancellation.future;
+        },
+      );
+
+      final reauthentication = auth.notifier.requireReauthentication();
+      await cancellationStarted.future;
+      final logout = auth.notifier.logout();
+      releaseCancellation.complete();
+      await Future.wait([reauthentication, logout]);
+
+      verify(auth.authService.invalidateRemoteSession).called(1);
+    });
+
+    test('coalesces duplicate reauthentication requests without remote logout', () async {
+      final cancellationStarted = Completer<void>();
+      final releaseCancellation = Completer<void>();
+      final auth = _LogoutFixture(
+        mutex: SessionMutationMutex(),
+        cancelRemoteMedia: () async {
+          cancellationStarted.complete();
+          await releaseCancellation.future;
+        },
+      );
+
+      final first = auth.notifier.requireReauthentication();
+      final second = auth.notifier.requireReauthentication();
+      expect(identical(first, second), isTrue);
+      await cancellationStarted.future;
+      releaseCancellation.complete();
+      await Future.wait([first, second]);
+
+      verifyNever(auth.authService.invalidateRemoteSession);
+      verify(auth.authService.clearRemoteAuthentication).called(1);
+    });
+
+    test('applies a late logout escalation before completing the shared future', () async {
+      final cleanupStarted = Completer<void>();
+      final releaseCleanup = Completer<void>();
+      final auth = _LogoutFixture(mutex: SessionMutationMutex());
+      when(auth.authService.clearRemoteAuthentication).thenAnswer((_) async {
+        cleanupStarted.complete();
+        await releaseCleanup.future;
+      });
+
+      final reauthentication = auth.notifier.requireReauthentication();
+      await cleanupStarted.future;
+      final logout = auth.notifier.logout();
+      releaseCleanup.complete();
+      await Future.wait([reauthentication, logout]);
+
+      verify(auth.authService.invalidateRemoteSession).called(1);
+      verify(auth.authService.clearRemoteAuthentication).called(1);
+    });
+
+    test('applies a late forget escalation and publishes unconfigured before completing', () async {
+      final cleanupStarted = Completer<void>();
+      final releaseCleanup = Completer<void>();
+      final phases = <RemoteAuthenticationPhase>[];
+      final auth = _LogoutFixture(mutex: SessionMutationMutex(), publishRemoteAuthenticationPhase: phases.add);
+      when(auth.authService.clearRemoteAuthentication).thenAnswer((_) async {
+        cleanupStarted.complete();
+        await releaseCleanup.future;
+      });
+
+      final reauthentication = auth.notifier.requireReauthentication();
+      await cleanupStarted.future;
+      final forget = auth.notifier.forgetServer();
+      releaseCleanup.complete();
+      await Future.wait([reauthentication, forget]);
+
+      verify(auth.authService.invalidateRemoteSession).called(1);
+      verify(auth.authService.forgetServer).called(1);
+      expect(phases.last, RemoteAuthenticationPhase.unconfigured);
+    });
+
+    test('runs a logout queued after cutover even when the preceding reauthentication fails', () async {
+      final cutoverReached = Completer<void>();
+      final releaseFirstCleanup = Completer<void>();
+      final auth = _LogoutFixture(mutex: SessionMutationMutex());
+      var authenticationClearCalls = 0;
+      var widgetClearCalls = 0;
+      when(auth.authService.clearRemoteAuthentication).thenAnswer((_) async {
+        authenticationClearCalls++;
+        if (authenticationClearCalls == 1) {
+          throw StateError('reauthentication cleanup failed');
+        }
+      });
+      when(auth.widgetService.clearCredentialsAndRefresh).thenAnswer((_) async {
+        widgetClearCalls++;
+        if (widgetClearCalls == 1) {
+          cutoverReached.complete();
+          await releaseFirstCleanup.future;
+        }
+      });
+
+      final reauthentication = auth.notifier.requireReauthentication();
+      await cutoverReached.future;
+      final logout = auth.notifier.logout();
+      releaseFirstCleanup.complete();
+
+      await expectLater(reauthentication, throwsA(isA<StateError>()));
+      await logout;
+      verify(auth.authService.invalidateRemoteSession).called(1);
+      expect(authenticationClearCalls, 2);
+    });
+
+    test('runs a queued forget and reports both cleanup failures', () async {
+      final cutoverReached = Completer<void>();
+      final releaseFirstCleanup = Completer<void>();
+      final firstFailure = StateError('reauthentication cleanup failed');
+      final secondFailure = StateError('forget cleanup failed');
+      final auth = _LogoutFixture(mutex: SessionMutationMutex());
+      when(auth.authService.clearRemoteAuthentication).thenThrow(firstFailure);
+      when(auth.authService.forgetServer).thenThrow(secondFailure);
+      var widgetClearCalls = 0;
+      when(auth.widgetService.clearCredentialsAndRefresh).thenAnswer((_) async {
+        widgetClearCalls++;
+        if (widgetClearCalls == 1) {
+          cutoverReached.complete();
+          await releaseFirstCleanup.future;
+        }
+      });
+
+      final reauthentication = auth.notifier.requireReauthentication();
+      await cutoverReached.future;
+      final forget = auth.notifier.forgetServer();
+      releaseFirstCleanup.complete();
+
+      await expectLater(reauthentication, throwsA(same(firstFailure)));
+      await expectLater(
+        forget,
+        throwsA(
+          isA<RemoteAuthenticationTerminationSequenceException>()
+              .having((error) => error.precedingError, 'precedingError', same(firstFailure))
+              .having((error) => error.queuedError, 'queuedError', same(secondFailure)),
+        ),
+      );
+      verify(auth.authService.forgetServer).called(1);
+    });
+  });
+
+  group('AuthNotifier.forgetServer', () {
+    test('purges the configured remote session and publishes unconfigured without touching local media', () async {
+      final phases = <RemoteAuthenticationPhase>[];
+      var epochInvalidations = 0;
+      var remoteCancellations = 0;
+      var shareCancellations = 0;
+      var backupStops = 0;
+      var websocketDisconnects = 0;
+      final auth = _LogoutFixture(
+        mutex: SessionMutationMutex(),
+        publishRemoteAuthenticationPhase: phases.add,
+        invalidateSession: () async => epochInvalidations++,
+        cancelRemoteMedia: () async => remoteCancellations++,
+        cancelShares: () async => shareCancellations++,
+        stopBackup: () => backupStops++,
+        disconnectWebsocket: () => websocketDisconnects++,
+      );
+
+      await auth.notifier.forgetServer();
+
+      expect(epochInvalidations, 1);
+      expect(remoteCancellations, 1);
+      expect(shareCancellations, 1);
+      expect(backupStops, 1);
+      expect(websocketDisconnects, 1);
+      verify(auth.authService.invalidateRemoteSession).called(1);
+      verify(auth.authService.forgetServer).called(1);
+      verifyNever(auth.authService.clearRemoteAuthentication);
+      verify(auth.widgetService.clearCredentialsAndRefresh).called(1);
+      expect(auth.apiGraph.purgeCalls, 1);
+      expect(auth.notifier.state.isAuthenticated, isFalse);
+      expect(phases, [RemoteAuthenticationPhase.authenticated, RemoteAuthenticationPhase.unconfigured]);
+    });
+  });
 }
 
 _MockCachedSessionReader _authenticatedSessionReader() {
@@ -488,21 +808,25 @@ final class _RecordingAuthApiGraph implements AuthApiGraphPort {
 final class _LogoutFixture {
   _LogoutFixture({
     required SessionMutationMutex mutex,
+    AnonymousServerDiscoveryPort? anonymousServerDiscovery,
+    ResolvedServerEndpointInstallerPort? serverEndpointInstaller,
+    Uri? Function()? readConfiguredEndpoint,
     void Function()? onRemoteLogout,
     Future<void> Function()? invalidateSession,
-    Future<void> Function()? cancelLocalMedia,
     Future<void> Function()? cancelRemoteMedia,
     Future<void> Function()? cancelShares,
     void Function()? activateShares,
     void Function()? stopBackup,
     void Function()? disconnectWebsocket,
+    void Function(RemoteAuthenticationPhase)? publishRemoteAuthenticationPhase,
     Object? apiGraphPurgeError,
     Object? localSessionClearError,
   }) {
     apiGraph.purgeError = apiGraphPurgeError;
     when(() => secureStorage.delete(any())).thenAnswer((_) async {});
     when(authService.invalidateRemoteSession).thenAnswer((_) async => onRemoteLogout?.call());
-    when(authService.clearLocalSession).thenAnswer((_) async {
+    when(authService.forgetServer).thenAnswer((_) async {});
+    when(authService.clearRemoteAuthentication).thenAnswer((_) async {
       if (localSessionClearError case final error?) {
         throw error;
       }
@@ -523,8 +847,12 @@ final class _LogoutFixture {
       mutex,
       ref,
       cachedSessionReader: _authenticatedSessionReader(),
+      anonymousServerDiscovery: anonymousServerDiscovery ?? _MockAnonymousServerDiscovery(),
+      serverEndpointInstaller: serverEndpointInstaller ?? _MockResolvedServerEndpointInstaller(),
+      readConfiguredEndpoint: readConfiguredEndpoint,
+      hasConfiguredServer: () => true,
+      publishRemoteAuthenticationPhase: publishRemoteAuthenticationPhase,
       invalidateSession: invalidateSession ?? () async {},
-      cancelLocalMedia: cancelLocalMedia ?? () async {},
       cancelRemoteMedia: cancelRemoteMedia ?? () async {},
       cancelShares: cancelShares ?? () async {},
       activateShares: activateShares ?? () {},

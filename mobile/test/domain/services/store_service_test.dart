@@ -65,6 +65,15 @@ void main() {
       verify(() => mockDriftStoreRepo.watchAll()).called(1);
       expect(sut.tryGet(StoreKey.accessToken), _kAccessToken.toUpperCase());
     });
+
+    test('removes cached keys missing from the latest repository snapshot', () async {
+      controller.add([const StoreDto(StoreKey.backgroundBackup, _kBackgroundBackup)]);
+
+      await pumpEventQueue();
+
+      expect(sut.tryGet(StoreKey.accessToken), isNull);
+      expect(sut.tryGet(StoreKey.backgroundBackup), _kBackgroundBackup);
+    });
   });
 
   group('Store Service get:', () {

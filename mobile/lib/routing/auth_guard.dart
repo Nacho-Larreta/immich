@@ -12,69 +12,70 @@ import 'package:openapi/api.dart';
 
 class AuthGuard extends AutoRouteGuard {
   final ApiService _apiService;
-  final AuthGuardSessionInvalidator _sessionInvalidator;
+  final AuthGuardReauthenticationCoordinator _reauthenticationCoordinator;
+  final String Function() _readAccessToken;
+  final Future<void> Function(StackRouter) _presentAuthentication;
   final _log = Logger("AuthGuard");
-  AuthGuard(this._apiService, Future<void> Function() invalidateSession)
-    : _sessionInvalidator = AuthGuardSessionInvalidator(invalidateSession);
+  AuthGuard(
+    this._apiService,
+    Future<void> Function() requireReauthentication, {
+    String Function()? readAccessToken,
+    Future<void> Function(StackRouter)? presentAuthentication,
+  }) : _reauthenticationCoordinator = AuthGuardReauthenticationCoordinator(requireReauthentication),
+       _readAccessToken = readAccessToken ?? _readStoredAccessToken,
+       _presentAuthentication = presentAuthentication ?? _pushLogin;
+
+  static String _readStoredAccessToken() => Store.get(StoreKey.accessToken);
+
+  static Future<void> _pushLogin(StackRouter router) => router.push(const LoginRoute());
+
   @override
   void onNavigation(NavigationResolver resolver, StackRouter router) async {
-    resolver.next(true);
-
     try {
-      // Look in the store for an access token
-      Store.get(StoreKey.accessToken);
-
-      // Validate the access token with the server
+      _readAccessToken();
       final res = await _apiService.authenticationApi.validateAccessToken();
       if (res == null || res.authStatus != true) {
-        // If the access token is invalid, take user back to login
-        _log.fine('User token is invalid. Redirecting to login');
-        unawaited(_redirectToLoginAndInvalidate(router));
-      }
-    } on StoreKeyNotFoundException catch (_) {
-      // If there is no access token, take us to the login page
-      _log.warning('No access token in the store.');
-      unawaited(_redirectToLoginAndInvalidate(router));
-      return;
-    } on ApiException catch (e) {
-      // On an unauthorized request, take us to the login page
-      if (e.code == HttpStatus.unauthorized) {
-        _log.warning("Unauthorized access token.");
-        unawaited(_redirectToLoginAndInvalidate(router));
+        resolver.next(false);
+        _log.fine('User token is invalid. Requesting authentication');
+        unawaited(_presentAuthenticationAndInvalidate(router));
         return;
       }
+      resolver.next(true);
+    } on StoreKeyNotFoundException catch (_) {
+      resolver.next(false);
+      _log.warning('No access token in the store.');
+      unawaited(_presentAuthenticationAndInvalidate(router));
+    } on ApiException catch (e) {
+      if (e.code == HttpStatus.unauthorized) {
+        resolver.next(false);
+        _log.warning("Unauthorized access token.");
+        unawaited(_presentAuthenticationAndInvalidate(router));
+        return;
+      }
+      resolver.next(true);
     } catch (e) {
-      // Otherwise, this is not fatal, but we still log the warning
       _log.warning('Error validating access token from server: $e');
+      resolver.next(true);
     }
   }
 
-  Future<void> _redirectToLoginAndInvalidate(StackRouter router) async {
-    await _sessionInvalidator.redirect(() => router.replaceAll([const LoginRoute()]));
+  Future<void> _presentAuthenticationAndInvalidate(StackRouter router) async {
+    await _reauthenticationCoordinator.present(() => _presentAuthentication(router));
   }
 }
 
-final class AuthGuardSessionInvalidator {
-  const AuthGuardSessionInvalidator(this._invalidateSession);
+final class AuthGuardReauthenticationCoordinator {
+  AuthGuardReauthenticationCoordinator(this._requireReauthentication);
 
-  final Future<void> Function() _invalidateSession;
+  final Future<void> Function() _requireReauthentication;
+  Future<void>? _inFlight;
 
-  Future<void> redirect(Future<void> Function() navigateToLogin) async {
-    Object? firstError;
-    StackTrace? firstStackTrace;
+  Future<void> present(Future<void> Function() presentAuthentication) {
+    return _inFlight ??= _coordinate(presentAuthentication).whenComplete(() => _inFlight = null);
+  }
 
-    Future<void> attempt(Future<void> Function() operation) async {
-      try {
-        await operation();
-      } on Object catch (error, stackTrace) {
-        firstError ??= error;
-        firstStackTrace ??= stackTrace;
-      }
-    }
-
-    await Future.wait([attempt(navigateToLogin), attempt(_invalidateSession)]);
-    if (firstError != null) {
-      Error.throwWithStackTrace(firstError!, firstStackTrace!);
-    }
+  Future<void> _coordinate(Future<void> Function() presentAuthentication) async {
+    await _requireReauthentication();
+    await presentAuthentication();
   }
 }

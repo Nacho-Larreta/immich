@@ -298,16 +298,15 @@ class SplashScreenPageState extends ConsumerState<SplashScreenPage> {
           case SplashDestination.timeline:
             await context.replaceRoute(const TabShellRoute());
             return;
-          case SplashDestination.login:
-            await context.replaceRoute(const LoginRoute());
         }
       },
-      triggerPostNavigationWork: () async {
+      triggerPostNavigationWork: ({required hasRemoteAuthentication}) async {
         final cachedEndpoint = Uri.tryParse(Store.tryGet(StoreKey.serverEndpoint) ?? '');
         ref
             .read(sessionWorkProvider)
             .activate(
               confirmedEndpoint: cachedEndpoint?.hasAuthority == true ? cachedEndpoint : null,
+              hasRemoteAuthentication: hasRemoteAuthentication,
               fullLocalSync: Platform.isAndroid,
             );
       },

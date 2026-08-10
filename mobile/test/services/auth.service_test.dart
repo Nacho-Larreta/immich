@@ -2,7 +2,9 @@ import 'package:drift/drift.dart' hide isNull;
 import 'package:drift/native.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/services/store.service.dart';
+import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/infrastructure/repositories/db.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/store.repository.dart';
 import 'package:immich_mobile/models/auth/auxilary_endpoint.model.dart';
@@ -55,99 +57,44 @@ void main() {
     await db.close();
   });
 
-  group('validateServerUrl', () {
-    test('Should resolve HTTP endpoint', () async {
-      const testUrl = 'http://ip:2283';
-      const resolvedUrl = 'http://ip:2283/api';
+  group('remote authentication cleanup', () {
+    test('forgetServer purges remote cache and every endpoint identity', () async {
+      await Store.put(StoreKey.serverUrl, 'https://photos.example.test');
+      await Store.put(StoreKey.serverEndpoint, 'https://photos.example.test/api');
+      await Store.put(StoreKey.accessToken, 'token');
+      await Store.put(StoreKey.customHeaders, '{"x-server-a-key":"secret"}');
+      when(() => backgroundSyncManager.cancel()).thenAnswer((_) async {});
+      when(() => authRepository.clearLocalData()).thenAnswer((_) async {});
+      when(() => appSettingsService.setSetting(AppSettingsEnum.enableBackup, false)).thenAnswer((_) async {});
 
-      when(() => apiService.resolveAndSetEndpoint(testUrl)).thenAnswer((_) async => resolvedUrl);
-      when(() => apiService.setDeviceInfoHeader()).thenAnswer((_) async => {});
+      await sut.forgetServer();
 
-      final result = await sut.validateServerUrl(testUrl);
-
-      expect(result, resolvedUrl);
-
-      verify(() => apiService.resolveAndSetEndpoint(testUrl)).called(1);
-      verify(() => apiService.setDeviceInfoHeader()).called(1);
-    });
-
-    test('Should resolve HTTPS endpoint', () async {
-      const testUrl = 'https://immich.domain.com';
-      const resolvedUrl = 'https://immich.domain.com/api';
-
-      when(() => apiService.resolveAndSetEndpoint(testUrl)).thenAnswer((_) async => resolvedUrl);
-      when(() => apiService.setDeviceInfoHeader()).thenAnswer((_) async => {});
-
-      final result = await sut.validateServerUrl(testUrl);
-
-      expect(result, resolvedUrl);
-
-      verify(() => apiService.resolveAndSetEndpoint(testUrl)).called(1);
-      verify(() => apiService.setDeviceInfoHeader()).called(1);
-    });
-
-    test('Should throw error on invalid URL', () async {
-      const testUrl = 'invalid-url';
-
-      when(() => apiService.resolveAndSetEndpoint(testUrl)).thenThrow(Exception('Invalid URL'));
-
-      expect(() async => await sut.validateServerUrl(testUrl), throwsA(isA<Exception>()));
-
-      verify(() => apiService.resolveAndSetEndpoint(testUrl)).called(1);
-      verifyNever(() => apiService.setDeviceInfoHeader());
-    });
-
-    test('Should throw error on unreachable server', () async {
-      const testUrl = 'https://unreachable.server';
-
-      when(() => apiService.resolveAndSetEndpoint(testUrl)).thenThrow(Exception('Server is not reachable'));
-
-      expect(() async => await sut.validateServerUrl(testUrl), throwsA(isA<Exception>()));
-
-      verify(() => apiService.resolveAndSetEndpoint(testUrl)).called(1);
-      verifyNever(() => apiService.setDeviceInfoHeader());
-    });
-  });
-
-  group('logout', () {
-    test('Should logout user', () async {
-      when(() => authApiRepository.logout()).thenAnswer((_) async => {});
-      when(() => backgroundSyncManager.cancel()).thenAnswer((_) async => {});
-      when(() => authRepository.clearLocalData()).thenAnswer((_) => Future.value(null));
-      when(
-        () => appSettingsService.setSetting(AppSettingsEnum.enableBackup, false),
-      ).thenAnswer((_) => Future.value(null));
-      await sut.logout();
-
-      verify(() => authApiRepository.logout()).called(1);
+      expect(Store.tryGet(StoreKey.serverUrl), isNull);
+      expect(Store.tryGet(StoreKey.serverEndpoint), isNull);
+      expect(Store.tryGet(StoreKey.accessToken), isNull);
+      expect(Store.tryGet(StoreKey.customHeaders), isNull);
+      expect(Store.tryGet(StoreKey.currentUser), isNull);
       verify(() => backgroundSyncManager.cancel()).called(1);
       verify(() => authRepository.clearLocalData()).called(1);
+      verify(() => appSettingsService.setSetting(AppSettingsEnum.enableBackup, false)).called(1);
     });
 
-    test('Should clear local data even on server error', () async {
+    test('clears the local token even when remote logout fails', () async {
+      const endpoint = 'https://photos.example.test/api';
+      await Store.put(StoreKey.serverEndpoint, endpoint);
+      await Store.put(StoreKey.accessToken, 'expired-token');
       when(() => authApiRepository.logout()).thenThrow(Exception('Server error'));
-      when(() => backgroundSyncManager.cancel()).thenAnswer((_) async => {});
-      when(() => authRepository.clearLocalData()).thenAnswer((_) => Future.value(null));
-      when(
-        () => appSettingsService.setSetting(AppSettingsEnum.enableBackup, false),
-      ).thenAnswer((_) => Future.value(null));
-      await sut.logout();
+      when(() => backgroundSyncManager.cancel()).thenAnswer((_) async {});
+      when(() => authRepository.clearLocalData()).thenAnswer((_) async {});
+      when(() => appSettingsService.setSetting(AppSettingsEnum.enableBackup, false)).thenAnswer((_) async {});
+
+      await sut.invalidateRemoteSession();
+      await sut.clearRemoteAuthentication();
 
       verify(() => authApiRepository.logout()).called(1);
-      verify(() => backgroundSyncManager.cancel()).called(1);
-      verify(() => authRepository.clearLocalData()).called(1);
-    });
-
-    test('Should surface local cleanup failure after swallowing server logout failure', () async {
-      when(() => authApiRepository.logout()).thenThrow(Exception('Server error'));
-      when(() => backgroundSyncManager.cancel()).thenAnswer((_) async => {});
-      when(() => authRepository.clearLocalData()).thenThrow(StateError('Store cleanup failed'));
-
-      await expectLater(sut.logout(), throwsA(isA<StateError>()));
-
-      verify(() => authApiRepository.logout()).called(1);
-      verify(() => authRepository.clearLocalData()).called(1);
-      verifyNever(() => appSettingsService.setSetting(AppSettingsEnum.enableBackup, false));
+      expect(Store.tryGet(StoreKey.serverEndpoint), endpoint);
+      expect(Store.tryGet(StoreKey.accessToken), isNull);
+      verifyNever(() => authRepository.clearLocalData());
     });
   });
 

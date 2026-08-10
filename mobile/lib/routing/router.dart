@@ -80,10 +80,12 @@ import 'package:maplibre_gl/maplibre_gl.dart';
 
 part 'router.gr.dart';
 
+TabShellRoute localShellAfterLogout() => const TabShellRoute(children: [MainTimelineRoute()]);
+
 final appRouterProvider = Provider(
   (ref) => AppRouter(
     ref.read(apiServiceProvider),
-    ref.read(authProvider.notifier).logout,
+    ref.read(authProvider.notifier).requireReauthentication,
     ref.watch(galleryPermissionNotifier.notifier),
     ref.watch(secureStorageServiceProvider),
     ref.watch(localAuthServiceProvider),
@@ -118,9 +120,9 @@ class AppRouter extends RootStackRouter {
     AutoRoute(page: ChangePasswordRoute.page),
     AutoRoute(
       page: TabShellRoute.page,
-      guards: [_authGuard, _duplicateGuard],
+      guards: [_duplicateGuard],
       children: [
-        AutoRoute(page: MainTimelineRoute.page, guards: [_authGuard, _duplicateGuard]),
+        AutoRoute(page: MainTimelineRoute.page, guards: [_duplicateGuard]),
         AutoRoute(page: DriftSearchRoute.page, guards: [_authGuard, _duplicateGuard], maintainState: false),
         AutoRoute(page: DriftLibraryRoute.page, guards: [_authGuard, _duplicateGuard]),
         AutoRoute(page: DriftAlbumsRoute.page, guards: [_authGuard, _duplicateGuard]),
@@ -138,16 +140,16 @@ class AppRouter extends RootStackRouter {
     AutoRoute(page: HeaderSettingsRoute.page, guards: [_duplicateGuard]),
     AutoRoute(page: ShareIntentRoute.page, guards: [_authGuard, _duplicateGuard]),
     AutoRoute(page: PinAuthRoute.page, guards: [_authGuard, _duplicateGuard]),
-    AutoRoute(page: LocalMediaSummaryRoute.page, guards: [_authGuard, _duplicateGuard]),
+    AutoRoute(page: LocalMediaSummaryRoute.page, guards: [_duplicateGuard]),
     AutoRoute(page: RemoteMediaSummaryRoute.page, guards: [_authGuard, _duplicateGuard]),
     AutoRoute(page: DriftBackupRoute.page, guards: [_authGuard, _duplicateGuard]),
     AutoRoute(page: DriftBackupAlbumSelectionRoute.page, guards: [_authGuard, _duplicateGuard]),
-    AutoRoute(page: LocalTimelineRoute.page, guards: [_authGuard, _duplicateGuard]),
-    AutoRoute(page: MainTimelineRoute.page, guards: [_authGuard, _duplicateGuard]),
+    AutoRoute(page: LocalTimelineRoute.page, guards: [_duplicateGuard]),
+    AutoRoute(page: MainTimelineRoute.page, guards: [_duplicateGuard]),
     AutoRoute(page: RemoteAlbumRoute.page, guards: [_authGuard]),
     AutoRoute(
       page: AssetViewerRoute.page,
-      guards: [_authGuard, _duplicateGuard],
+      guards: [_duplicateGuard],
       type: RouteType.custom(
         customRouteBuilder: <T>(context, child, page) => PageRouteBuilder<T>(
           fullscreenDialog: page.fullscreenDialog,
@@ -168,7 +170,7 @@ class AppRouter extends RootStackRouter {
     AutoRoute(page: DriftAssetSelectionTimelineRoute.page, guards: [_authGuard, _duplicateGuard]),
     AutoRoute(page: DriftPartnerDetailRoute.page, guards: [_authGuard, _duplicateGuard]),
     AutoRoute(page: DriftRecentlyTakenRoute.page, guards: [_authGuard, _duplicateGuard]),
-    AutoRoute(page: DriftLocalAlbumsRoute.page, guards: [_authGuard, _duplicateGuard]),
+    AutoRoute(page: DriftLocalAlbumsRoute.page, guards: [_duplicateGuard]),
     AutoRoute(page: DriftCreateAlbumRoute.page, guards: [_authGuard, _duplicateGuard]),
     AutoRoute(page: DriftPlaceRoute.page, guards: [_authGuard, _duplicateGuard]),
     AutoRoute(page: DriftPlaceDetailRoute.page, guards: [_authGuard, _duplicateGuard]),

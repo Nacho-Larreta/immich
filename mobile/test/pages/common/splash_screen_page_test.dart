@@ -16,7 +16,8 @@ void main() {
           return true;
         },
         navigate: (destination) async => navigations.add(destination),
-        triggerPostNavigationWork: () {
+        triggerPostNavigationWork: ({required hasRemoteAuthentication}) {
+          expect(hasRemoteAuthentication, isTrue);
           remoteTriggers++;
           return remoteWork.future;
         },
@@ -30,19 +31,22 @@ void main() {
       expect(remoteWork.isCompleted, isFalse);
     });
 
-    test('navigates to login without starting remote work when cache is incomplete', () async {
+    test('opens the local timeline and starts local work when no remote session is cached', () async {
       final navigations = <SplashDestination>[];
-      var remoteTriggers = 0;
+      var postNavigationTriggers = 0;
       final bootstrap = SplashSessionBootstrap(
         hydrateCachedSession: () => false,
         navigate: (destination) async => navigations.add(destination),
-        triggerPostNavigationWork: () async => remoteTriggers++,
+        triggerPostNavigationWork: ({required hasRemoteAuthentication}) async {
+          expect(hasRemoteAuthentication, isFalse);
+          postNavigationTriggers++;
+        },
       );
 
       await bootstrap.run();
 
-      expect(navigations, [SplashDestination.login]);
-      expect(remoteTriggers, 0);
+      expect(navigations, [SplashDestination.timeline]);
+      expect(postNavigationTriggers, 1);
     });
   });
 }

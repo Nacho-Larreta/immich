@@ -1,26 +1,26 @@
 import 'dart:async';
 
-enum SplashDestination { timeline, login }
+enum SplashDestination { timeline }
 
 final class SplashSessionBootstrap {
   const SplashSessionBootstrap({
     required bool Function() hydrateCachedSession,
     required Future<void> Function(SplashDestination destination) navigate,
-    Future<void> Function()? triggerPostNavigationWork,
+    Future<void> Function({required bool hasRemoteAuthentication})? triggerPostNavigationWork,
   }) : _hydrateCachedSession = hydrateCachedSession,
        _navigate = navigate,
        _triggerPostNavigationWork = triggerPostNavigationWork;
 
   final bool Function() _hydrateCachedSession;
   final Future<void> Function(SplashDestination destination) _navigate;
-  final Future<void> Function()? _triggerPostNavigationWork;
+  final Future<void> Function({required bool hasRemoteAuthentication})? _triggerPostNavigationWork;
 
   Future<void> run() async {
-    final destination = _hydrateCachedSession() ? SplashDestination.timeline : SplashDestination.login;
-    await _navigate(destination);
+    final hasRemoteAuthentication = _hydrateCachedSession();
+    await _navigate(SplashDestination.timeline);
 
-    if (destination == SplashDestination.timeline && _triggerPostNavigationWork != null) {
-      unawaited(_triggerPostNavigationWork());
+    if (_triggerPostNavigationWork != null) {
+      unawaited(_triggerPostNavigationWork(hasRemoteAuthentication: hasRemoteAuthentication));
     }
   }
 }
