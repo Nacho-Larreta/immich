@@ -275,6 +275,52 @@ data class ClientCertPrompt (
     return result
   }
 }
+
+/** Generated class from Pigeon that represents data sent in messages. */
+data class NetworkRequestContextSnapshot (
+  val clientPointer: Long,
+  val canonicalOrigin: String? = null,
+  val generation: Long,
+  val confirmed: Boolean
+)
+ {
+  companion object {
+    fun fromList(pigeonVar_list: List<Any?>): NetworkRequestContextSnapshot {
+      val clientPointer = pigeonVar_list[0] as Long
+      val canonicalOrigin = pigeonVar_list[1] as String?
+      val generation = pigeonVar_list[2] as Long
+      val confirmed = pigeonVar_list[3] as Boolean
+      return NetworkRequestContextSnapshot(clientPointer, canonicalOrigin, generation, confirmed)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf(
+      clientPointer,
+      canonicalOrigin,
+      generation,
+      confirmed,
+    )
+  }
+  override fun equals(other: Any?): Boolean {
+    if (other == null || other.javaClass != javaClass) {
+      return false
+    }
+    if (this === other) {
+      return true
+    }
+    val other = other as NetworkRequestContextSnapshot
+    return NetworkPigeonUtils.deepEquals(this.clientPointer, other.clientPointer) && NetworkPigeonUtils.deepEquals(this.canonicalOrigin, other.canonicalOrigin) && NetworkPigeonUtils.deepEquals(this.generation, other.generation) && NetworkPigeonUtils.deepEquals(this.confirmed, other.confirmed)
+  }
+
+  override fun hashCode(): Int {
+    var result = javaClass.hashCode()
+    result = 31 * result + NetworkPigeonUtils.deepHash(this.clientPointer)
+    result = 31 * result + NetworkPigeonUtils.deepHash(this.canonicalOrigin)
+    result = 31 * result + NetworkPigeonUtils.deepHash(this.generation)
+    result = 31 * result + NetworkPigeonUtils.deepHash(this.confirmed)
+    return result
+  }
+}
 private open class NetworkPigeonCodec : StandardMessageCodec() {
   override fun readValueOfType(type: Byte, buffer: ByteBuffer): Any? {
     return when (type) {
@@ -286,6 +332,11 @@ private open class NetworkPigeonCodec : StandardMessageCodec() {
       130.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
           ClientCertPrompt.fromList(it)
+        }
+      }
+      131.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          NetworkRequestContextSnapshot.fromList(it)
         }
       }
       else -> super.readValueOfType(type, buffer)
@@ -301,6 +352,10 @@ private open class NetworkPigeonCodec : StandardMessageCodec() {
         stream.write(130)
         writeValue(stream, value.toList())
       }
+      is NetworkRequestContextSnapshot -> {
+        stream.write(131)
+        writeValue(stream, value.toList())
+      }
       else -> super.writeValue(stream, value)
     }
   }
@@ -314,8 +369,10 @@ interface NetworkApi {
   fun removeCertificate(callback: (Result<Unit>) -> Unit)
   fun hasCertificate(): Boolean
   fun getClientPointer(): Long
+  fun getRequestContextSnapshot(): NetworkRequestContextSnapshot
   fun setRequestHeaders(headers: Map<String, String>, serverUrls: List<String>, token: String?)
   fun replaceRequestContext(headers: Map<String, String>, canonicalOrigin: String?, token: String?)
+  fun failClosedRequestContext()
 
   companion object {
     /** The codec used by NetworkApi. */
@@ -412,6 +469,21 @@ interface NetworkApi {
         }
       }
       run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.immich_mobile.NetworkApi.getRequestContextSnapshot$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { _, reply ->
+            val wrapped: List<Any?> = try {
+              listOf(api.getRequestContextSnapshot())
+            } catch (exception: Throwable) {
+              NetworkPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
         val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.immich_mobile.NetworkApi.setRequestHeaders$separatedMessageChannelSuffix", codec)
         if (api != null) {
           channel.setMessageHandler { message, reply ->
@@ -441,6 +513,22 @@ interface NetworkApi {
             val tokenArg = args[2] as String?
             val wrapped: List<Any?> = try {
               api.replaceRequestContext(headersArg, canonicalOriginArg, tokenArg)
+              listOf(null)
+            } catch (exception: Throwable) {
+              NetworkPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.immich_mobile.NetworkApi.failClosedRequestContext$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { _, reply ->
+            val wrapped: List<Any?> = try {
+              api.failClosedRequestContext()
               listOf(null)
             } catch (exception: Throwable) {
               NetworkPigeonUtils.wrapError(exception)

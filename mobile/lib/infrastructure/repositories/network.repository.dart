@@ -10,33 +10,89 @@ import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/infrastructure/http/canonical_origin_client.dart';
+import 'package:immich_mobile/infrastructure/http/network_web_socket_lifecycle.dart';
+import 'package:immich_mobile/platform/network_api.g.dart';
 import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
 import 'package:ok_http/ok_http.dart';
 import 'package:web_socket/web_socket.dart';
 
 typedef NativeRequestContextReplacement =
     Future<void> Function(Map<String, String> headers, String? canonicalOrigin, String? accessToken);
+typedef NativeRequestContextFailClosed = Future<void> Function();
+
+enum NetworkContextRole { rootWriter, attachedWorker }
+
+final class NetworkTransportDrainTimeout implements Exception {
+  const NetworkTransportDrainTimeout(this.timeout);
+
+  final Duration timeout;
+
+  @override
+  String toString() => 'Network transport did not drain within $timeout';
+}
 
 class NetworkRepository {
   static CanonicalOriginClient? _client;
   static Pointer<Void>? _clientPointer;
   static final _requestOriginGuard = RequestOriginGuard();
   static final _contextQueue = _NetworkContextQueue();
+  static NetworkWebSocketLifecycle _webSockets = NetworkWebSocketLifecycle();
   static int? _confirmedBlockedClearTransition;
   static EndpointSchemePolicy? _activeSchemePolicy;
+  static int? _nativeGeneration;
+  static var _transportFenced = false;
+  static NetworkContextRole _contextRole = NetworkContextRole.rootWriter;
+  static _NativeRequestContextFingerprint? _activeFingerprint;
+  static const _transportDrainTimeout = Duration(seconds: 5);
 
-  static Future<void> init() =>
-      _init(replaceNativeContext: networkApi.replaceRequestContext, bindNativeClient: _bindNativeClient);
+  static Future<void> init({NetworkContextRole role = NetworkContextRole.rootWriter}) {
+    _contextRole = role;
+    return role == NetworkContextRole.rootWriter
+        ? _init(
+            replaceNativeContext: networkApi.replaceRequestContext,
+            bindNativeClient: _bindNativeClient,
+            failClosedNativeContext: networkApi.failClosedRequestContext,
+            drainTransport: _fenceAndDrainTransport,
+          )
+        : _attachToNativeContext();
+  }
 
   @visibleForTesting
-  static Future<void> initForTest({required NativeRequestContextReplacement replaceNativeContext}) =>
-      _init(replaceNativeContext: replaceNativeContext, bindNativeClient: () async {});
+  static Future<void> initForTest({
+    required NativeRequestContextReplacement replaceNativeContext,
+    Future<void> Function()? bindNativeClient,
+    NativeRequestContextFailClosed? failClosedNativeContext,
+    Future<void> Function()? drainTransport,
+  }) => _initForTest(
+    replaceNativeContext,
+    bindNativeClient ?? () async {},
+    failClosedNativeContext ?? () async {},
+    drainTransport ?? _fenceAndDrainTransport,
+  );
+
+  static Future<void> _initForTest(
+    NativeRequestContextReplacement replaceNativeContext,
+    Future<void> Function() bindNativeClient,
+    NativeRequestContextFailClosed failClosedNativeContext,
+    Future<void> Function() drainTransport,
+  ) {
+    _contextRole = NetworkContextRole.rootWriter;
+    _activeFingerprint = null;
+    _requestOriginGuard.invalidate();
+    return _init(
+      replaceNativeContext: replaceNativeContext,
+      bindNativeClient: bindNativeClient,
+      failClosedNativeContext: failClosedNativeContext,
+      drainTransport: drainTransport,
+    );
+  }
 
   static Future<void> _init({
     required NativeRequestContextReplacement replaceNativeContext,
     required Future<void> Function() bindNativeClient,
+    required NativeRequestContextFailClosed failClosedNativeContext,
+    required Future<void> Function() drainTransport,
   }) async {
-    final transition = _blockForContextTransition();
     final readiness = Store.tryGet(StoreKey.authenticatedSessionReady);
     if (readiness == null) {
       await Store.put(StoreKey.authenticatedSessionReady, false);
@@ -48,27 +104,59 @@ class NetworkRepository {
       accessToken: Store.tryGet(StoreKey.accessToken),
       customHeaders: _storedHeaders(),
     );
+    final fingerprint = _NativeRequestContextFingerprint.fromStored(restored);
+    if (_requestOriginGuard.context.nativeContextConfirmed && _activeFingerprint == fingerprint) {
+      return;
+    }
+    final transition = _blockForContextTransition();
+    _activeFingerprint = null;
     return _contextQueue.protect(() async {
-      await replaceNativeContext(restored.customHeaders, restored.canonicalOrigin?.origin, restored.accessToken);
-      await bindNativeClient();
-      _publishContext(
-        transition,
-        restored.canonicalOrigin == null
-            ? const RequestOriginContext.cleared()
-            : RequestOriginContext.restricted([restored.canonicalOrigin!]),
-        restored.schemePolicy,
-      );
+      await drainTransport();
+      var nativeContextConfirmed = false;
+      try {
+        await replaceNativeContext(restored.customHeaders, restored.canonicalOrigin?.origin, restored.accessToken);
+        nativeContextConfirmed = true;
+        await bindNativeClient();
+        _publishContext(
+          transition,
+          restored.canonicalOrigin == null
+              ? const RequestOriginContext.cleared()
+              : RequestOriginContext.restricted([restored.canonicalOrigin!]),
+          restored.schemePolicy,
+        );
+        if (_requestOriginGuard.isCurrent(transition)) {
+          _activeFingerprint = fingerprint;
+        }
+      } on Object {
+        if (nativeContextConfirmed) {
+          await failClosedNativeContext();
+        } else {
+          await _refreshNativeBindingKeepingFence();
+        }
+        rethrow;
+      }
     });
   }
 
   static Future<void> _bindNativeClient() async {
-    final clientPointer = Pointer<Void>.fromAddress(await networkApi.getClientPointer());
-    if (clientPointer == _clientPointer && _client != null) {
+    final snapshot = await networkApi.getRequestContextSnapshot();
+    _bindNativeSnapshot(snapshot);
+  }
+
+  static void _bindNativeSnapshot(NetworkRequestContextSnapshot snapshot, {bool keepFence = false}) {
+    final clientPointer = Pointer<Void>.fromAddress(snapshot.clientPointer);
+    final bindingUnchanged =
+        clientPointer == _clientPointer &&
+        _nativeGeneration == snapshot.generation &&
+        _client != null &&
+        !_transportFenced &&
+        !keepFence;
+    if (!Platform.isIOS && bindingUnchanged) {
       return;
     }
     late final http.Client nativeClient;
     if (Platform.isIOS) {
-      final session = URLSession.fromRawPointer(clientPointer.cast());
+      final session = URLSession.fromRawPointer(clientPointer.cast(), retainSession: false);
       nativeClient = CupertinoClient.fromSharedSession(session);
     } else {
       nativeClient = OkHttpClient.fromJniGlobalRef(
@@ -81,11 +169,39 @@ class NetworkRepository {
       );
     }
     _clientPointer = clientPointer;
+    _nativeGeneration = snapshot.generation;
     _installNativeClient(nativeClient);
+    _webSockets = NetworkWebSocketLifecycle();
+    _transportFenced = keepFence;
+  }
+
+  static Future<void> _attachToNativeContext() async {
+    final transition = _blockForContextTransition();
+    final snapshot = await networkApi.getRequestContextSnapshot();
+    _bindNativeSnapshot(snapshot);
+    if (!snapshot.confirmed) {
+      return;
+    }
+    final origin = snapshot.canonicalOrigin == null
+        ? null
+        : validateCanonicalOrigin(Uri.parse(snapshot.canonicalOrigin!));
+    _publishContext(
+      transition,
+      origin == null ? const RequestOriginContext.cleared() : RequestOriginContext.restricted([origin]),
+      origin == null
+          ? null
+          : origin.scheme == 'https'
+          ? EndpointSchemePolicy.httpsOnly
+          : EndpointSchemePolicy.registeredLocalHttp,
+    );
   }
 
   @visibleForTesting
-  static void bindClientForTest(http.Client client) => _installNativeClient(client);
+  static void bindClientForTest(http.Client client) {
+    _installNativeClient(client);
+    _webSockets = NetworkWebSocketLifecycle();
+    _transportFenced = false;
+  }
 
   static void _installNativeClient(http.Client nativeClient) {
     final client = _client;
@@ -128,43 +244,63 @@ class NetworkRepository {
     required Uri? canonicalOrigin,
     required String? token,
     required EndpointSchemePolicy? schemePolicy,
-  }) {
+  }) async {
+    _ensureRootWriter();
     if (token != null && canonicalOrigin == null) {
-      return Future.error(ArgumentError('A token requires a canonical origin'));
+      throw ArgumentError('A token requires a canonical origin');
     }
     if (headers.isNotEmpty && canonicalOrigin == null) {
-      return Future.error(ArgumentError('Custom headers require a canonical origin'));
+      throw ArgumentError('Custom headers require a canonical origin');
     }
     if (canonicalOrigin == null && schemePolicy != null) {
-      return Future.error(ArgumentError('An endpoint scheme policy requires a canonical origin'));
+      throw ArgumentError('An endpoint scheme policy requires a canonical origin');
     }
     final origin = canonicalOrigin == null ? null : validateCanonicalOrigin(canonicalOrigin);
     if (origin != null) {
       final policy = schemePolicy;
       if (policy == null) {
-        return Future.error(ArgumentError('A canonical origin requires an endpoint scheme policy'));
+        throw ArgumentError('A canonical origin requires an endpoint scheme policy');
       }
-      try {
-        validateEndpointSchemePolicy(origin, policy);
-      } on ArgumentError catch (error) {
-        return Future.error(error);
-      }
+      validateEndpointSchemePolicy(origin, policy);
+    }
+    _validateHeaders(headers);
+    final fingerprint = _NativeRequestContextFingerprint(headers: headers, canonicalOrigin: origin, token: token);
+    if (_requestOriginGuard.context.nativeContextConfirmed && _activeFingerprint == fingerprint) {
+      _activeSchemePolicy = schemePolicy;
+      return;
     }
     final transition = _blockForContextTransition();
-    return _contextQueue.protect(() async {
-      await networkApi.replaceRequestContext(headers, origin?.origin, token);
-      await _bindNativeClient();
-      _publishContext(
-        transition,
-        origin == null ? const RequestOriginContext.cleared() : RequestOriginContext.restricted([origin]),
-        schemePolicy,
-      );
+    _activeFingerprint = null;
+    await _contextQueue.protect(() async {
+      await _fenceAndDrainTransport();
+      var nativeContextConfirmed = false;
+      try {
+        await networkApi.replaceRequestContext(headers, origin?.origin, token);
+        nativeContextConfirmed = true;
+        await _bindNativeClient();
+        _publishContext(
+          transition,
+          origin == null ? const RequestOriginContext.cleared() : RequestOriginContext.restricted([origin]),
+          schemePolicy,
+        );
+        if (_requestOriginGuard.isCurrent(transition)) {
+          _activeFingerprint = fingerprint;
+        }
+      } on Object {
+        if (nativeContextConfirmed) {
+          await networkApi.failClosedRequestContext();
+        } else {
+          await _refreshNativeBindingKeepingFence();
+        }
+        rethrow;
+      }
     });
   }
 
   static void blockRequests() {
     _requestOriginGuard.invalidate();
     _confirmedBlockedClearTransition = null;
+    _activeFingerprint = null;
   }
 
   static Future<void> clearRequestContext() {
@@ -182,12 +318,64 @@ class NetworkRepository {
   static EndpointSchemePolicy? get activeEndpointSchemePolicy => _activeSchemePolicy;
 
   static Future<void> purgeRequestContext() {
+    _ensureRootWriter();
+    return _purgeRequestContext(
+      drainTransport: _fenceAndDrainTransport,
+      replaceNativeContext: networkApi.replaceRequestContext,
+      bindNativeClient: _bindNativeClient,
+      failClosedNativeContext: networkApi.failClosedRequestContext,
+    );
+  }
+
+  @visibleForTesting
+  static Future<void> purgeRequestContextForTest({
+    required Future<void> Function() drainTransport,
+    required NativeRequestContextReplacement replaceNativeContext,
+    required Future<void> Function() bindNativeClient,
+    required NativeRequestContextFailClosed failClosedNativeContext,
+  }) {
+    _contextRole = NetworkContextRole.rootWriter;
+    return _purgeRequestContext(
+      drainTransport: drainTransport,
+      replaceNativeContext: replaceNativeContext,
+      bindNativeClient: bindNativeClient,
+      failClosedNativeContext: failClosedNativeContext,
+    );
+  }
+
+  static Future<void> _purgeRequestContext({
+    required Future<void> Function() drainTransport,
+    required NativeRequestContextReplacement replaceNativeContext,
+    required Future<void> Function() bindNativeClient,
+    required NativeRequestContextFailClosed failClosedNativeContext,
+  }) {
     final transition = _blockForContextTransition();
+    _activeFingerprint = null;
     return _contextQueue.protect(() async {
-      await networkApi.replaceRequestContext(const {}, null, null);
-      await _bindNativeClient();
-      if (_requestOriginGuard.isCurrent(transition)) {
-        _confirmedBlockedClearTransition = transition;
+      try {
+        await drainTransport();
+      } on Object catch (error, stackTrace) {
+        try {
+          await failClosedNativeContext();
+        } finally {
+          Error.throwWithStackTrace(error, stackTrace);
+        }
+      }
+      var nativeContextConfirmed = false;
+      try {
+        await replaceNativeContext(const {}, null, null);
+        nativeContextConfirmed = true;
+        await bindNativeClient();
+        if (_requestOriginGuard.isCurrent(transition)) {
+          _confirmedBlockedClearTransition = transition;
+        }
+      } on Object {
+        if (nativeContextConfirmed) {
+          await failClosedNativeContext();
+        } else {
+          await _refreshNativeBindingKeepingFence();
+        }
+        rethrow;
       }
     });
   }
@@ -200,19 +388,19 @@ class NetworkRepository {
     }
   }
 
-  // ignore: avoid-unused-parameters
   static Future<WebSocket> createWebSocket(Uri uri, {Map<String, String>? headers, Iterable<String>? protocols}) {
     final context = _requestOriginGuard.context;
     final origins = context.allowedOrigins;
     if (!context.nativeContextConfirmed || !origins.any((origin) => isWebSocketForCanonicalOrigin(uri, origin))) {
       return Future.error(ArgumentError.value(uri, 'uri', 'WebSocket must use the active canonical origin'));
     }
-    if (Platform.isIOS) {
-      final session = URLSession.fromRawPointer(_clientPointer!.cast());
-      return CupertinoWebSocket.connectWithSession(session, uri, protocols: protocols);
-    } else {
+    return _webSockets.connect(() {
+      if (Platform.isIOS) {
+        final session = URLSession.fromRawPointer(_clientPointer!.cast());
+        return CupertinoWebSocket.connectWithSession(session, uri, protocols: protocols, headers: headers);
+      }
       return OkHttpWebSocket.connectFromJniGlobalRef(_clientPointer!, uri, protocols: protocols);
-    }
+    });
   }
 
   const NetworkRepository();
@@ -228,6 +416,37 @@ class NetworkRepository {
   static int _blockForContextTransition() {
     _confirmedBlockedClearTransition = null;
     return _requestOriginGuard.block();
+  }
+
+  static Future<void> _fenceAndDrainTransport() async {
+    final client = _client;
+    if (client == null) {
+      return;
+    }
+    try {
+      await Future.wait([
+        client.fenceAndDrain(timeout: _transportDrainTimeout),
+        _webSockets.fenceAndDrain(timeout: _transportDrainTimeout),
+      ]).timeout(_transportDrainTimeout);
+      _transportFenced = true;
+    } on TimeoutException {
+      throw const NetworkTransportDrainTimeout(_transportDrainTimeout);
+    }
+  }
+
+  static Future<void> _refreshNativeBindingKeepingFence() async {
+    try {
+      final snapshot = await networkApi.getRequestContextSnapshot();
+      _bindNativeSnapshot(snapshot, keepFence: true);
+    } on Object {
+      return;
+    }
+  }
+
+  static void _ensureRootWriter() {
+    if (_contextRole != NetworkContextRole.rootWriter) {
+      throw StateError('Attached network workers cannot replace the native request context');
+    }
   }
 
   static void _publishContext(int transition, RequestOriginContext context, EndpointSchemePolicy? schemePolicy) {
@@ -315,5 +534,47 @@ final class _NetworkContextQueue {
     final completion = Completer<void>();
     _tail = completion.future;
     return predecessor.then((_) => operation()).whenComplete(completion.complete);
+  }
+}
+
+final class _NativeRequestContextFingerprint {
+  _NativeRequestContextFingerprint({
+    required Map<String, String> headers,
+    required this.canonicalOrigin,
+    required this.token,
+  }) : headers = Map.unmodifiable({for (final entry in headers.entries) entry.key.toLowerCase(): entry.value});
+
+  factory _NativeRequestContextFingerprint.fromStored(StoredNativeRequestContext context) =>
+      _NativeRequestContextFingerprint(
+        headers: context.customHeaders,
+        canonicalOrigin: context.canonicalOrigin,
+        token: context.accessToken,
+      );
+
+  final Map<String, String> headers;
+  final Uri? canonicalOrigin;
+  final String? token;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _NativeRequestContextFingerprint &&
+      canonicalOrigin == other.canonicalOrigin &&
+      token == other.token &&
+      mapEquals(headers, other.headers);
+
+  @override
+  int get hashCode {
+    final names = headers.keys.toList(growable: false)..sort();
+    return Object.hash(canonicalOrigin, token, Object.hashAll(names.map((name) => Object.hash(name, headers[name]))));
+  }
+}
+
+void _validateHeaders(Map<String, String> headers) {
+  final canonicalNames = <String>{};
+  for (final name in headers.keys) {
+    final canonicalName = name.toLowerCase();
+    if (!canonicalNames.add(canonicalName)) {
+      throw ArgumentError.value(name, 'headers', 'Header names must be unique ignoring case');
+    }
   }
 }

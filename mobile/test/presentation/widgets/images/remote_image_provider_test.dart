@@ -157,6 +157,38 @@ void main() {
     expect(find.byType(Thumbnail), findsOneWidget);
   });
 
+  testWidgets('visible cache miss retries with network policy when access becomes online', (tester) async {
+    final access = ValueNotifier(const RemoteMediaAccessSnapshot(policy: RemoteMediaPolicy.cacheOnly, sessionEpoch: 2));
+    addTearDown(access.dispose);
+    final port = _Port(
+      results: [const OfflineResult.failure(OfflineErrorCode.cacheMiss), OfflineResult.success(_rgbaPayload())],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ValueListenableBuilder<RemoteMediaAccessSnapshot>(
+          valueListenable: access,
+          builder: (_, snapshot, _) => SizedBox.square(
+            dimension: 64,
+            child: Thumbnail(
+              imageProvider: _image(port, snapshot),
+              thumbhashProvider: MemoryImage(Uint8List.fromList(_transparentPixel)),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    access.value = const RemoteMediaAccessSnapshot(policy: RemoteMediaPolicy.cacheThenNetwork, sessionEpoch: 2);
+    await tester.pumpAndSettle();
+
+    expect(port.requests.map((request) => request.policy), [
+      RemoteMediaPolicy.cacheOnly,
+      RemoteMediaPolicy.cacheThenNetwork,
+    ]);
+  });
+
   test('animated cache miss terminates and propagates edited to offline requests', () async {
     final port = _Port(result: const OfflineResult.failure(OfflineErrorCode.cacheMiss));
     const access = RemoteMediaAccessSnapshot(policy: RemoteMediaPolicy.cacheOnly, sessionEpoch: 6);

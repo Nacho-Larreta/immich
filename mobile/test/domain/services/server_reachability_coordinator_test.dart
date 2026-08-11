@@ -89,52 +89,41 @@ void main() {
     await harness.dispose();
   });
 
-  for (final localLeaseActive in [false, true]) {
-    final context = localLeaseActive ? 'registered-local HTTP lease' : 'HTTPS or approved HTTP context';
-    test('available transport review stales a pending probe for $context and reruns', () async {
-      final lease = _RequestContextLease(localActive: localLeaseActive);
-      final harness = _Harness(requestContextLease: lease);
-      final staleProbe = harness.probes.enqueuePending(completesOnCancel: false);
-      harness.probes.enqueueCompleted(_validatedEndpoint());
-      harness.activations.enqueueSuccess();
-      harness.reconciliations.enqueueSuccess();
-      await harness.startSession();
+  test('duplicate available preserves a pending HTTPS probe without rerun', () async {
+    final lease = _RequestContextLease();
+    final harness = _Harness(requestContextLease: lease);
+    final staleProbe = harness.probes.enqueuePending(completesOnCancel: false);
+    harness.activations.enqueueSuccess();
+    harness.reconciliations.enqueueSuccess();
+    await harness.startSession();
 
-      harness.connectivity.emit(TransportAvailability.available);
-      harness.scheduler.elapse(const Duration(milliseconds: 750));
-      await pumpEventQueue();
-      final staleIdentity = harness.probes.identities.single;
+    harness.connectivity.emit(TransportAvailability.available);
+    harness.scheduler.elapse(const Duration(milliseconds: 750));
+    await pumpEventQueue();
+    final staleIdentity = harness.probes.identities.single;
+    final transportInvalidations = lease.transportInvalidations;
 
-      harness.connectivity.emit(TransportAvailability.available);
+    harness.connectivity.emit(TransportAvailability.available);
 
-      expect(harness.epochs.current, isNot(staleIdentity));
-      expect(lease.blocked, localLeaseActive);
-      await pumpEventQueue();
-      expect(staleProbe.cancelCount, 1);
+    expect(harness.epochs.current, staleIdentity);
+    expect(lease.transportInvalidations, transportInvalidations);
+    await pumpEventQueue();
+    expect(staleProbe.cancelCount, 0);
 
-      staleProbe.complete(_validatedEndpoint());
-      await pumpEventQueue();
+    staleProbe.complete(_validatedEndpoint());
+    await pumpEventQueue();
 
-      expect(harness.activations.requests, isEmpty);
-      expect(harness.publisher.states.where((state) => state.phase == ReachabilityPhase.online), isEmpty);
+    expect(harness.activations.requests, hasLength(1));
+    expect(harness.reconciliations.requests, hasLength(1));
+    expect(harness.probes.identities, hasLength(1));
+    expect(harness.publisher.states.where((state) => state.phase == ReachabilityPhase.online), hasLength(1));
+    await harness.dispose();
+  });
 
-      harness.scheduler.elapse(const Duration(milliseconds: 750));
-      await pumpEventQueue();
-
-      expect(harness.probes.identities, hasLength(2));
-      expect(harness.probes.identities.last, isNot(staleIdentity));
-      expect(harness.activations.requests, hasLength(1));
-      expect(harness.reconciliations.requests, hasLength(1));
-      await harness.dispose();
-    });
-  }
-
-  test('available transport review stales a pending activation and reruns without publishing it', () async {
+  test('duplicate available preserves a pending activation without rerun', () async {
     final harness = _Harness();
     harness.probes.enqueueCompleted(_validatedEndpoint());
-    harness.probes.enqueueCompleted(_validatedEndpoint());
     final staleActivation = harness.activations.enqueuePending();
-    harness.activations.enqueueSuccess();
     harness.reconciliations.enqueueSuccess();
     await harness.startSession();
 
@@ -143,9 +132,9 @@ void main() {
 
     harness.connectivity.emit(TransportAvailability.available);
 
-    expect(harness.epochs.current.probeGeneration, isNot(staleIdentity.probeGeneration));
+    expect(harness.epochs.current.probeGeneration, staleIdentity.probeGeneration);
     await pumpEventQueue();
-    expect(staleActivation.cancelCount, 1);
+    expect(staleActivation.cancelCount, 0);
 
     staleActivation.complete(
       OfflineResult.success(
@@ -158,19 +147,13 @@ void main() {
     );
     await pumpEventQueue();
 
-    expect(harness.reconciliations.requests, isEmpty);
-    expect(harness.publisher.states.where((state) => state.phase == ReachabilityPhase.online), isEmpty);
-
-    harness.scheduler.elapse(const Duration(milliseconds: 750));
-    await pumpEventQueue();
-
-    expect(harness.activations.requests, hasLength(2));
+    expect(harness.activations.requests, hasLength(1));
     expect(harness.reconciliations.requests, hasLength(1));
     expect(harness.publisher.states.where((state) => state.phase == ReachabilityPhase.online), hasLength(1));
     await harness.dispose();
   });
 
-  test('available to available transport review invalidates a local lease before the next probe', () async {
+  test('duplicate available invalidates a local lease and schedules a replacement probe', () async {
     final connectivity = _ConnectivityMonitor(initialAvailability: Future.value(TransportAvailability.available));
     final lease = _RequestContextLease(localActive: true);
     final harness = _Harness(connectivity: connectivity, requestContextLease: lease);
@@ -239,6 +222,57 @@ void main() {
     expect(harness.epochs.current, isNot(runningIdentity));
     await pumpEventQueue();
     expect(probe.cancelCount, 1);
+    await harness.dispose();
+  });
+
+  test('duplicate available while HTTPS is online preserves media access and schedules no replacement probe', () async {
+    final lease = _RequestContextLease();
+    final harness = _Harness(requestContextLease: lease);
+    harness.probes.enqueueCompleted(_validatedEndpoint());
+    harness.activations.enqueueSuccess();
+    harness.reconciliations.enqueueSuccess();
+    await harness.startSession();
+    await harness.runCycle();
+    final onlineIdentity = harness.epochs.current;
+    final transportInvalidations = lease.transportInvalidations;
+
+    harness.connectivity.emit(TransportAvailability.available);
+    harness.scheduler.elapse(const Duration(seconds: 1));
+    await pumpEventQueue();
+
+    expect(harness.coordinator.state.phase, ReachabilityPhase.online);
+    expect(harness.epochs.current, onlineIdentity);
+    expect(lease.transportInvalidations, transportInvalidations);
+    expect(harness.probes.identities, hasLength(1));
+    expect(harness.scheduler.activeTaskCount, 0);
+    await harness.dispose();
+  });
+
+  test('available on a new WiFi invalidates online local HTTP and reprobes', () async {
+    final lease = _RequestContextLease(localActive: true);
+    final harness = _Harness(requestContextLease: lease);
+    harness.probes.enqueueCompleted(_validatedEndpoint(policy: EndpointSchemePolicy.registeredLocalHttp));
+    harness.activations.enqueueSuccess();
+    harness.reconciliations.enqueueSuccess();
+    final replacementProbe = harness.probes.enqueuePending();
+    await harness.startSession();
+    await harness.runCycle();
+    final onlineIdentity = harness.epochs.current;
+    final invalidations = lease.transportInvalidations;
+
+    harness.connectivity.emit(TransportAvailability.available);
+
+    expect(lease.transportInvalidations, invalidations + 1);
+    expect(lease.blocked, isTrue);
+    expect(harness.coordinator.state.phase, ReachabilityPhase.probing);
+    expect(harness.coordinator.state.confirmedEndpoint, isNull);
+    expect(harness.epochs.current, isNot(onlineIdentity));
+
+    harness.scheduler.elapse(const Duration(milliseconds: 750));
+    await pumpEventQueue();
+    expect(harness.probes.identities, hasLength(2));
+
+    replacementProbe.complete(const EndpointProbeResult.rejected(OfflineErrorCode.cancelled));
     await harness.dispose();
   });
 
@@ -751,12 +785,15 @@ final class _ReceiptRequest extends _ControlledRequest<OfflineResult<EndpointAct
   _ReceiptRequest() : super(const OfflineResult.failure(OfflineErrorCode.cancelled));
 }
 
-ValidatedEndpointProbeResult _validatedEndpoint() {
+ValidatedEndpointProbeResult _validatedEndpoint({EndpointSchemePolicy policy = EndpointSchemePolicy.httpsOnly}) {
+  final origin = policy == EndpointSchemePolicy.httpsOnly
+      ? Uri.parse('https://photos.example.test')
+      : Uri.parse('http://photos.example.test');
   return ValidatedEndpointProbeResult(
-    canonicalOrigin: Uri.parse('https://photos.example.test'),
-    apiEndpoint: Uri.parse('https://photos.example.test/family/api'),
+    canonicalOrigin: origin,
+    apiEndpoint: origin.replace(path: '/family/api'),
     userId: 'user-1',
-    schemePolicy: EndpointSchemePolicy.httpsOnly,
+    schemePolicy: policy,
   );
 }
 

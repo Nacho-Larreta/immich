@@ -44,6 +44,67 @@ void main() {
     await expectLater(inFlight, throwsA(isA<ClientException>()));
   });
 
+  test('fence tracks a POST from admission and waits for its pending native task', () async {
+    final transport = _PendingTaskCreationClient();
+    final client = CanonicalOriginClient(
+      transport,
+      () => RequestOriginContext.restricted([Uri.parse('https://photos.test')]),
+    );
+    final request = Request('POST', Uri.parse('https://photos.test/api/assets'))..body = 'payload';
+    final inFlight = client.send(request);
+    await transport.sendAccepted.future;
+
+    var drained = false;
+    final drain = client.fenceAndDrain(timeout: const Duration(seconds: 1)).then((_) => drained = true);
+    await Future<void>.delayed(Duration.zero);
+    expect(drained, isFalse);
+    await expectLater(client.get(Uri.parse('https://photos.test/api/assets/next')), throwsA(isA<ClientException>()));
+
+    transport.allowTaskCreation.complete();
+    await expectLater(inFlight, throwsA(isA<ClientException>()));
+    await drain;
+
+    expect(transport.closeCalls, 1);
+  });
+
+  test('fence awaits asynchronous cancellation of an active response', () async {
+    final transport = _BlockingCancellationClient();
+    final client = CanonicalOriginClient(
+      transport,
+      () => RequestOriginContext.restricted([Uri.parse('https://photos.test')]),
+    );
+    final response = await client.send(Request('GET', Uri.parse('https://photos.test/api/assets')));
+    final responseFailure = expectLater(response.stream, emitsError(isA<ClientException>()));
+
+    var drained = false;
+    final drain = client.fenceAndDrain(timeout: const Duration(seconds: 1)).then((_) => drained = true);
+    await transport.cancelStarted.future;
+    await Future<void>.delayed(Duration.zero);
+    expect(drained, isFalse);
+
+    transport.allowCancellation.complete();
+    await drain;
+    await responseFailure;
+  });
+
+  test('fence cancels a native response before its body is listened to', () async {
+    final transport = _BlockingCancellationClient();
+    final client = CanonicalOriginClient(
+      transport,
+      () => RequestOriginContext.restricted([Uri.parse('https://photos.test')]),
+    );
+    await client.send(Request('GET', Uri.parse('https://photos.test/api/assets')));
+
+    var drained = false;
+    final drain = client.fenceAndDrain(timeout: const Duration(seconds: 1)).then((_) => drained = true);
+    await transport.cancelStarted.future;
+    await Future<void>.delayed(Duration.zero);
+    expect(drained, isFalse);
+
+    transport.allowCancellation.complete();
+    await drain;
+  });
+
   test('replacement rejects a retired response mid-body and drops its late bytes', () async {
     final firstTransport = _ControlledStreamClient();
     final client = CanonicalOriginClient(
@@ -376,6 +437,37 @@ final class _TrackedClient extends BaseClient {
   void close() {
     closeCalls++;
   }
+}
+
+final class _PendingTaskCreationClient extends BaseClient {
+  final sendAccepted = Completer<void>();
+  final allowTaskCreation = Completer<void>();
+  var closeCalls = 0;
+
+  @override
+  Future<StreamedResponse> send(BaseRequest request) async {
+    sendAccepted.complete();
+    await allowTaskCreation.future;
+    return StreamedResponse(Stream.value(const <int>[]), 200);
+  }
+
+  @override
+  void close() => closeCalls++;
+}
+
+final class _BlockingCancellationClient extends BaseClient {
+  final cancelStarted = Completer<void>();
+  final allowCancellation = Completer<void>();
+
+  late final StreamController<List<int>> _controller = StreamController<List<int>>(
+    onCancel: () async {
+      cancelStarted.complete();
+      await allowCancellation.future;
+    },
+  );
+
+  @override
+  Future<StreamedResponse> send(BaseRequest request) async => StreamedResponse(_controller.stream, 200);
 }
 
 final class _ControlledStreamClient extends BaseClient {

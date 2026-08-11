@@ -41,7 +41,11 @@ void configureFileDownloaderNotifications() {
 }
 
 abstract final class Bootstrap {
-  static Future<(Drift, DriftLogger)> initDomain({bool listenStoreUpdates = true, bool shouldBufferLogs = true}) async {
+  static Future<(Drift, DriftLogger)> initDomain({
+    bool listenStoreUpdates = true,
+    bool shouldBufferLogs = true,
+    NetworkContextRole networkContextRole = NetworkContextRole.rootWriter,
+  }) async {
     final drift = Drift();
     final logDb = DriftLogger();
     final DriftStoreRepository storeRepo = DriftStoreRepository(drift);
@@ -54,7 +58,7 @@ abstract final class Bootstrap {
       shouldBuffer: shouldBufferLogs,
     );
 
-    await NetworkRepository.init();
+    await NetworkRepository.init(role: networkContextRole);
     // Remove once all asset operations are migrated to Native APIs
     await PhotoManager.setIgnorePermissionCheck(true);
     return (drift, logDb);

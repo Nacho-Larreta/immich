@@ -92,6 +92,7 @@ class SyncStatusNotifier extends Notifier<SyncStatusState> {
   void startRemoteSync() => setRemoteSyncStatus(SyncStatus.syncing);
   void completeRemoteSync() => setRemoteSyncStatus(SyncStatus.success);
   void errorRemoteSync(String error) => setRemoteSyncStatus(SyncStatus.error, error);
+  void cancelRemoteSync() => setRemoteSyncStatus(SyncStatus.idle);
 
   ///
   /// Local Sync
@@ -104,6 +105,7 @@ class SyncStatusNotifier extends Notifier<SyncStatusState> {
   void startLocalSync() => setLocalSyncStatus(SyncStatus.syncing);
   void completeLocalSync() => setLocalSyncStatus(SyncStatus.success);
   void errorLocalSync(String error) => setLocalSyncStatus(SyncStatus.error, error);
+  void cancelLocalSync() => setLocalSyncStatus(SyncStatus.idle);
 
   ///
   /// Hash Job
@@ -116,6 +118,7 @@ class SyncStatusNotifier extends Notifier<SyncStatusState> {
   void startHashJob() => setHashJobStatus(SyncStatus.syncing);
   void completeHashJob() => setHashJobStatus(SyncStatus.success);
   void errorHashJob(String error) => setHashJobStatus(SyncStatus.error, error);
+  void cancelHashJob() => setHashJobStatus(SyncStatus.idle);
 
   ///
   /// Cloud ID Sync Job
@@ -128,6 +131,7 @@ class SyncStatusNotifier extends Notifier<SyncStatusState> {
   void startCloudIdSync() => setCloudIdSyncStatus(SyncStatus.syncing);
   void completeCloudIdSync() => setCloudIdSyncStatus(SyncStatus.success);
   void errorCloudIdSync(String error) => setCloudIdSyncStatus(SyncStatus.error, error);
+  void cancelCloudIdSync() => setCloudIdSyncStatus(SyncStatus.idle);
 }
 
 final syncStatusProvider = NotifierProvider<SyncStatusNotifier, SyncStatusState>(SyncStatusNotifier.new);

@@ -18,6 +18,10 @@ final class CanonicalOriginClient extends http.BaseClient {
     retired.invalidate();
   }
 
+  Future<void> fenceAndDrain({required Duration timeout}) {
+    return _delegate.fenceAndDrain(timeout: timeout);
+  }
+
   /// The caller owns the returned single-subscription response stream and must
   /// consume or cancel it, as required by `Client.send`. There is no reliable
   /// finalization signal for an otherwise abandoned live stream; generation

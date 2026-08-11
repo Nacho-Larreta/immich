@@ -238,6 +238,52 @@ struct ClientCertPrompt: Hashable {
   }
 }
 
+/// Generated class from Pigeon that represents data sent in messages.
+struct NetworkRequestContextSnapshot: Hashable {
+  var clientPointer: Int64
+  var canonicalOrigin: String? = nil
+  var generation: Int64
+  var confirmed: Bool
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> NetworkRequestContextSnapshot? {
+    let clientPointer = pigeonVar_list[0] as! Int64
+    let canonicalOrigin: String? = nilOrValue(pigeonVar_list[1])
+    let generation = pigeonVar_list[2] as! Int64
+    let confirmed = pigeonVar_list[3] as! Bool
+
+    return NetworkRequestContextSnapshot(
+      clientPointer: clientPointer,
+      canonicalOrigin: canonicalOrigin,
+      generation: generation,
+      confirmed: confirmed
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      clientPointer,
+      canonicalOrigin,
+      generation,
+      confirmed,
+    ]
+  }
+  static func == (lhs: NetworkRequestContextSnapshot, rhs: NetworkRequestContextSnapshot) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return deepEqualsNetwork(lhs.clientPointer, rhs.clientPointer) && deepEqualsNetwork(lhs.canonicalOrigin, rhs.canonicalOrigin) && deepEqualsNetwork(lhs.generation, rhs.generation) && deepEqualsNetwork(lhs.confirmed, rhs.confirmed)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("NetworkRequestContextSnapshot")
+    deepHashNetwork(value: clientPointer, hasher: &hasher)
+    deepHashNetwork(value: canonicalOrigin, hasher: &hasher)
+    deepHashNetwork(value: generation, hasher: &hasher)
+    deepHashNetwork(value: confirmed, hasher: &hasher)
+  }
+}
+
 private class NetworkPigeonCodecReader: FlutterStandardReader {
   override func readValue(ofType type: UInt8) -> Any? {
     switch type {
@@ -245,6 +291,8 @@ private class NetworkPigeonCodecReader: FlutterStandardReader {
       return ClientCertData.fromList(self.readValue() as! [Any?])
     case 130:
       return ClientCertPrompt.fromList(self.readValue() as! [Any?])
+    case 131:
+      return NetworkRequestContextSnapshot.fromList(self.readValue() as! [Any?])
     default:
       return super.readValue(ofType: type)
     }
@@ -258,6 +306,9 @@ private class NetworkPigeonCodecWriter: FlutterStandardWriter {
       super.writeValue(value.toList())
     } else if let value = value as? ClientCertPrompt {
       super.writeByte(130)
+      super.writeValue(value.toList())
+    } else if let value = value as? NetworkRequestContextSnapshot {
+      super.writeByte(131)
       super.writeValue(value.toList())
     } else {
       super.writeValue(value)
@@ -287,8 +338,10 @@ protocol NetworkApi {
   func removeCertificate(completion: @escaping (Result<Void, Error>) -> Void)
   func hasCertificate() throws -> Bool
   func getClientPointer() throws -> Int64
+  func getRequestContextSnapshot() throws -> NetworkRequestContextSnapshot
   func setRequestHeaders(headers: [String: String], serverUrls: [String], token: String?) throws
   func replaceRequestContext(headers: [String: String], canonicalOrigin: String?, token: String?) throws
+  func failClosedRequestContext() throws
 }
 
 /// Generated setup class from Pigeon to handle messages through the `binaryMessenger`.
@@ -372,6 +425,19 @@ class NetworkApiSetup {
     } else {
       getClientPointerChannel.setMessageHandler(nil)
     }
+    let getRequestContextSnapshotChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.immich_mobile.NetworkApi.getRequestContextSnapshot\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      getRequestContextSnapshotChannel.setMessageHandler { _, reply in
+        do {
+          let result = try api.getRequestContextSnapshot()
+          reply(wrapResult(result))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      getRequestContextSnapshotChannel.setMessageHandler(nil)
+    }
     let setRequestHeadersChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.immich_mobile.NetworkApi.setRequestHeaders\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {
       setRequestHeadersChannel.setMessageHandler { message, reply in
@@ -405,6 +471,19 @@ class NetworkApiSetup {
       }
     } else {
       replaceRequestContextChannel.setMessageHandler(nil)
+    }
+    let failClosedRequestContextChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.immich_mobile.NetworkApi.failClosedRequestContext\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      failClosedRequestContextChannel.setMessageHandler { _, reply in
+        do {
+          try api.failClosedRequestContext()
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      failClosedRequestContextChannel.setMessageHandler(nil)
     }
   }
 }

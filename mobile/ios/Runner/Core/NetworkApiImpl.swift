@@ -60,6 +60,16 @@ class NetworkApiImpl: NetworkApi {
     let pointer = URLSessionManager.shared.sessionPointer
     return Int64(Int(bitPattern: pointer))
   }
+
+  func getRequestContextSnapshot() throws -> NetworkRequestContextSnapshot {
+    let snapshot = URLSessionManager.requestContextSnapshot()
+    return NetworkRequestContextSnapshot(
+      clientPointer: Int64(Int(bitPattern: snapshot.clientPointer)),
+      canonicalOrigin: snapshot.canonicalOrigin,
+      generation: Int64(bitPattern: snapshot.generation),
+      confirmed: snapshot.confirmed
+    )
+  }
   
   func setRequestHeaders(headers: [String : String], serverUrls: [String], token: String?) throws {
     try URLSessionManager.replaceLegacyRequestContext(headers: headers, serverUrls: serverUrls, token: token)
@@ -69,6 +79,10 @@ class NetworkApiImpl: NetworkApi {
     throws
   {
     try URLSessionManager.replaceRequestContext(headers: headers, canonicalOrigin: canonicalOrigin, token: token)
+  }
+
+  func failClosedRequestContext() throws {
+    try URLSessionManager.failClosedRequestContext()
   }
 }
 

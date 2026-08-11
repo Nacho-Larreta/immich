@@ -174,6 +174,7 @@ class URLSessionManager: NSObject {
   private static var activeHeaders: [String: String] = [:]
   private static var sensitiveHeaderNames: Set<String> = ["authorization", "cookie"]
   private static var requestContextRevision: UInt64 = 0
+  private static var requestContextConfirmed = false
   private static var isReplacingRequestContext = false
   private static var cookieReconciliationScheduled = false
   private static var cookieReconciliationRunning = false
@@ -209,9 +210,13 @@ class URLSessionManager: NSObject {
   }
 
   static func initializeBlockedRequestContext() {
+    var shouldNotify = false
     sessionTransitionLock.withLock {
-      withRequestContextLock { isReplacingRequestContext = true }
-      notifyRequestContextDidChange()
+      withRequestContextLock {
+        isReplacingRequestContext = true
+        requestContextConfirmed = false
+      }
+      shouldNotify = true
       guard liveInstance?.invalidateCurrentSession() ?? true else { return }
       withRequestContextLock {
         serverUrls = []
@@ -230,6 +235,9 @@ class URLSessionManager: NSObject {
       }
       liveInstance?.installCurrentSession()
     }
+    if shouldNotify {
+      notifyRequestContextDidChange()
+    }
   }
 
   func recreateSession(protocolClasses: [AnyClass]? = nil) {
@@ -245,6 +253,35 @@ class URLSessionManager: NSObject {
       headers: headers, canonicalOrigin: canonicalOrigin, token: token)
     try transitionRequestContext(
       headers: headers, origins: origin.map { [$0] } ?? [], token: token)
+  }
+
+  static func failClosedRequestContext() throws {
+    _ = shared
+    try transitionRequestContext(headers: [:], origins: [], token: nil, confirmed: false)
+  }
+
+  static func requestContextSnapshot() -> (
+    clientPointer: UnsafeMutableRawPointer,
+    canonicalOrigin: String?,
+    generation: UInt64,
+    confirmed: Bool
+  ) {
+    let manager = shared
+    return sessionTransitionLock.withLock {
+      let clientPointer = retainedPointer(to: manager.session)
+      return withRequestContextLock {
+        (
+          clientPointer,
+          activeCanonicalOrigins.first?.string,
+          requestContextRevision,
+          requestContextConfirmed && !isReplacingRequestContext
+        )
+      }
+    }
+  }
+
+  static func retainedPointer<T: AnyObject>(to object: T) -> UnsafeMutableRawPointer {
+    Unmanaged.passRetained(object).toOpaque()
   }
 
   static func replaceLegacyRequestContext(
@@ -394,7 +431,8 @@ class URLSessionManager: NSObject {
   private static func replaceRequestContextLocked(
     headers: [String: String],
     origins: [NetworkCanonicalOrigin],
-    token: String?
+    token: String?,
+    confirmed: Bool = true
   ) {
     let replacedOrigins = Array(Set(activeCanonicalOrigins + origins))
     clearManagedAuthCookiesLocked(for: replacedOrigins)
@@ -405,25 +443,80 @@ class URLSessionManager: NSObject {
     UserDefaults.group.set(serverUrls, forKey: SERVER_URLS_KEY)
     _ = reconcileAuthCookiesLocked(origins: origins)
     installHeadersLocked(headers)
+    requestContextConfirmed = confirmed
     isReplacingRequestContext = false
   }
 
   private static func transitionRequestContext(
     headers: [String: String],
     origins: [NetworkCanonicalOrigin],
-    token: String?
+    token: String?,
+    confirmed: Bool = true
   ) throws {
-    try sessionTransitionLock.withLock {
-      withRequestContextLock { isReplacingRequestContext = true }
-      notifyRequestContextDidChange()
-      guard shared.invalidateCurrentSession() else {
-        throw NetworkContextError.sessionInvalidationTimedOut
+    var shouldNotify = false
+    do {
+      try sessionTransitionLock.withLock {
+        let matchesActiveContext = withRequestContextLock {
+          requestContextMatchesLocked(headers: headers, origins: origins, token: token, confirmed: confirmed)
+        }
+        if matchesActiveContext {
+          return
+        }
+
+        withRequestContextLock {
+          isReplacingRequestContext = true
+          requestContextConfirmed = false
+        }
+        shouldNotify = true
+        guard shared.invalidateCurrentSession() else {
+          withRequestContextLock {
+            replaceRequestContextLocked(headers: [:], origins: [], token: nil, confirmed: false)
+          }
+          shared.installCurrentSession()
+          throw NetworkContextError.sessionInvalidationTimedOut
+        }
+        withRequestContextLock {
+          replaceRequestContextLocked(headers: headers, origins: origins, token: token, confirmed: confirmed)
+        }
+        shared.installCurrentSession()
       }
-      withRequestContextLock {
-        replaceRequestContextLocked(headers: headers, origins: origins, token: token)
+    } catch {
+      if shouldNotify {
+        notifyRequestContextDidChange()
       }
-      shared.installCurrentSession()
+      throw error
     }
+    if shouldNotify {
+      notifyRequestContextDidChange()
+    }
+  }
+
+  private static func requestContextMatchesLocked(
+    headers: [String: String],
+    origins: [NetworkCanonicalOrigin],
+    token: String?,
+    confirmed: Bool
+  ) -> Bool {
+    guard requestContextConfirmed == confirmed,
+      !isReplacingRequestContext,
+      activeCanonicalOrigins == origins,
+      activeAuthCookieValues[.accessToken] == token,
+      let activeCanonicalHeaders = canonicalHeaders(activeHeaders),
+      let requestedCanonicalHeaders = canonicalHeaders(headers)
+    else { return false }
+    return activeCanonicalHeaders == requestedCanonicalHeaders
+  }
+
+  private static func canonicalHeaders(_ headers: [String: String]) -> [String: String]? {
+    var canonical: [String: String] = [:]
+    for (name, value) in headers {
+      let canonicalName = name.lowercased()
+      if let existing = canonical[canonicalName], existing != value {
+        return nil
+      }
+      canonical[canonicalName] = value
+    }
+    return canonical
   }
 
   private static func clearManagedAuthCookiesLocked(for origins: [NetworkCanonicalOrigin]) {

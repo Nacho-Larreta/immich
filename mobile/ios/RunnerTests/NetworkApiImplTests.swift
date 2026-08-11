@@ -2,6 +2,8 @@ import XCTest
 
 @testable import Runner
 
+private final class OwnershipProbe {}
+
 final class NetworkApiImplTests: XCTestCase {
   override func setUpWithError() throws {
     try super.setUpWithError()
@@ -372,6 +374,94 @@ final class NetworkApiImplTests: XCTestCase {
     wait(for: [currentRequest], timeout: 1)
   }
 
+  func testIdenticalRequestContextReplacementKeepsTheLiveSessionAndAuthorization() throws {
+    let url = try XCTUnwrap(URL(string: "https://photos.test/api/assets"))
+    let headers = ["Authorization": "Bearer current-token", "X-Session": "current"]
+    try URLSessionManager.replaceRequestContext(
+      headers: ["authorization": "Bearer current-token", "x-session": "current"],
+      canonicalOrigin: "https://photos.test",
+      token: "current-token"
+    )
+    let liveSession = URLSessionManager.shared.session
+    let authorization = try XCTUnwrap(
+      URLSessionManager.authorize(url, declaredOrigin: "https://photos.test")
+    )
+    let contextChangeCount = Mutex(0)
+    let observer = NotificationCenter.default.addObserver(
+      forName: URLSessionManager.requestContextDidChange,
+      object: nil,
+      queue: nil
+    ) { _ in contextChangeCount.withLock { $0 += 1 } }
+    defer { NotificationCenter.default.removeObserver(observer) }
+
+    try URLSessionManager.replaceRequestContext(
+      headers: headers,
+      canonicalOrigin: "https://photos.test",
+      token: "current-token"
+    )
+
+    XCTAssertTrue(URLSessionManager.shared.session === liveSession)
+    XCTAssertEqual(contextChangeCount.withLock { $0 }, 0)
+    XCTAssertTrue(URLSessionManager.allows(url, under: authorization))
+  }
+
+  func testRequestContextSnapshotTransfersOwnershipAcrossAnInterleavedTransition() throws {
+    try URLSessionManager.replaceRequestContext(
+      headers: [:], canonicalOrigin: "https://photos.test", token: "old-token"
+    )
+    let liveSession = URLSessionManager.shared.session
+    let snapshot = URLSessionManager.requestContextSnapshot()
+
+    try URLSessionManager.replaceRequestContext(
+      headers: [:], canonicalOrigin: "https://new.test", token: "new-token"
+    )
+
+    let transferredSession = Unmanaged<URLSession>
+      .fromOpaque(snapshot.clientPointer)
+      .takeRetainedValue()
+    XCTAssertTrue(transferredSession === liveSession)
+    XCTAssertFalse(URLSessionManager.shared.session === transferredSession)
+  }
+
+  func testRetainedPointerTransfersExactlyOneOwnershipReference() throws {
+    weak var weakProbe: OwnershipProbe?
+    var pointer: UnsafeMutableRawPointer?
+
+    autoreleasepool {
+      let probe = OwnershipProbe()
+      weakProbe = probe
+      pointer = URLSessionManager.retainedPointer(to: probe)
+    }
+    XCTAssertNotNil(weakProbe)
+
+    let retainedPointer = try XCTUnwrap(pointer)
+    autoreleasepool {
+      _ = Unmanaged<OwnershipProbe>
+        .fromOpaque(retainedPointer)
+        .takeRetainedValue()
+    }
+    XCTAssertNil(weakProbe)
+  }
+
+  func testFailClosedTransitionDemotesAnAlreadyEmptyConfirmedContextExactlyOnce() throws {
+    let confirmed = URLSessionManager.requestContextSnapshot()
+    defer { Unmanaged<URLSession>.fromOpaque(confirmed.clientPointer).release() }
+    XCTAssertTrue(confirmed.confirmed)
+
+    try URLSessionManager.failClosedRequestContext()
+    let blocked = URLSessionManager.requestContextSnapshot()
+    defer { Unmanaged<URLSession>.fromOpaque(blocked.clientPointer).release() }
+    XCTAssertFalse(blocked.confirmed)
+    XCTAssertEqual(blocked.generation, confirmed.generation + 1)
+
+    try URLSessionManager.failClosedRequestContext()
+    let duplicate = URLSessionManager.requestContextSnapshot()
+    defer { Unmanaged<URLSession>.fromOpaque(duplicate.clientPointer).release() }
+    XCTAssertFalse(duplicate.confirmed)
+    XCTAssertEqual(duplicate.generation, blocked.generation)
+    XCTAssertEqual(duplicate.clientPointer, blocked.clientPointer)
+  }
+
   func testInvalidationTimeoutCancelsObserversAndNeverPublishesReplacementContext() throws {
     try URLSessionManager.replaceRequestContext(
       headers: ["Authorization": "Bearer old-token"],
@@ -405,7 +495,7 @@ final class NetworkApiImplTests: XCTestCase {
     }
 
     XCTAssertEqual(contextChangeCount.withLock { $0 }, 1)
-    XCTAssertTrue(URLSessionManager.shared.session === staleSession)
+    XCTAssertFalse(URLSessionManager.shared.session === staleSession)
     XCTAssertFalse(URLSessionManager.allows(URL(string: "https://photos.test/api")!))
     XCTAssertNil(
       URLSessionManager.authorize(
@@ -413,6 +503,10 @@ final class NetworkApiImplTests: XCTestCase {
         declaredOrigin: "https://photos.test"
       )
     )
+    let snapshot = URLSessionManager.requestContextSnapshot()
+    defer { Unmanaged<URLSession>.fromOpaque(snapshot.clientPointer).release() }
+    XCTAssertNil(snapshot.canonicalOrigin)
+    XCTAssertFalse(snapshot.confirmed)
   }
 
   func testSameOriginRedirectFromReplacedSessionIsRejected() throws {

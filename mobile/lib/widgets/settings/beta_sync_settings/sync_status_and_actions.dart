@@ -2,7 +2,9 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:immich_mobile/domain/utils/background_sync.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/extensions/platform_extensions.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
@@ -130,7 +132,7 @@ class SyncStatusAndActions extends HookConsumerWidget {
           leading: const Icon(Icons.sync),
           trailing: _SyncStatusIcon(status: ref.watch(syncStatusProvider).localSyncStatus),
           onTap: () {
-            ref.read(backgroundSyncProvider).syncLocal(full: true);
+            consumeBackgroundSyncTap(ref.read(backgroundSyncProvider).syncLocal(full: true));
           },
         ),
         SettingListTile(
@@ -139,7 +141,7 @@ class SyncStatusAndActions extends HookConsumerWidget {
           leading: const Icon(Icons.cloud_sync),
           trailing: _SyncStatusIcon(status: ref.watch(syncStatusProvider).remoteSyncStatus),
           onTap: () {
-            ref.read(backgroundSyncProvider).syncRemote();
+            consumeBackgroundSyncTap(ref.read(backgroundSyncProvider).syncRemote());
           },
         ),
         if (CurrentPlatform.isIOS && serverVersion.isAtLeast(major: 2, minor: 5))
@@ -148,7 +150,7 @@ class SyncStatusAndActions extends HookConsumerWidget {
             leading: const Icon(Icons.cloud_circle_rounded),
             subtitle: "tap_to_run_job".t(context: context),
             trailing: _SyncStatusIcon(status: ref.watch(syncStatusProvider).cloudIdSyncStatus),
-            onTap: ref.read(backgroundSyncProvider).syncCloudIds,
+            onTap: () => consumeBackgroundSyncTap(ref.read(backgroundSyncProvider).syncCloudIds()),
           ),
         SettingListTile(
           title: "hash_asset".t(context: context),
@@ -156,7 +158,7 @@ class SyncStatusAndActions extends HookConsumerWidget {
           subtitle: "tap_to_run_job".t(context: context),
           trailing: _SyncStatusIcon(status: ref.watch(syncStatusProvider).hashJobStatus),
           onTap: () {
-            ref.read(backgroundSyncProvider).hashAssets();
+            consumeBackgroundSyncTap(ref.read(backgroundSyncProvider).hashAssets());
           },
         ),
         const Divider(height: 1),
@@ -210,7 +212,7 @@ class _SyncStatusIcon extends StatelessWidget {
   }
 }
 
-class _SyncStatsCounts extends ConsumerWidget {
+class _SyncStatsCounts extends HookConsumerWidget {
   const _SyncStatsCounts();
 
   @override
@@ -221,18 +223,19 @@ class _SyncStatsCounts extends ConsumerWidget {
     final memoryService = ref.watch(driftMemoryServiceProvider);
     final appSettingsService = ref.watch(appSettingsServiceProvider);
 
-    Future<List<dynamic>> loadCounts() async {
-      final assetCounts = assetService.getAssetCounts();
-      final localAlbumCounts = localAlbumService.getCount();
-      final remoteAlbumCounts = remoteAlbumService.getCount();
-      final memoryCount = memoryService.getCount();
-      final getLocalHashedCount = assetService.getLocalHashedCount();
-
-      return await Future.wait([assetCounts, localAlbumCounts, remoteAlbumCounts, memoryCount, getLocalHashedCount]);
-    }
+    final counts = useMemoized(
+      () => Future.wait([
+        assetService.getAssetCounts(),
+        localAlbumService.getCount(),
+        remoteAlbumService.getCount(),
+        memoryService.getCount(),
+        assetService.getLocalHashedCount(),
+      ]),
+      [assetService, localAlbumService, remoteAlbumService, memoryService],
+    );
 
     return FutureBuilder(
-      future: loadCounts(),
+      future: counts,
       builder: (context, snapshot) {
         if (snapshot.connectionState != ConnectionState.done) {
           return const Center(child: SizedBox(height: 48, width: 48, child: CircularProgressIndicator()));
@@ -254,14 +257,14 @@ class _SyncStatsCounts extends ConsumerWidget {
           );
         }
 
-        final assetCounts = snapshot.data![0]! as (int, int);
+        final assetCounts = snapshot.data![0] as (int, int);
         final localAssetCount = assetCounts.$1;
         final remoteAssetCount = assetCounts.$2;
 
-        final localAlbumCount = snapshot.data![1]! as int;
-        final remoteAlbumCount = snapshot.data![2]! as int;
-        final memoryCount = snapshot.data![3]! as int;
-        final localHashedCount = snapshot.data![4]! as int;
+        final localAlbumCount = snapshot.data![1] as int;
+        final remoteAlbumCount = snapshot.data![2] as int;
+        final memoryCount = snapshot.data![3] as int;
+        final localHashedCount = snapshot.data![4] as int;
 
         return Column(
           mainAxisAlignment: MainAxisAlignment.start,

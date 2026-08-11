@@ -1,11 +1,10 @@
-import 'dart:async';
-
 import 'package:auto_route/auto_route.dart';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/models/album/local_album.model.dart';
 import 'package:immich_mobile/domain/services/sync_linked_album.service.dart';
+import 'package:immich_mobile/domain/utils/background_sync.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
 import 'package:immich_mobile/providers/app_settings.provider.dart';
@@ -110,10 +109,10 @@ class _DriftBackupAlbumSelectionPageState extends ConsumerState<DriftBackupAlbum
           final nativeSync = ref.read(nativeSyncApiProvider);
           if (totalChanged) {
             // Waits for hashing to be cancelled before starting a new one
-            unawaited(nativeSync.cancelHashing().whenComplete(() => backgroundSync.hashAssets()));
+            consumeBackgroundSyncTap(nativeSync.cancelHashing().whenComplete(() => backgroundSync.hashAssets()));
             if (isBackupEnabled) {
               backupNotifier.stopForegroundBackup();
-              unawaited(
+              consumeBackgroundSyncTap(
                 backgroundSync.syncRemote().then((success) {
                   if (success) {
                     return backupNotifier.startForegroundBackup(user.id);

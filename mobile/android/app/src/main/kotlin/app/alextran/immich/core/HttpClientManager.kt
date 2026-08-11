@@ -8,7 +8,6 @@ import androidx.core.content.edit
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.ResolvingDataSource
-import androidx.media3.datasource.cronet.CronetDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import app.alextran.immich.BuildConfig
 import app.alextran.immich.NativeBuffer
@@ -43,9 +42,12 @@ import java.security.KeyStore
 import java.security.Principal
 import java.security.PrivateKey
 import java.security.cert.X509Certificate
+import java.util.Locale
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManagerFactory
@@ -117,6 +119,30 @@ private data class CanonicalOrigin(
   }
 }
 
+private data class RequestContextFingerprint(
+  val origins: List<String>,
+  val token: String?,
+  val headers: Map<String, String>,
+) {
+  companion object {
+    fun create(
+      origins: List<CanonicalOrigin>,
+      token: String?,
+      headers: Map<String, String>,
+    ): RequestContextFingerprint {
+      val canonicalHeaders = buildMap {
+        headers.forEach { (key, value) ->
+          val canonicalKey = key.lowercase(Locale.ROOT)
+          require(put(canonicalKey, value) == null) {
+            "Request header names must be unique ignoring case"
+          }
+        }
+      }
+      return RequestContextFingerprint(origins.map(CanonicalOrigin::asString), token, canonicalHeaders)
+    }
+  }
+}
+
 /**
  * Manages a shared OkHttpClient with SSL configuration support.
  */
@@ -126,6 +152,7 @@ object HttpClientManager {
   private const val KEEP_ALIVE_CONNECTIONS = 10
   private const val KEEP_ALIVE_DURATION_MINUTES = 5L
   private const val MAX_REQUESTS_PER_HOST = 64
+  private const val REQUEST_CONTEXT_DRAIN_TIMEOUT_SECONDS = 10L
 
   private var initialized = false
   private val clientChangedListeners = mutableListOf<() -> Unit>()
@@ -148,6 +175,13 @@ object HttpClientManager {
     private set
 
   private var activeOrigins = emptyList<CanonicalOrigin>()
+  private var requestContextFingerprint: RequestContextFingerprint? = null
+  private var requestContextGeneration = 0L
+  private var requestContextTransitionEpoch = 0L
+  private var requestContextConfirmed = false
+  private var requestContextReplacing = false
+  private val okHttpDrainLock = Any()
+  private var pendingOkHttpDrain: CompletableFuture<Unit>? = null
 
   private val cookieJar = PersistentCookieJar()
 
@@ -175,7 +209,13 @@ object HttpClientManager {
       CookieHandler.setDefault(object : CookieHandler() {
         override fun get(uri: URI, requestHeaders: Map<String, List<String>>): Map<String, List<String>> {
           val httpUrl = uri.toString().toHttpUrlOrNull() ?: return emptyMap()
-          val cookies = cookieJar.loadForRequest(httpUrl)
+          val cookies = synchronized(HttpClientManager) {
+            if (!requestContextConfirmed || requestContextReplacing) {
+              emptyList()
+            } else {
+              cookieJar.loadForRequest(httpUrl)
+            }
+          }
           if (cookies.isEmpty()) return emptyMap()
           return mapOf("Cookie" to listOf(cookies.joinToString("; ") { "${it.name}=${it.value}" }))
         }
@@ -211,19 +251,18 @@ object HttpClientManager {
   }
 
   fun setKeyChainAlias(alias: String) {
-    synchronized(this) {
+    val listeners = synchronized(this) {
       val wasMtls = isMtls
       keyChainAlias = alias
       prefs.edit { putString(PREFS_CERT_ALIAS, alias) }
 
-      if (wasMtls != isMtls) {
-        clientChangedListeners.forEach { it() }
-      }
+      listenersForChange(wasMtls != isMtls)
     }
+    notifyClientChanged(listeners)
   }
 
   fun setKeyEntry(clientData: ByteArray, password: CharArray) {
-    synchronized(this) {
+    val listeners = synchronized(this) {
       val wasMtls = isMtls
       val tmpKeyStore = KeyStore.getInstance("PKCS12").apply {
         ByteArrayInputStream(clientData).use { stream -> load(stream, password) }
@@ -237,14 +276,13 @@ object HttpClientManager {
         keyStore.deleteEntry(CERT_ALIAS)
       }
       keyStore.setKeyEntry(CERT_ALIAS, key, null, chain)
-      if (wasMtls != isMtls) {
-        clientChangedListeners.forEach { it() }
-      }
+      listenersForChange(wasMtls != isMtls)
     }
+    notifyClientChanged(listeners)
   }
 
   fun deleteKeyEntry() {
-    synchronized(this) {
+    val listeners = synchronized(this) {
       val wasMtls = isMtls
 
       if (keyChainAlias != null) {
@@ -254,10 +292,9 @@ object HttpClientManager {
 
       keyStore.deleteEntry(CERT_ALIAS)
 
-      if (wasMtls) {
-        clientChangedListeners.forEach { it() }
-      }
+      listenersForChange(wasMtls)
     }
+    notifyClientChanged(listeners)
   }
 
   private var clientGlobalRef: Long = 0L
@@ -272,6 +309,15 @@ object HttpClientManager {
       clientGlobalRef = NativeBuffer.createGlobalRef(client)
     }
     return clientGlobalRef
+  }
+
+  fun getRequestContextSnapshot(): NetworkRequestContextSnapshot = synchronized(this) {
+    NetworkRequestContextSnapshot(
+      clientPointer = getClientPointer(),
+      canonicalOrigin = activeOrigins.singleOrNull()?.asString(),
+      generation = requestContextGeneration,
+      confirmed = requestContextConfirmed && !requestContextReplacing,
+    )
   }
 
   fun createProbeClient(timeoutMilliseconds: Long): OkHttpClient {
@@ -302,28 +348,57 @@ object HttpClientManager {
     val origins = serverUrls.map { value ->
       CanonicalOrigin.fromEndpoint(value) ?: throw IllegalArgumentException("Invalid HTTP(S) server endpoint")
     }
-    replaceRequestContext(headerMap, origins, token)
+    transitionRequestContext(headerMap, origins, token)
   }
 
   fun replaceRequestContext(headerMap: Map<String, String>, canonicalOrigin: String?, token: String?) {
     val origins = canonicalOrigin?.let { value ->
       listOf(CanonicalOrigin.fromStrictOrigin(value) ?: throw IllegalArgumentException("Invalid canonical origin"))
     } ?: emptyList()
-    replaceRequestContext(headerMap, origins, token)
+    transitionRequestContext(headerMap, origins, token, confirmed = true)
   }
 
-  private fun replaceRequestContext(
+  fun failClosedRequestContext() {
+    transitionRequestContext(emptyMap(), emptyList(), null, confirmed = false)
+  }
+
+  private fun transitionRequestContext(
     headerMap: Map<String, String>,
     origins: List<CanonicalOrigin>,
     token: String?,
+    confirmed: Boolean = true,
   ) {
     require(origins.isNotEmpty() || token == null) { "A token requires a canonical origin" }
     require(origins.isNotEmpty() || headerMap.isEmpty()) { "Custom headers require a canonical origin" }
     val builder = Headers.Builder()
     headerMap.forEach { (key, value) -> builder[key] = value }
     val newHeaders = builder.build()
+    val newFingerprint = RequestContextFingerprint.create(origins, token, headerMap)
 
-    synchronized(this) {
+    val transitionEpoch = synchronized(this) {
+      if (
+        !requestContextReplacing &&
+        requestContextFingerprint == newFingerprint &&
+        requestContextConfirmed == confirmed
+      ) {
+        return
+      }
+      requestContextTransitionEpoch++
+      requestContextReplacing = true
+      requestContextConfirmed = false
+      requestContextTransitionEpoch
+    }
+
+    val cancellationError = runCatching {
+      CompletableFuture.allOf(
+        cancelOkHttpWorkAndAwaitIdle(),
+        NetworkContextBoundWorkRegistry.fenceAndCancelAll(transitionEpoch),
+      ).get(REQUEST_CONTEXT_DRAIN_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+    }.exceptionOrNull()
+    if (cancellationError != null && confirmed) throw cancellationError
+
+    val publication = synchronized(this) {
+      if (requestContextTransitionEpoch != transitionEpoch) return
       val headersChanged = headers != newHeaders
       val serverUrls = origins.map(CanonicalOrigin::asString)
       val encodedServerUrls = Json.encodeToString(serverUrls)
@@ -332,7 +407,11 @@ object HttpClientManager {
       cookieJar.clearAuthCookies()
       headers = newHeaders
       activeOrigins = origins
+      requestContextFingerprint = newFingerprint
       cookieJar.setAllowedOrigins(origins)
+      requestContextGeneration++
+      requestContextConfirmed = confirmed
+      requestContextReplacing = false
 
       if (headersChanged || urlsChanged) {
         prefs.edit {
@@ -359,7 +438,51 @@ object HttpClientManager {
           })
         }
       }
+      clientChangedListeners.toList() to transitionEpoch
     }
+    notifyClientChanged(publication.first)
+    if (confirmed) NetworkContextBoundWorkRegistry.reopenAll(publication.second)
+    cancellationError?.let { throw it }
+  }
+
+  private fun cancelOkHttpWorkAndAwaitIdle(): CompletableFuture<Unit> {
+    val dispatcher = client.dispatcher
+    lateinit var onIdle: Runnable
+    val drained = synchronized(okHttpDrainLock) {
+      pendingOkHttpDrain?.let { return it }
+      val drained = CompletableFuture<Unit>()
+      val completed = AtomicBoolean(false)
+      val previousIdleCallback = dispatcher.idleCallback
+      onIdle = Runnable {
+        if (!completed.compareAndSet(false, true)) return@Runnable
+        if (dispatcher.idleCallback === onIdle) dispatcher.idleCallback = previousIdleCallback
+        try {
+          previousIdleCallback?.run()
+        } finally {
+          drained.complete(Unit)
+        }
+      }
+      dispatcher.idleCallback = onIdle
+      pendingOkHttpDrain = drained
+      drained.whenComplete { _, _ ->
+        synchronized(okHttpDrainLock) {
+          if (pendingOkHttpDrain === drained) pendingOkHttpDrain = null
+        }
+      }
+      drained
+    }
+    dispatcher.cancelAll()
+    if (dispatcher.queuedCallsCount() == 0 && dispatcher.runningCallsCount() == 0) {
+      onIdle.run()
+    }
+    return drained
+  }
+
+  private fun listenersForChange(changed: Boolean): List<() -> Unit> =
+    if (changed) clientChangedListeners.toList() else emptyList()
+
+  private fun notifyClientChanged(listeners: List<() -> Unit>) {
+    listeners.forEach { it() }
   }
 
   fun loadCookieHeader(url: String): String? {
@@ -370,8 +493,10 @@ object HttpClientManager {
 
   fun getAuthHeaders(url: String): Map<String, String> {
     val httpUrl = url.toHttpUrlOrNull() ?: return emptyMap()
-    val context = synchronized(this) { activeOrigins to headers }
-    if (context.first.none { it.matches(httpUrl) }) return emptyMap()
+    val context = synchronized(this) {
+      Triple(activeOrigins, headers, requestContextConfirmed && !requestContextReplacing)
+    }
+    if (!context.third || context.first.none { it.matches(httpUrl) }) return emptyMap()
     val result = mutableMapOf<String, String>()
     context.second.forEach { (key, value) -> result[key] = value }
     loadCookieHeader(url)?.let { result["Cookie"] = it }
@@ -391,19 +516,24 @@ object HttpClientManager {
 
   @OptIn(UnstableApi::class)
   fun createDataSourceFactory(headers: Map<String, String>): DataSource.Factory {
-    return if (isMtls) {
-      OkHttpDataSource.Factory(client.newBuilder().cache(null).build())
-    } else {
+    val delegate =
       ResolvingDataSource.Factory(
-        CronetDataSource.Factory(cronetEngine!!, cronetExecutor)
+        OkHttpDataSource.Factory(buildContextBoundMediaClient()),
       ) { dataSpec ->
         val newHeaders = dataSpec.httpRequestHeaders.toMutableMap()
         newHeaders.putAll(getAuthHeaders(dataSpec.uri.toString()))
         newHeaders["Cache-Control"] = "no-store"
         dataSpec.buildUpon().setHttpRequestHeaders(newHeaders).build()
       }
-    }
+    return ContextBoundDataSourceFactory(delegate)
   }
+
+  private fun buildContextBoundMediaClient(): OkHttpClient =
+    client.newBuilder().cache(null).build().also { mediaClient ->
+      check(mediaClient.dispatcher === client.dispatcher) {
+        "Media requests must share the request-context dispatcher"
+      }
+    }
 
   fun buildCronetEngine(): CronetEngine {
     return CronetEngine.Builder(appContext)
@@ -456,9 +586,14 @@ object HttpClientManager {
       .cookieJar(cookieJar)
       .addNetworkInterceptor {
         val request = it.request()
-        val context = synchronized(HttpClientManager) { activeOrigins to headers }
+        val context = synchronized(HttpClientManager) {
+          Triple(activeOrigins, headers, requestContextConfirmed && !requestContextReplacing)
+        }
         if (request.url.encodedUsername.isNotEmpty() || request.url.encodedPassword.isNotEmpty()) {
           throw IOException("Request URLs must not contain user information")
+        }
+        if (!context.third) {
+          throw IOException("Request rejected while the native request context is fenced")
         }
         if (context.first.isNotEmpty() && context.first.none { origin -> origin.matches(request.url) }) {
           throw IOException("Request rejected outside the active server origins")

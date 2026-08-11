@@ -57,6 +57,7 @@ RemoteMediaAccessSnapshot mapRemoteMediaAccess(ReachabilityState state) {
   return RemoteMediaAccessSnapshot(
     policy: switch (state.phase) {
       ReachabilityPhase.online => RemoteMediaPolicy.cacheThenNetwork,
+      ReachabilityPhase.probing when state.confirmedEndpoint != null => RemoteMediaPolicy.cacheThenNetwork,
       ReachabilityPhase.unknown ||
       ReachabilityPhase.probing ||
       ReachabilityPhase.offline ||

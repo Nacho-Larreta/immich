@@ -22,16 +22,20 @@ final backgroundSyncProvider = Provider<BackgroundSyncManager>((ref) {
       }
     },
     onRemoteSyncError: syncStatusNotifier.errorRemoteSync,
+    onRemoteSyncCancelled: syncStatusNotifier.cancelRemoteSync,
     onLocalSyncStart: syncStatusNotifier.startLocalSync,
     onLocalSyncComplete: syncStatusNotifier.completeLocalSync,
     onLocalSyncError: syncStatusNotifier.errorLocalSync,
+    onLocalSyncCancelled: syncStatusNotifier.cancelLocalSync,
     onHashingStart: syncStatusNotifier.startHashJob,
     onHashingComplete: syncStatusNotifier.completeHashJob,
     onHashingError: syncStatusNotifier.errorHashJob,
+    onHashingCancelled: syncStatusNotifier.cancelHashJob,
     onCloudIdSyncStart: syncStatusNotifier.startCloudIdSync,
     onCloudIdSyncComplete: syncStatusNotifier.completeCloudIdSync,
     onCloudIdSyncError: syncStatusNotifier.errorCloudIdSync,
+    onCloudIdSyncCancelled: syncStatusNotifier.cancelCloudIdSync,
   );
-  ref.onDispose(manager.cancel);
+  ref.onDispose(() => consumeBackgroundSyncTap(manager.cancel()));
   return manager;
 });

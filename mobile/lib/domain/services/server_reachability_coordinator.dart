@@ -165,21 +165,19 @@ final class ServerReachabilityCoordinator {
     if (_disposed) {
       return;
     }
-    _availabilityRevision++;
-    _requestContextLease.invalidateForTransportReview();
-    _invalidatePipelineForTransportReview(availability);
-    if (_availability == availability) {
-      switch (availability) {
-        case TransportAvailability.unknown:
-          _cancelScheduledCycle();
-        case TransportAvailability.unavailable:
-          return;
-        case TransportAvailability.available:
-          _handleAvailable();
-      }
+    final localContextInvalidated = _requestContextLease.invalidateForTransportReview();
+    final duplicate = _availability == availability;
+    if (duplicate && !localContextInvalidated) {
       return;
     }
-    _availability = availability;
+    _availabilityRevision++;
+    if (!duplicate) {
+      _availability = availability;
+    }
+    _invalidatePipelineForTransportReview(availability, forceGenerationChange: localContextInvalidated);
+    if (localContextInvalidated && _sessionActive && !_paused) {
+      _publish(ReachabilityPhase.probing, identity: _epochs.current, confirmedEndpoint: null);
+    }
     switch (availability) {
       case TransportAvailability.unknown:
         _cancelScheduledCycle();
@@ -200,9 +198,12 @@ final class ServerReachabilityCoordinator {
     }
   }
 
-  void _invalidatePipelineForTransportReview(TransportAvailability reviewedAvailability) {
+  void _invalidatePipelineForTransportReview(
+    TransportAvailability reviewedAvailability, {
+    bool forceGenerationChange = false,
+  }) {
     final run = _pipeline;
-    if (run == null && reviewedAvailability != TransportAvailability.unavailable) {
+    if (run == null && reviewedAvailability != TransportAvailability.unavailable && !forceGenerationChange) {
       return;
     }
     _epochs.invalidateProbeGeneration();

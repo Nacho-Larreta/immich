@@ -172,6 +172,60 @@ class ClientCertPrompt {
   int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
 }
 
+class NetworkRequestContextSnapshot {
+  NetworkRequestContextSnapshot({
+    required this.clientPointer,
+    this.canonicalOrigin,
+    required this.generation,
+    required this.confirmed,
+  });
+
+  int clientPointer;
+
+  String? canonicalOrigin;
+
+  int generation;
+
+  bool confirmed;
+
+  List<Object?> _toList() {
+    return <Object?>[clientPointer, canonicalOrigin, generation, confirmed];
+  }
+
+  Object encode() {
+    return _toList();
+  }
+
+  static NetworkRequestContextSnapshot decode(Object result) {
+    result as List<Object?>;
+    return NetworkRequestContextSnapshot(
+      clientPointer: result[0]! as int,
+      canonicalOrigin: result[1] as String?,
+      generation: result[2]! as int,
+      confirmed: result[3]! as bool,
+    );
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! NetworkRequestContextSnapshot || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(clientPointer, other.clientPointer) &&
+        _deepEquals(canonicalOrigin, other.canonicalOrigin) &&
+        _deepEquals(generation, other.generation) &&
+        _deepEquals(confirmed, other.confirmed);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+}
+
 class _PigeonCodec extends StandardMessageCodec {
   const _PigeonCodec();
   @override
@@ -185,6 +239,9 @@ class _PigeonCodec extends StandardMessageCodec {
     } else if (value is ClientCertPrompt) {
       buffer.putUint8(130);
       writeValue(buffer, value.encode());
+    } else if (value is NetworkRequestContextSnapshot) {
+      buffer.putUint8(131);
+      writeValue(buffer, value.encode());
     } else {
       super.writeValue(buffer, value);
     }
@@ -197,6 +254,8 @@ class _PigeonCodec extends StandardMessageCodec {
         return ClientCertData.decode(readValue(buffer)!);
       case 130:
         return ClientCertPrompt.decode(readValue(buffer)!);
+      case 131:
+        return NetworkRequestContextSnapshot.decode(readValue(buffer)!);
       default:
         return super.readValueOfType(type, buffer);
     }
@@ -296,6 +355,25 @@ class NetworkApi {
     return pigeonVar_replyValue! as int;
   }
 
+  Future<NetworkRequestContextSnapshot> getRequestContextSnapshot() async {
+    final pigeonVar_channelName =
+        'dev.flutter.pigeon.immich_mobile.NetworkApi.getRequestContextSnapshot$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(null);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    final Object? pigeonVar_replyValue = _extractReplyValueOrThrow(
+      pigeonVar_replyList,
+      pigeonVar_channelName,
+      isNullValid: false,
+    );
+    return pigeonVar_replyValue! as NetworkRequestContextSnapshot;
+  }
+
   Future<void> setRequestHeaders(Map<String, String> headers, List<String> serverUrls, String? token) async {
     final pigeonVar_channelName =
         'dev.flutter.pigeon.immich_mobile.NetworkApi.setRequestHeaders$pigeonVar_messageChannelSuffix';
@@ -319,6 +397,20 @@ class NetworkApi {
       binaryMessenger: pigeonVar_binaryMessenger,
     );
     final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[headers, canonicalOrigin, token]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    _extractReplyValueOrThrow(pigeonVar_replyList, pigeonVar_channelName, isNullValid: true);
+  }
+
+  Future<void> failClosedRequestContext() async {
+    final pigeonVar_channelName =
+        'dev.flutter.pigeon.immich_mobile.NetworkApi.failClosedRequestContext$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(null);
     final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
 
     _extractReplyValueOrThrow(pigeonVar_replyList, pigeonVar_channelName, isNullValid: true);

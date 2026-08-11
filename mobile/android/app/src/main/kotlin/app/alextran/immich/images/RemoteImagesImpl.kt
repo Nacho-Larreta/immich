@@ -7,6 +7,9 @@ import app.alextran.immich.INITIAL_BUFFER_SIZE
 import app.alextran.immich.NativeBuffer
 import app.alextran.immich.NativeByteBuffer
 import app.alextran.immich.core.HttpClientManager
+import app.alextran.immich.core.NetworkContextBoundWork
+import app.alextran.immich.core.NetworkContextBoundWorkRegistry
+import app.alextran.immich.core.NetworkContextWorkPhase
 import kotlinx.coroutines.*
 import okhttp3.Cache
 import okhttp3.Call
@@ -22,6 +25,7 @@ import java.io.File
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CompletableFuture
 
 private class RemoteRequest(val cancellationSignal: CancellationSignal)
 
@@ -115,12 +119,17 @@ class RemoteImagesImpl(context: Context) : RemoteImageApi {
   }
 }
 
-private object ImageFetcherManager {
+private object ImageFetcherManager : NetworkContextBoundWork {
   private lateinit var cacheDir: File
   private lateinit var fetcher: ImageFetcher
   private var initialized = false
+  private var fenced = false
+  private var phaseRevision = 0L
+  private val activeSignals = mutableSetOf<CancellationSignal>()
+  private val pendingDrains = mutableMapOf<Long, PendingDrain<CancellationSignal>>()
 
   fun initialize(context: Context) {
+    NetworkContextBoundWorkRegistry.register(this)
     if (initialized) return
     synchronized(this) {
       if (initialized) return
@@ -137,7 +146,39 @@ private object ImageFetcherManager {
     onSuccess: (NativeByteBuffer) -> Unit,
     onFailure: (Exception) -> Unit,
   ) {
-    fetcher.fetch(url, signal, onSuccess, onFailure)
+    val activeFetcher = synchronized(this) {
+      if (fenced) null else fetcher.also { activeSignals.add(signal) }
+    }
+    if (activeFetcher == null) {
+      onFailure(OperationCanceledException("Network request context is fenced"))
+      return
+    }
+    try {
+      activeFetcher.fetch(
+        url,
+        signal,
+        onSuccess = { buffer ->
+          try {
+            onSuccess(buffer)
+          } finally {
+            complete(signal)
+          }
+        },
+        onFailure = { error ->
+          try {
+            onFailure(error)
+          } finally {
+            complete(signal)
+          }
+        },
+      )
+    } catch (error: Exception) {
+      try {
+        onFailure(error)
+      } finally {
+        complete(signal)
+      }
+    }
   }
 
   fun clearCache(onCleared: (Result<Long>) -> Unit) {
@@ -145,11 +186,60 @@ private object ImageFetcherManager {
   }
 
   private fun invalidate() {
-    synchronized(this) {
+    val oldFetcher = synchronized(this) {
       val oldFetcher = fetcher
       fetcher = build()
-      oldFetcher.drain()
+      oldFetcher
     }
+    oldFetcher.drain()
+  }
+
+  override fun fenceAndCancel(phase: NetworkContextWorkPhase): CompletableFuture<Unit> {
+    val (signals, drained, activeFetcher) = synchronized(this) {
+      if (phase.revision < phaseRevision) return CompletableFuture.completedFuture(Unit)
+      phaseRevision = phase.revision
+      fenced = true
+      val signals = activeSignals.toList()
+      val drained = if (signals.isEmpty()) {
+        CompletableFuture.completedFuture(Unit)
+      } else {
+        pendingDrains.getOrPut(phase.transitionEpoch) {
+          PendingDrain(signals.toMutableSet(), CompletableFuture())
+        }.future
+      }
+      Triple(signals, drained, if (initialized) fetcher else null)
+    }
+    var drainFailure: Exception? = null
+    try {
+      activeFetcher?.drain()
+    } catch (error: Exception) {
+      drainFailure = error
+    } finally {
+      signals.forEach(CancellationSignal::cancel)
+    }
+    val failure = drainFailure ?: return drained
+    return drained.thenCompose {
+      CompletableFuture<Unit>().also { it.completeExceptionally(failure) }
+    }
+  }
+
+  override fun reopen(phase: NetworkContextWorkPhase) {
+    synchronized(this) {
+      if (phase.revision < phaseRevision) return
+      phaseRevision = phase.revision
+      fenced = false
+    }
+  }
+
+  private fun complete(signal: CancellationSignal) {
+    val drained = synchronized(this) {
+      if (!activeSignals.remove(signal)) return
+      pendingDrains.values.forEach { it.remaining.remove(signal) }
+      val completed = pendingDrains.filterValues { it.remaining.isEmpty() }
+      completed.keys.forEach(pendingDrains::remove)
+      completed.values.map { it.future }
+    }
+    drained.forEach { it.complete(Unit) }
   }
 
   private fun build(): ImageFetcher {
@@ -160,6 +250,11 @@ private object ImageFetcherManager {
     }
   }
 }
+
+private data class PendingDrain<T>(
+  val remaining: MutableSet<T>,
+  val future: CompletableFuture<Unit>,
+)
 
 private sealed interface ImageFetcher {
   fun fetch(
@@ -186,13 +281,15 @@ private class CronetImageFetcher : ImageFetcher {
     onSuccess: (NativeByteBuffer) -> Unit,
     onFailure: (Exception) -> Unit,
   ) {
-    synchronized(stateLock) {
+    val rejected = synchronized(stateLock) {
       if (draining) {
-        onFailure(IllegalStateException("Engine is draining"))
-        return
+        true
+      } else {
+        activeCount++
+        false
       }
-      activeCount++
     }
+    if (rejected) return onFailure(IllegalStateException("Engine is draining"))
 
     val callback = FetchCallback(onSuccess, onFailure, ::onComplete)
     val requestBuilder = HttpClientManager.cronetEngine!!
@@ -241,12 +338,15 @@ private class CronetImageFetcher : ImageFetcher {
   }
 
   override fun clearCache(onCleared: (Result<Long>) -> Unit) {
-    synchronized(stateLock) {
+    val alreadyClearing = synchronized(stateLock) {
       if (onCacheCleared != null) {
-        return onCleared(Result.success(-1))
+        true
+      } else {
+        onCacheCleared = onCleared
+        false
       }
-      onCacheCleared = onCleared
     }
+    if (alreadyClearing) return onCleared(Result.success(-1))
     drain()
   }
 
@@ -309,20 +409,20 @@ private class CronetImageFetcher : ImageFetcher {
 
     override fun onSucceeded(request: UrlRequest, info: UrlResponseInfo) {
       wrapped?.let { buffer!!.advance(it.position()) }
-      onSuccess(buffer!!)
       onComplete()
+      onSuccess(buffer!!)
     }
 
     override fun onFailed(request: UrlRequest, info: UrlResponseInfo?, error: CronetException) {
       buffer?.free()
-      onFailure(error)
       onComplete()
+      onFailure(error)
     }
 
     override fun onCanceled(request: UrlRequest, info: UrlResponseInfo?) {
       buffer?.free()
-      onFailure(error ?: OperationCanceledException())
       onComplete()
+      onFailure(error ?: OperationCanceledException())
     }
   }
 
@@ -347,13 +447,17 @@ private class OkHttpImageFetcher private constructor(
     }
   }
 
-  private fun onComplete() {
+  private fun onComplete(): Exception? {
     val shouldClose = synchronized(stateLock) {
       activeCount--
       draining && activeCount == 0
     }
-    if (shouldClose) {
+    if (!shouldClose) return null
+    return try {
       client.cache?.close()
+      null
+    } catch (error: Exception) {
+      error
     }
   }
 
@@ -363,12 +467,15 @@ private class OkHttpImageFetcher private constructor(
     onSuccess: (NativeByteBuffer) -> Unit,
     onFailure: (Exception) -> Unit,
   ) {
-    synchronized(stateLock) {
+    val rejected = synchronized(stateLock) {
       if (draining) {
-        return onFailure(IllegalStateException("Client is draining"))
+        true
+      } else {
+        activeCount++
+        false
       }
-      activeCount++
     }
+    if (rejected) return onFailure(IllegalStateException("Client is draining"))
 
     val requestBuilder = Request.Builder().url(url)
     val call = client.newCall(requestBuilder.build())
@@ -376,54 +483,66 @@ private class OkHttpImageFetcher private constructor(
 
     call.enqueue(object : Callback {
       override fun onFailure(call: Call, e: IOException) {
-        onFailure(e)
-        onComplete()
+        onFailure(onComplete() ?: e)
       }
 
       override fun onResponse(call: Call, response: Response) {
-        response.use {
-          if (!response.isSuccessful) {
-            return onFailure(IOException("HTTP ${response.code}: ${response.message}")).also { onComplete() }
-          }
-
-          val body = response.body
-            ?: return onFailure(IOException("Empty response body")).also { onComplete() }
-
-          if (call.isCanceled()) {
-            onFailure(OperationCanceledException())
-            return onComplete()
-          }
-
-          body.source().use { source ->
-            val length = body.contentLength().toInt()
-            val buffer = NativeByteBuffer(if (length > 0) length else INITIAL_BUFFER_SIZE)
-            try {
-              if (length > 0) {
-                val wrapped = NativeBuffer.wrap(buffer.pointer, length)
-                while (wrapped.hasRemaining()) {
-                  if (call.isCanceled()) throw OperationCanceledException()
-                  if (source.read(wrapped) == -1) throw EOFException()
-                }
-                buffer.advance(length)
-              } else {
-                while (true) {
-                  if (call.isCanceled()) throw OperationCanceledException()
-                  val bytesRead = source.read(buffer.wrapRemaining())
-                  if (bytesRead == -1) break
-                  buffer.advance(bytesRead)
-                  buffer.ensureHeadroom()
-                }
-              }
-              onSuccess(buffer)
-            } catch (e: Exception) {
-              buffer.free()
-              onFailure(e)
-            }
-            onComplete()
+        var buffer: NativeByteBuffer? = null
+        var failure: Exception? = null
+        try {
+          response.use { buffer = readResponse(call, response) }
+        } catch (error: Exception) {
+          failure = error
+        }
+        val completionFailure = onComplete()
+        failure = failure ?: completionFailure
+        if (failure != null) {
+          try {
+            buffer?.free()
+          } catch (freeError: Exception) {
+            failure = failure ?: freeError
+          } finally {
+            buffer = null
           }
         }
+        failure?.let(onFailure) ?: onSuccess(buffer!!)
       }
     })
+  }
+
+  private fun readResponse(call: Call, response: Response): NativeByteBuffer {
+    if (!response.isSuccessful) {
+      throw IOException("HTTP ${response.code}: ${response.message}")
+    }
+    val body = response.body ?: throw IOException("Empty response body")
+    if (call.isCanceled()) throw OperationCanceledException()
+
+    body.source().use { source ->
+      val length = body.contentLength().toInt()
+      val buffer = NativeByteBuffer(if (length > 0) length else INITIAL_BUFFER_SIZE)
+      try {
+        if (length > 0) {
+          val wrapped = NativeBuffer.wrap(buffer.pointer, length)
+          while (wrapped.hasRemaining()) {
+            if (call.isCanceled()) throw OperationCanceledException()
+            if (source.read(wrapped) == -1) throw EOFException()
+          }
+          buffer.advance(length)
+        } else {
+          while (true) {
+            if (call.isCanceled()) throw OperationCanceledException()
+            val bytesRead = source.read(buffer.wrapRemaining())
+            if (bytesRead == -1) break
+            buffer.advance(bytesRead)
+            buffer.ensureHeadroom()
+          }
+        }
+        return buffer
+      } catch (error: Exception) {
+        buffer.free()
+        throw error
+      }
+    }
   }
 
   override fun drain() {

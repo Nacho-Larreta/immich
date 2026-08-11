@@ -1,9 +1,8 @@
-import 'dart:async';
-
 import 'package:auto_route/auto_route.dart';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
+import 'package:immich_mobile/domain/utils/background_sync.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
 import 'package:immich_mobile/providers/app_settings.provider.dart';
@@ -60,7 +59,7 @@ class DriftBackupOptionsPage extends ConsumerWidget {
           final backupNotifier = ref.read(driftBackupProvider.notifier);
           final backgroundSync = ref.read(backgroundSyncProvider);
           backupNotifier.stopForegroundBackup();
-          unawaited(
+          consumeBackgroundSyncTap(
             backgroundSync.syncRemote().then((success) {
               if (success) {
                 return backupNotifier.startForegroundBackup(currentUser.id);

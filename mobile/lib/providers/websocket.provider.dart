@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
+import 'package:immich_mobile/domain/utils/background_sync.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/infrastructure/repositories/network.repository.dart';
 import 'package:immich_mobile/models/server_info/server_version.model.dart';
@@ -217,7 +218,7 @@ class WebsocketNotifier extends StateNotifier<WebsocketState> {
     if (!_acceptEvents) {
       return;
     }
-    unawaited(_ref.read(backgroundSyncProvider).syncWebsocketEdit(data));
+    consumeBackgroundSyncTap(_ref.read(backgroundSyncProvider).syncWebsocketEdit(data));
   }
 
   void _processBatchedAssetUploadReady() {
@@ -228,10 +229,10 @@ class WebsocketNotifier extends StateNotifier<WebsocketState> {
 
     final isSyncAlbumEnabled = Store.get(StoreKey.syncAlbums, false);
     try {
-      unawaited(
+      consumeBackgroundSyncTap(
         _ref.read(backgroundSyncProvider).syncWebsocketBatch(_batchedAssetUploadReady.toList()).then((_) {
           if (isSyncAlbumEnabled) {
-            _ref.read(backgroundSyncProvider).syncLinkedAlbum();
+            return _ref.read(backgroundSyncProvider).syncLinkedAlbum();
           }
         }),
       );

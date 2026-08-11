@@ -23,6 +23,20 @@ void main() {
     });
   }
 
+  test('confirmed endpoint remains network-capable during a benign probe', () {
+    final state = ReachabilityState(
+      phase: ReachabilityPhase.probing,
+      sessionEpoch: 7,
+      probeGeneration: 4,
+      confirmedEndpoint: Uri.parse('https://photos.example.test/api'),
+    );
+
+    expect(
+      mapRemoteMediaAccess(state),
+      const RemoteMediaAccessSnapshot(policy: RemoteMediaPolicy.cacheThenNetwork, sessionEpoch: 7),
+    );
+  });
+
   test('endpoint snapshot owns only its canonical origin and builds stable URLs', () {
     final endpoint = RemoteMediaEndpointSnapshot(Uri.parse('HTTPS://Photos.Example.Test:443/api/'));
 

@@ -9,6 +9,8 @@ final class GenerationBoundHttpTransport {
   final http.Client _client;
   final int generation;
   final _responses = <_GenerationBoundResponse>{};
+  final _pendingSends = <Future<void>>{};
+  var _admissionsClosed = false;
   var _invalidated = false;
   var _closed = false;
 
@@ -17,12 +19,14 @@ final class GenerationBoundHttpTransport {
   bool owns(http.Client client) => identical(_client, client);
 
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
-    if (_invalidated || _closed) {
+    if (_admissionsClosed || _invalidated || _closed) {
       throw _staleRequest(request.url);
     }
+    final sendCompletion = Completer<void>();
+    _pendingSends.add(sendCompletion.future);
     try {
       final response = await _client.send(request);
-      if (_invalidated) {
+      if (_admissionsClosed || _invalidated) {
         await _cancelUnboundResponse(response);
         throw _staleRequest(request.url);
       }
@@ -36,15 +40,32 @@ final class GenerationBoundHttpTransport {
       _responses.add(tracked);
       return tracked.response;
     } catch (error) {
-      if (_invalidated && error is! http.ClientException) {
+      if ((_admissionsClosed || _invalidated) && error is! http.ClientException) {
         throw _staleRequest(request.url);
       }
       rethrow;
+    } finally {
+      sendCompletion.complete();
+      _pendingSends.remove(sendCompletion.future);
     }
+  }
+
+  Future<void> fenceAndDrain({required Duration timeout}) async {
+    _admissionsClosed = true;
+    try {
+      _closeClientOnce();
+    } catch (error, stackTrace) {
+      _log.warning('Retired native transport failed to close.', error, stackTrace);
+    }
+    final cancellations = _responses.map((response) => response.invalidate()).toList(growable: false);
+    final pending = _pendingSends.toList(growable: false);
+    await Future.wait([...cancellations, ...pending]).timeout(timeout);
+    _invalidated = true;
   }
 
   void invalidate() {
     if (_invalidated) return;
+    _admissionsClosed = true;
     _invalidated = true;
     for (final response in _responses.toList(growable: false)) {
       unawaited(response.invalidate());
@@ -62,14 +83,8 @@ final class GenerationBoundHttpTransport {
   );
 
   Future<void> _cancelUnboundResponse(http.StreamedResponse response) async {
-    StreamSubscription<List<int>>? subscription;
-    try {
-      subscription = response.stream.listen(null, onError: (_) {});
-      await subscription.cancel();
-    } catch (_) {
-      // The generation fence is authoritative even when the retired transport
-      // cannot acknowledge cancellation.
-    }
+    final subscription = response.stream.listen(null, onError: (_) {});
+    await subscription.cancel();
   }
 
   void _closeClientOnce() {
@@ -166,11 +181,9 @@ final class _GenerationBoundResponse {
       ),
     );
     unawaited(_controller.close());
+    final subscription = _subscription ??= _source.stream.listen(null, onError: (_) {});
     try {
-      await _subscription?.cancel();
-    } catch (_) {
-      // The stale response remains rejected even when transport cancellation
-      // cannot be acknowledged.
+      await subscription.cancel();
     } finally {
       _release();
     }

@@ -95,6 +95,90 @@ void main() {
     expect(NetworkRepository.activeEndpointSchemePolicy, EndpointSchemePolicy.httpsOnly);
   });
 
+  test('binding failure after native confirmation purges natively and keeps Dart fenced', () async {
+    await _storeSession(endpoint: 'https://photos.test/api', policy: EndpointSchemePolicy.httpsOnly, ready: true);
+    final events = <String>[];
+
+    await expectLater(
+      NetworkRepository.initForTest(
+        replaceNativeContext: (headers, origin, token) async => events.add('replace:$origin'),
+        bindNativeClient: () async {
+          events.add('bind');
+          throw StateError('snapshot failed');
+        },
+        failClosedNativeContext: () async => events.add('purge'),
+      ),
+      throwsStateError,
+    );
+
+    expect(events, ['replace:https://photos.test', 'bind', 'purge']);
+    expect(NetworkRepository.hasConfirmedRequestContext(Uri.parse('https://photos.test')), isFalse);
+  });
+
+  test('purge drain timeout still purges native context unconfirmed before propagating', () async {
+    final events = <String>[];
+    const timeout = NetworkTransportDrainTimeout(Duration(seconds: 5));
+
+    await expectLater(
+      NetworkRepository.purgeRequestContextForTest(
+        drainTransport: () async {
+          events.add('drain');
+          throw timeout;
+        },
+        replaceNativeContext: (headers, origin, token) async => events.add('replace'),
+        bindNativeClient: () async => events.add('bind'),
+        failClosedNativeContext: () async => events.add('failClosed'),
+      ),
+      throwsA(same(timeout)),
+    );
+
+    expect(events, ['drain', 'failClosed']);
+    expect(NetworkRepository.hasConfirmedRequestContext(Uri.parse('https://photos.test')), isFalse);
+  });
+
+  for (final transport in ['HTTP', 'WebSocket']) {
+    test('purge fail-closes once when $transport cancellation throws', () async {
+      final events = <String>[];
+      final cancellationError = StateError('$transport cancellation failed');
+
+      await expectLater(
+        NetworkRepository.purgeRequestContextForTest(
+          drainTransport: () async {
+            events.add('drain');
+            throw cancellationError;
+          },
+          replaceNativeContext: (headers, origin, token) async => events.add('replace'),
+          bindNativeClient: () async => events.add('bind'),
+          failClosedNativeContext: () async => events.add('failClosed'),
+        ),
+        throwsA(same(cancellationError)),
+      );
+
+      expect(events, ['drain', 'failClosed']);
+    });
+  }
+
+  test('genuine replacement drain timeout never calls native replacement or purge', () async {
+    await _storeSession(endpoint: 'https://photos.test/api', policy: EndpointSchemePolicy.httpsOnly, ready: true);
+    final events = <String>[];
+    const timeout = NetworkTransportDrainTimeout(Duration(seconds: 5));
+
+    await expectLater(
+      NetworkRepository.initForTest(
+        drainTransport: () async {
+          events.add('drain');
+          throw timeout;
+        },
+        replaceNativeContext: (headers, origin, token) async => events.add('replace'),
+        failClosedNativeContext: () async => events.add('failClosed'),
+      ),
+      throwsA(same(timeout)),
+    );
+
+    expect(events, ['drain']);
+    expect(NetworkRepository.hasConfirmedRequestContext(Uri.parse('https://photos.test')), isFalse);
+  });
+
   test('cold start never restores a WiFi-bound local HTTP lease', () async {
     await _storeSession(
       endpoint: 'http://photos.test/api',
