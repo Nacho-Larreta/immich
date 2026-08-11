@@ -249,6 +249,11 @@ class NetworkRepository {
     _transportFenced = false;
   }
 
+  @visibleForTesting
+  static void setContextRoleForTest(NetworkContextRole role) {
+    _contextRole = role;
+  }
+
   static void _installNativeClient(http.Client nativeClient) {
     final client = _client;
     if (client == null) {
@@ -407,6 +412,17 @@ class NetworkRepository {
     );
   }
 
+  static Future<void> drainAttachedWorker() async {
+    if (_contextRole != NetworkContextRole.attachedWorker) {
+      throw StateError('Only attached network workers can drain their local transport directly');
+    }
+    _blockForContextTransition();
+    final client = _client;
+    if (client == null) return;
+    await Future.wait([client.fenceAndDrain(timeout: null), _webSockets.fenceAndDrain(timeout: null)]);
+    _transportFenced = true;
+  }
+
   @visibleForTesting
   static Future<void> purgeRequestContextForTest({
     required Future<void> Function() drainTransport,
@@ -478,6 +494,9 @@ class NetworkRepository {
   }
 
   static Future<WebSocket> createWebSocket(Uri uri, {Map<String, String>? headers, Iterable<String>? protocols}) {
+    if (_contextRole != NetworkContextRole.rootWriter) {
+      return Future.error(StateError('Attached network workers cannot create WebSockets'));
+    }
     final context = _requestOriginGuard.context;
     final origins = context.allowedOrigins;
     if (!context.nativeContextConfirmed || !origins.any((origin) => isWebSocketForCanonicalOrigin(uri, origin))) {

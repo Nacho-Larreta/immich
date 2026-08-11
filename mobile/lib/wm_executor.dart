@@ -6,8 +6,10 @@ import 'dart:math';
 
 import 'package:collection/collection.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:immich_mobile/utils/managed_isolate_worker.dart';
+import 'package:immich_mobile/utils/worker_termination_safety.dart';
 import 'package:worker_manager/src/number_of_processors/processors_io.dart';
-import 'package:worker_manager/src/worker/worker.dart';
 import 'package:worker_manager/worker_manager.dart';
 
 final workerManagerPatch = _Executor();
@@ -49,19 +51,38 @@ mixin _ExecutorLogger on Mixinable<_Executor> {
 
 class _Executor extends Mixinable<_Executor> with _ExecutorLogger {
   final _queue = PriorityQueue<Task>();
-  final _pool = <Worker>[];
+  final _pool = <ManagedIsolateWorker>[];
+  final _retirements = <Future<WorkerDisposal>>{};
   var _nextTaskId = _minId;
   var _dynamicSpawning = false;
   var _isolatesCount = numberOfProcessors;
+  var _generation = 0;
+  var _disposing = false;
+  var _disposed = false;
+  var _hasQuarantinedRetirement = false;
+  Future<void>? _disposal;
 
   @visibleForTesting
-  UnmodifiableListView<Worker> get pool => UnmodifiableListView(_pool);
+  UnmodifiableListView<ManagedIsolateWorker> get pool => UnmodifiableListView(_pool);
+  @visibleForTesting
+  bool get isDisposed => _disposed;
+
+  bool get _acceptingWork => !_disposing && !_disposed;
 
   @override
   Future<void> init({int? isolatesCount, bool? dynamicSpawning}) async {
+    if (_disposing) {
+      throw StateError('worker_manager is disposing');
+    }
     if (_pool.isNotEmpty) {
       print("worker_manager already warmed up, init is ignored. Dispose before init");
       return;
+    }
+    if (_disposed) {
+      _disposed = false;
+      _disposal = null;
+      _hasQuarantinedRetirement = false;
+      _generation++;
     }
     if (isolatesCount != null) {
       if (isolatesCount < 0) {
@@ -71,20 +92,33 @@ class _Executor extends Mixinable<_Executor> with _ExecutorLogger {
       _isolatesCount = isolatesCount;
     }
     _dynamicSpawning = dynamicSpawning ?? false;
-    await _ensureWorkersInitialized();
+    await _ensureWorkersInitialized(_generation);
     super.init();
   }
 
   @override
-  Future<void> dispose() async {
-    _queue.clear();
-    for (final worker in _pool) {
-      if (worker.initialized || worker.initializing) {
-        worker.kill();
-      }
-    }
-    _pool.clear();
+  Future<void> dispose() {
     super.dispose();
+    return _disposal ??= _dispose();
+  }
+
+  Future<void> _dispose() async {
+    _disposing = true;
+    _generation++;
+    while (_queue.isNotEmpty) {
+      _queue.removeFirst().cancel();
+    }
+    final workers = _pool.toList(growable: false);
+    _pool.clear();
+    for (final worker in workers) {
+      unawaited(_retireWorker(worker));
+    }
+    await Future.wait(_retirements.toList(growable: false));
+    _disposing = false;
+    _disposed = true;
+    if (_hasQuarantinedRetirement) {
+      throw PlatformException(code: unsafeWorkerTerminationCode, message: unsafeWorkerTerminationCode);
+    }
   }
 
   Cancelable<R> execute<R>(Execute<R> execution, {WorkPriority priority = WorkPriority.immediately}) {
@@ -92,6 +126,7 @@ class _Executor extends Mixinable<_Executor> with _ExecutorLogger {
   }
 
   Cancelable<R> executeNow<R>(ExecuteGentle<R> execution) {
+    _ensureAcceptingWork();
     final task = TaskGentle<R>(
       id: "",
       workPriority: WorkPriority.immediately,
@@ -140,9 +175,10 @@ class _Executor extends Mixinable<_Executor> with _ExecutorLogger {
     );
   }
 
-  void _createWorkers() {
+  void _createWorkers(int generation) {
+    if (!_isActiveGeneration(generation)) return;
     for (var i = 0; i < _isolatesCount; i++) {
-      _pool.add(Worker());
+      _pool.add(ManagedIsolateWorker());
     }
   }
 
@@ -155,6 +191,7 @@ class _Executor extends Mixinable<_Executor> with _ExecutorLogger {
     WorkPriority priority = WorkPriority.immediately,
     void Function(Object value)? onMessage,
   }) {
+    _ensureAcceptingWork();
     if (_nextTaskId + 1 == _maxId) {
       _nextTaskId = _minId;
     }
@@ -189,11 +226,13 @@ class _Executor extends Mixinable<_Executor> with _ExecutorLogger {
     return Cancelable(completer: task.completer, onCancel: () => _cancel(task));
   }
 
-  Future<void> _ensureWorkersInitialized() async {
+  Future<void> _ensureWorkersInitialized(int generation) async {
+    if (!_isActiveGeneration(generation)) return;
     if (_pool.isEmpty) {
-      _createWorkers();
+      _createWorkers(generation);
       if (!_dynamicSpawning) {
         await _initializeWorkers();
+        if (!_isActiveGeneration(generation)) return;
         final poolSize = _pool.length;
         final queueSize = _queue.length;
         for (int i = 0; i <= min(poolSize, queueSize); i++) {
@@ -209,14 +248,16 @@ class _Executor extends Mixinable<_Executor> with _ExecutorLogger {
         (worker) => worker.taskId == null && !worker.initialized && !worker.initializing,
       );
       await freeWorker?.initialize();
-      _schedule();
+      if (_isActiveGeneration(generation)) _schedule();
     }
   }
 
   void _schedule() {
-    final availableWorker = _pool.firstWhereOrNull((worker) => worker.taskId == null && worker.initialized);
+    if (!_acceptingWork) return;
+    final generation = _generation;
+    final availableWorker = _pool.firstWhereOrNull((worker) => worker.isReusable);
     if (availableWorker == null) {
-      _ensureWorkersInitialized();
+      unawaited(_ensureWorkersInitialized(generation));
       return;
     }
     if (_queue.isEmpty) return;
@@ -226,17 +267,26 @@ class _Executor extends Mixinable<_Executor> with _ExecutorLogger {
         .work(task)
         .then(
           (value) {
-            //might be completed by cancel and it is normal.
-            //Assuming that worker finished with error and cleaned gracefully
             task.complete(value, null, null);
           },
           onError: (error, st) {
             task.complete(null, error, st);
           },
         )
-        .whenComplete(() {
-          if (_dynamicSpawning && _queue.isEmpty) availableWorker.kill();
-          _schedule();
+        .whenComplete(() async {
+          if (!_isActiveGeneration(generation)) return;
+          if (!availableWorker.isReusable && _pool.contains(availableWorker)) {
+            _pool.remove(availableWorker);
+            await _retireWorker(availableWorker);
+            if (!_dynamicSpawning && _isActiveGeneration(generation)) {
+              final replacement = ManagedIsolateWorker();
+              _pool.add(replacement);
+              await replacement.initialize();
+            }
+          } else if (_dynamicSpawning && _queue.isEmpty && _pool.remove(availableWorker)) {
+            await _retireWorker(availableWorker);
+          }
+          if (_isActiveGeneration(generation)) _schedule();
         });
   }
 
@@ -246,11 +296,56 @@ class _Executor extends Mixinable<_Executor> with _ExecutorLogger {
     _queue.remove(task);
     final targetWorker = _pool.firstWhereOrNull((worker) => worker.taskId == task.id);
     if (task is Gentle) {
-      targetWorker?.cancelGentle();
+      targetWorker?.requestGentleCancellation();
     } else {
-      targetWorker?.kill();
-      if (!_dynamicSpawning) targetWorker?.initialize();
+      if (targetWorker != null) {
+        _pool.remove(targetWorker);
+        _retireWorker(targetWorker);
+        if (!_dynamicSpawning) {
+          final replacement = ManagedIsolateWorker();
+          _pool.add(replacement);
+          final generation = _generation;
+          unawaited(
+            replacement.initialize().whenComplete(() {
+              if (_isActiveGeneration(generation)) _schedule();
+            }),
+          );
+        }
+      }
     }
     super._cancel(task);
+  }
+
+  bool _isActiveGeneration(int generation) => _acceptingWork && generation == _generation;
+
+  Future<WorkerDisposal> _retireWorker(ManagedIsolateWorker worker) {
+    late final Future<WorkerDisposal> retirement;
+    retirement = _disposeWorker(worker);
+    _retirements.add(retirement);
+    unawaited(
+      retirement.then<void>((_) {
+        _retirements.remove(retirement);
+      }),
+    );
+    return retirement;
+  }
+
+  Future<WorkerDisposal> _disposeWorker(ManagedIsolateWorker worker) async {
+    try {
+      final disposal = await worker.dispose();
+      if (disposal == WorkerDisposal.quarantined) {
+        _hasQuarantinedRetirement = true;
+      }
+      return disposal;
+    } on Object {
+      _hasQuarantinedRetirement = true;
+      return WorkerDisposal.quarantined;
+    }
+  }
+
+  void _ensureAcceptingWork() {
+    if (!_acceptingWork) {
+      throw StateError('worker_manager is not accepting work');
+    }
   }
 }

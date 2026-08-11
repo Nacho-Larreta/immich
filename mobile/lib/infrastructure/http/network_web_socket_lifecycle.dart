@@ -35,11 +35,12 @@ final class NetworkWebSocketLifecycle {
     }
   }
 
-  Future<void> fenceAndDrain({required Duration timeout}) async {
+  Future<void> fenceAndDrain({required Duration? timeout}) async {
     _admissionsClosed = true;
     final closures = _openSockets.map((socket) => socket.fenceAndClose()).toList(growable: false);
     final pending = _pendingConnections.toList(growable: false);
-    await Future.wait([...closures, ...pending]).timeout(timeout);
+    final drain = Future.wait([...closures, ...pending]);
+    await (timeout == null ? drain : drain.timeout(timeout));
   }
 }
 

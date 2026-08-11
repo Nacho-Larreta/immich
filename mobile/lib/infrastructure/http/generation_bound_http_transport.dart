@@ -50,7 +50,7 @@ final class GenerationBoundHttpTransport {
     }
   }
 
-  Future<void> fenceAndDrain({required Duration timeout}) async {
+  Future<void> fenceAndDrain({required Duration? timeout}) async {
     _admissionsClosed = true;
     try {
       _closeClientOnce();
@@ -59,7 +59,8 @@ final class GenerationBoundHttpTransport {
     }
     final cancellations = _responses.map((response) => response.invalidate()).toList(growable: false);
     final pending = _pendingSends.toList(growable: false);
-    await Future.wait([...cancellations, ...pending]).timeout(timeout);
+    final drain = Future.wait([...cancellations, ...pending]);
+    await (timeout == null ? drain : drain.timeout(timeout));
     _invalidated = true;
   }
 

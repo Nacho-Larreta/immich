@@ -25,6 +25,7 @@ import io.flutter.embedding.engine.loader.FlutterLoader
 import java.util.concurrent.TimeUnit
 
 private const val TAG = "BackgroundWorker"
+private const val UNSAFE_TERMINATION_CODE = "unsafe-to-terminate"
 
 class BackgroundWorker(context: Context, params: WorkerParameters) :
   ListenableWorker(context, params), BackgroundWorkerBgHostApi {
@@ -42,6 +43,7 @@ class BackgroundWorker(context: Context, params: WorkerParameters) :
 
   // Used to call methods on the flutter side
   private var flutterApi: BackgroundWorkerFlutterApi? = null
+  private var isQuarantined = false
 
   /// Result returned when the background task completes. This is used to signal
   /// to the WorkManager that the task has finished, either successfully or with failure.
@@ -139,14 +141,19 @@ class BackgroundWorker(context: Context, params: WorkerParameters) :
   }
 
   override fun close() {
-    if (isComplete) {
+    if (isComplete || isQuarantined) {
       return
     }
 
     Handler(Looper.getMainLooper()).postAtFrontOfQueue {
       if (flutterApi != null) {
-        flutterApi?.cancel {
-          complete(Result.failure())
+        flutterApi?.cancel { result ->
+          val error = result.exceptionOrNull()
+          if (error is FlutterError && error.code == UNSAFE_TERMINATION_CODE) {
+            quarantine()
+          } else {
+            complete(Result.failure())
+          }
         }
       }
     }
@@ -154,7 +161,7 @@ class BackgroundWorker(context: Context, params: WorkerParameters) :
     waitForForegroundPromotion()
 
     Handler(Looper.getMainLooper()).postDelayed({
-      complete(Result.failure())
+      quarantine()
     }, 5000)
   }
 
@@ -175,8 +182,22 @@ class BackgroundWorker(context: Context, params: WorkerParameters) :
 
     result.fold(
       onSuccess = { _ -> complete(Result.success()) },
-      onFailure = { _ -> onStopped() }
+      onFailure = { error ->
+        if (error is FlutterError && error.code == UNSAFE_TERMINATION_CODE) {
+          quarantine()
+        } else {
+          onStopped()
+        }
+      }
     )
+  }
+
+  private fun quarantine() {
+    if (isComplete || isQuarantined) {
+      return
+    }
+    isQuarantined = true
+    Log.e(TAG, "BG-NET-DRAIN-UNSAFE")
   }
 
   /**
@@ -188,6 +209,9 @@ class BackgroundWorker(context: Context, params: WorkerParameters) :
    * - Parameter success: Indicates whether the background task completed successfully
    */
   private fun complete(success: Result) {
+    if (isQuarantined) {
+      return
+    }
     Log.d(TAG, "About to complete BackupWorker with result: $success")
     isComplete = true
     if (engine != null) {

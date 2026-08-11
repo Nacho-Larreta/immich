@@ -79,10 +79,7 @@ dependencies:
       url: https://github.com/mertalev/socket.io-client-dart
       ref: 'e1d813a240b5d5b7e2f141b2b605c5429b7cd006' # https://github.com/rikulo/socket.io-client-dart/pull/435
   cupertino_http:
-    git:
-      url: https://github.com/mertalev/http
-      ref: 'a0a933358517c6d01cff37fc2a2752ee2d744a3c' # https://github.com/dart-lang/http/pull/1876
-      path: pkgs/cupertino_http/
+    path: packages/cupertino_http
   ok_http:
     git:
       url: https://github.com/mertalev/http

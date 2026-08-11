@@ -2,6 +2,7 @@ import BackgroundTasks
 import Flutter
 
 enum BackgroundTaskType { case refresh, processing }
+private let unsafeTerminationCode = "unsafe-to-terminate"
 
 /*
  * DEBUG: Testing Background Tasks in Xcode
@@ -55,6 +56,7 @@ class BackgroundWorker: BackgroundWorkerBgHostApi {
   
   /// Flag to track whether the background task has completed to prevent duplicate completions
   private var isComplete = false
+  private var isQuarantined = false
   
   /**
    * Initializes a new background worker with the specified task type and execution constraints.
@@ -125,18 +127,21 @@ class BackgroundWorker: BackgroundWorkerBgHostApi {
    * the completion handler is eventually called even if Flutter doesn't respond.
    */
   func close() {
-    if isComplete {
+    if isComplete || isQuarantined {
       return
     }
 
     flutterApi?.cancel { result in
-      self.complete(success: false)
+      if case .failure(let error) = result, error.code == unsafeTerminationCode {
+        self.quarantine()
+      } else {
+        self.complete(success: false)
+      }
     }
 
-    // Fallback safety mechanism: ensure completion is called within 2 seconds
-    // This prevents the background task from hanging indefinitely if Flutter doesn't respond
+    // A missing cleanup acknowledgement cannot prove the engine is safe to destroy.
     Timer.scheduledTimer(withTimeInterval: 2, repeats: false) { _ in
-      self.complete(success: false)
+      self.quarantine()
     }
   }
 
@@ -150,8 +155,15 @@ class BackgroundWorker: BackgroundWorkerBgHostApi {
   private func handleHostResult(result: Result<Void, PigeonError>) {
     switch result {
       case .success(): self.complete(success: true)
+      case .failure(let error) where error.code == unsafeTerminationCode: self.quarantine()
       case .failure(_): self.close()
     }
+  }
+
+  private func quarantine() {
+    guard !isComplete && !isQuarantined else { return }
+    isQuarantined = true
+    NSLog("BG-NET-DRAIN-UNSAFE")
   }
 
   /**
@@ -163,7 +175,7 @@ class BackgroundWorker: BackgroundWorkerBgHostApi {
    * - Parameter success: Indicates whether the background task completed successfully
    */
   private func complete(success: Bool) {
-    if(isComplete) {
+    if(isComplete || isQuarantined) {
       return
     }
     

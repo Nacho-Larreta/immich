@@ -18,7 +18,7 @@ final class CanonicalOriginClient extends http.BaseClient {
     retired.invalidate();
   }
 
-  Future<void> fenceAndDrain({required Duration timeout}) {
+  Future<void> fenceAndDrain({required Duration? timeout}) {
     return _delegate.fenceAndDrain(timeout: timeout);
   }
 

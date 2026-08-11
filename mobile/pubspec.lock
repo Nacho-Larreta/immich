@@ -307,11 +307,9 @@ packages:
   cupertino_http:
     dependency: "direct main"
     description:
-      path: "pkgs/cupertino_http"
-      ref: a0a933358517c6d01cff37fc2a2752ee2d744a3c
-      resolved-ref: a0a933358517c6d01cff37fc2a2752ee2d744a3c
-      url: "https://github.com/mertalev/http"
-    source: git
+      path: "packages/cupertino_http"
+      relative: true
+    source: path
     version: "3.0.0-wip"
   dart_style:
     dependency: transitive

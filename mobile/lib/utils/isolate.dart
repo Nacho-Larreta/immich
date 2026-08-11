@@ -10,6 +10,7 @@ import 'package:immich_mobile/providers/infrastructure/db.provider.dart';
 import 'package:immich_mobile/infrastructure/repositories/network.repository.dart';
 import 'package:immich_mobile/utils/bootstrap.dart';
 import 'package:immich_mobile/utils/debug_print.dart';
+import 'package:immich_mobile/utils/worker_termination_safety.dart';
 import 'package:immich_mobile/wm_executor.dart';
 import 'package:worker_manager/worker_manager.dart';
 
@@ -49,19 +50,24 @@ Cancelable<T?> runInIsolateGentle<T, A>({
 
     return executeBackgroundComputation(
       computation: () => computation(ref, argument),
-      cleanup: () async {
-        try {
-          ref.dispose();
-          await Store.dispose();
-          await LogService.I.dispose();
-          await logDb.close();
-          await drift.close();
-        } catch (error, stack) {
-          dPrint(() => "Error closing resources in isolate: $error, $stack");
-        } finally {
-          await Future.delayed(const Duration(seconds: 2));
-        }
-      },
+      cleanup: () => drainNetworkBeforeRelease(
+        drainNetwork: NetworkRepository.drainAttachedWorker,
+        logCode: (code) => dPrint(() => code),
+        releaseResources: () async {
+          try {
+            ref.dispose();
+            await Store.dispose();
+            await LogService.I.dispose();
+            await logDb.close();
+            await drift.close();
+          } on Object {
+            dPrint(() => resourceReleaseFailureLogCode);
+            throw PlatformException(code: resourceReleaseFailureCode, message: resourceReleaseFailureLogCode);
+          } finally {
+            await Future.delayed(const Duration(seconds: 2));
+          }
+        },
+      ),
     );
   });
 }

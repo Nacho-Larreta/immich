@@ -4,6 +4,7 @@ import 'dart:ui';
 
 import 'package:background_downloader/background_downloader.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/constants/constants.dart';
 import 'package:immich_mobile/domain/services/log.service.dart';
@@ -26,8 +27,18 @@ import 'package:immich_mobile/services/foreground_upload.service.dart';
 import 'package:immich_mobile/services/localization.service.dart';
 import 'package:immich_mobile/utils/bootstrap.dart';
 import 'package:immich_mobile/utils/debug_print.dart';
+import 'package:immich_mobile/utils/worker_termination_safety.dart';
 import 'package:immich_mobile/wm_executor.dart';
 import 'package:logging/logging.dart';
+
+@visibleForTesting
+Future<void> disposeWorkersBeforeOrdinaryCleanup({
+  required Future<void> Function() disposeWorkers,
+  required Future<void> Function() cleanupOrdinaryResources,
+}) async {
+  await disposeWorkers();
+  await cleanupOrdinaryResources();
+}
 
 class BackgroundWorkerFgService {
   final BackgroundWorkerFgHostApi _foregroundHostApi;
@@ -63,6 +74,7 @@ class BackgroundWorkerBgService extends BackgroundWorkerFlutterApi {
   final Logger _logger = Logger('BackgroundWorkerBgService');
 
   bool _isCleanedUp = false;
+  Future<void>? _cleanupFuture;
 
   BackgroundWorkerBgService({required Drift drift, required DriftLogger driftLogger})
     : _drift = drift,
@@ -101,7 +113,13 @@ class BackgroundWorkerBgService extends BackgroundWorkerFlutterApi {
       unawaited(_backgroundHostApi.onInitialized());
     } catch (error, stack) {
       _logger.severe("Failed to initialize background worker", error, stack);
-      unawaited(_backgroundHostApi.close());
+      try {
+        await _cleanup();
+        unawaited(_backgroundHostApi.close());
+      } on PlatformException catch (cleanupError) {
+        if (cleanupError.code != unsafeWorkerTerminationCode) rethrow;
+        unawaited(_backgroundHostApi.close());
+      }
     }
   }
 
@@ -153,55 +171,58 @@ class BackgroundWorkerBgService extends BackgroundWorkerFlutterApi {
   @override
   Future<void> cancel() async {
     _logger.warning("Background worker cancelled");
-    try {
-      await _cleanup();
-    } catch (error, stack) {
-      dPrint(() => 'Failed to cleanup background worker: $error with stack: $stack');
-    }
+    await _cleanup();
   }
 
-  Future<void> _cleanup() async {
-    await runZonedGuarded(_handleCleanup, (error, stack) {
-      dPrint(() => "Error during background worker cleanup: $error, $stack");
-    });
-  }
+  Future<void> _cleanup() => _cleanupFuture ??= _handleCleanup();
 
   Future<void> _handleCleanup() async {
-    // If ref is null, it means the service was never initialized properly
     if (_isCleanedUp || _ref == null) {
       return;
     }
 
+    await drainNetworkBeforeRelease(
+      drainNetwork: NetworkRepository.drainAttachedWorker,
+      logCode: (code) => dPrint(() => code),
+      releaseResources: _releaseResources,
+    );
+  }
+
+  Future<void> _releaseResources() async {
     try {
       _isCleanedUp = true;
       final backgroundSyncManager = _ref?.read(backgroundSyncProvider);
       final nativeSyncApi = _ref?.read(nativeSyncApiProvider);
-
-      await _drift.close();
-      await _driftLogger.close();
-
-      _ref?.dispose();
-      _ref = null;
-
-      _cancellationToken.complete();
       _logger.info("Cleaning up background worker");
 
-      final cleanupFutures = [
-        nativeSyncApi?.cancelHashing(),
-        workerManagerPatch.dispose().catchError((_) async {
-          // Discard any errors on the dispose call
-          return;
-        }),
-        LogService.I.dispose(),
-        Store.dispose(),
+      await disposeWorkersBeforeOrdinaryCleanup(
+        disposeWorkers: workerManagerPatch.dispose,
+        cleanupOrdinaryResources: () async {
+          await _drift.close();
+          await _driftLogger.close();
 
-        backgroundSyncManager?.cancel(),
-      ];
+          _ref?.dispose();
+          _ref = null;
 
-      await Future.wait(cleanupFutures.nonNulls);
+          _cancellationToken.complete();
+          final cleanupFutures = [
+            nativeSyncApi?.cancelHashing(),
+            LogService.I.dispose(),
+            Store.dispose(),
+            backgroundSyncManager?.cancel(),
+          ];
+
+          await Future.wait(cleanupFutures.nonNulls);
+        },
+      );
       _logger.info("Background worker resources cleaned up");
-    } catch (error, stack) {
-      dPrint(() => 'Failed to cleanup background worker: $error with stack: $stack');
+    } on PlatformException catch (error) {
+      if (isUnsafeWorkerTermination(error)) rethrow;
+      dPrint(() => resourceReleaseFailureLogCode);
+      throw PlatformException(code: resourceReleaseFailureCode, message: resourceReleaseFailureLogCode);
+    } on Object {
+      dPrint(() => resourceReleaseFailureLogCode);
+      throw PlatformException(code: resourceReleaseFailureCode, message: resourceReleaseFailureLogCode);
     }
   }
 

@@ -225,6 +225,18 @@ void main() {
     expect(apiService.apiClient.client, same(retainedClient));
   });
 
+  test('attached workers reject WebSocket creation before native transport access', () async {
+    NetworkRepository.setContextRoleForTest(NetworkContextRole.attachedWorker);
+    try {
+      await expectLater(
+        NetworkRepository.createWebSocket(Uri.parse('wss://photos.test/api/socket.io')),
+        throwsA(isA<StateError>()),
+      );
+    } finally {
+      NetworkRepository.setContextRoleForTest(NetworkContextRole.rootWriter);
+    }
+  });
+
   test('login transport rotation makes the retained API graph use the authenticated native client', () async {
     final anonymousPaths = <String>[];
     final authenticatedPaths = <String>[];
