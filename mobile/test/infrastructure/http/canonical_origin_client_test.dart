@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart';
@@ -6,11 +7,184 @@ import 'package:http/testing.dart';
 import 'package:immich_mobile/infrastructure/http/canonical_origin_client.dart';
 
 void main() {
+  test('delegate replacement preserves client identity and routes only future requests to the new transport', () async {
+    final firstTransport = _TrackedClient('anonymous');
+    final authenticatedTransport = _TrackedClient('authenticated');
+    final client = CanonicalOriginClient(
+      firstTransport,
+      () => RequestOriginContext.restricted([Uri.parse('https://photos.test')]),
+    );
+
+    expect((await client.get(Uri.parse('https://photos.test/api/auth/login'))).body, 'anonymous');
+
+    client.replaceDelegate(authenticatedTransport);
+
+    expect((await client.get(Uri.parse('https://photos.test/api/users/me'))).body, 'authenticated');
+    expect(firstTransport.paths, ['/api/auth/login']);
+    expect(authenticatedTransport.paths, ['/api/users/me']);
+  });
+
+  test('replacement rejects a request still awaiting the retired transport', () async {
+    final releaseFirstRequest = Completer<void>();
+    final firstTransport = _TrackedClient('first', gate: releaseFirstRequest);
+    final secondTransport = _TrackedClient('second');
+    final client = CanonicalOriginClient(
+      firstTransport,
+      () => RequestOriginContext.restricted([Uri.parse('https://photos.test')]),
+    );
+
+    final inFlight = client.get(Uri.parse('https://photos.test/api/assets/first'));
+    await firstTransport.requestStarted.future;
+
+    client.replaceDelegate(secondTransport);
+    expect(firstTransport.closeCalls, 1);
+    expect((await client.get(Uri.parse('https://photos.test/api/assets/second'))).body, 'second');
+
+    releaseFirstRequest.complete();
+    await expectLater(inFlight, throwsA(isA<ClientException>()));
+  });
+
+  test('replacement rejects a retired response mid-body and drops its late bytes', () async {
+    final firstTransport = _ControlledStreamClient();
+    final client = CanonicalOriginClient(
+      firstTransport,
+      () => RequestOriginContext.restricted([Uri.parse('https://photos.test')]),
+    );
+    final response = await client.send(Request('GET', Uri.parse('https://photos.test/api/assets/first')));
+    final body = response.stream.bytesToString();
+    final staleBody = expectLater(body, throwsA(isA<ClientException>()));
+    firstTransport.controller.add(utf8.encode('before'));
+
+    client.replaceDelegate(_TrackedClient('second'));
+    firstTransport.controller.add(utf8.encode('late'));
+    await firstTransport.controller.close();
+
+    await staleBody;
+    expect(firstTransport.closeCalls, 1);
+  });
+
+  test('replacement from onData rejects the retired response without reentrant delivery', () async {
+    final firstTransport = _SynchronousControlledStreamClient();
+    final client = CanonicalOriginClient(
+      firstTransport,
+      () => RequestOriginContext.restricted([Uri.parse('https://photos.test')]),
+    );
+    final response = await client.send(Request('GET', Uri.parse('https://photos.test/api/assets/first')));
+    final errors = <Object>[];
+    final completed = Completer<void>();
+    var sourceAddReturned = false;
+    var replacementWasReentrant = false;
+    response.stream.listen(
+      (_) {
+        replacementWasReentrant = !sourceAddReturned;
+        client.replaceDelegate(_TrackedClient('second'));
+      },
+      onError: (Object error) => errors.add(error),
+      onDone: completed.complete,
+    );
+
+    firstTransport.controller.add(utf8.encode('before'));
+    sourceAddReturned = true;
+    await completed.future.timeout(const Duration(seconds: 1));
+
+    expect(replacementWasReentrant, isFalse);
+    expect(errors, [isA<ClientException>()]);
+    expect(firstTransport.closeCalls, 1);
+  });
+
+  test('a throwing transport close cannot skip response invalidation or release', () async {
+    final firstTransport = _ThrowingCloseClient();
+    final client = CanonicalOriginClient(
+      firstTransport,
+      () => RequestOriginContext.restricted([Uri.parse('https://photos.test')]),
+    );
+    final response = await client.send(Request('GET', Uri.parse('https://photos.test/api/assets/first')));
+    final staleResponse = expectLater(response.stream, emitsError(isA<ClientException>()));
+
+    expect(() => client.replaceDelegate(_TrackedClient('second')), returnsNormally);
+
+    await staleResponse;
+    expect(firstTransport.closeCalls, 1);
+  });
+
+  test('forwards a non-terminal stream error and releases only when the response completes', () async {
+    final transport = _ControlledStreamClient();
+    final client = CanonicalOriginClient(
+      transport,
+      () => RequestOriginContext.restricted([Uri.parse('https://photos.test')]),
+    );
+    final response = await client.send(Request('GET', Uri.parse('https://photos.test/api/assets')));
+    final events = expectLater(
+      response.stream,
+      emitsInOrder([utf8.encode('one'), emitsError(isA<StateError>()), utf8.encode('two'), emitsDone]),
+    );
+
+    transport.controller
+      ..add(utf8.encode('one'))
+      ..addError(StateError('recoverable'))
+      ..add(utf8.encode('two'));
+    await transport.controller.close();
+    await events;
+
+    client.replaceDelegate(_TrackedClient('next'));
+    expect(transport.closeCalls, 1);
+  });
+
+  test('consumer cancellation releases the response even when upstream cancellation fails', () async {
+    final transport = _CancelFailingClient();
+    final client = CanonicalOriginClient(
+      transport,
+      () => RequestOriginContext.restricted([Uri.parse('https://photos.test')]),
+    );
+    final response = await client.send(Request('GET', Uri.parse('https://photos.test/api/assets')));
+    final subscription = response.stream.listen((_) {});
+
+    await expectLater(subscription.cancel(), throwsA(isA<StateError>()));
+    client.replaceDelegate(_TrackedClient('next'));
+
+    expect(transport.closeCalls, 1);
+  });
+
+  test('replacement invalidates two active responses and closes their delegate exactly once', () async {
+    final transport = _MultipleStreamClient(2);
+    final client = CanonicalOriginClient(
+      transport,
+      () => RequestOriginContext.restricted([Uri.parse('https://photos.test')]),
+    );
+    final first = await client.send(Request('GET', Uri.parse('https://photos.test/api/first')));
+    final second = await client.send(Request('GET', Uri.parse('https://photos.test/api/second')));
+    final firstEvents = expectLater(first.stream, emitsError(isA<ClientException>()));
+    final secondEvents = expectLater(second.stream, emitsError(isA<ClientException>()));
+
+    client.replaceDelegate(_TrackedClient('next'));
+    for (final controller in transport.controllers) {
+      await controller.close();
+    }
+
+    await Future.wait([firstEvents, secondEvents]);
+    expect(transport.closeCalls, 1);
+  });
+
+  test('preserves the final URL capability returned by the native transport', () async {
+    final finalUrl = Uri.parse('https://photos.test/api/assets?cursor=next');
+    final client = CanonicalOriginClient(
+      _ResponseClient(_StreamedResponseWithUrl(Stream.value(const []), 200, url: finalUrl)),
+      () => RequestOriginContext.restricted([Uri.parse('https://photos.test')]),
+    );
+
+    final response = await client.send(Request('GET', Uri.parse('https://photos.test/api/assets')));
+
+    expect(response, isA<BaseResponseWithUrl>());
+    expect((response as BaseResponseWithUrl).url, finalUrl);
+  });
+
   test('allows requests with the exact scheme host and effective port', () async {
     late Uri sentUri;
+    late bool followedRedirects;
     final client = CanonicalOriginClient(
       MockClient((request) async {
         sentUri = request.url;
+        followedRedirects = request.followRedirects;
         return Response('', 200);
       }),
       () => RequestOriginContext.restricted([Uri.parse('https://photos.test')]),
@@ -19,6 +193,7 @@ void main() {
     await client.get(Uri.parse('https://PHOTOS.test:443/family/api/assets'));
 
     expect(sentUri.path, '/family/api/assets');
+    expect(followedRedirects, isFalse);
   });
 
   for (final rejected in [
@@ -176,4 +351,110 @@ void main() {
       isFalse,
     );
   });
+}
+
+final class _TrackedClient extends BaseClient {
+  _TrackedClient(this.label, {this.gate});
+
+  final String label;
+  final Completer<void>? gate;
+  final requestStarted = Completer<void>();
+  final paths = <String>[];
+  var closeCalls = 0;
+
+  @override
+  Future<StreamedResponse> send(BaseRequest request) async {
+    paths.add(request.url.path);
+    if (!requestStarted.isCompleted) {
+      requestStarted.complete();
+    }
+    await gate?.future;
+    return StreamedResponse(Stream.value(utf8.encode(label)), 200);
+  }
+
+  @override
+  void close() {
+    closeCalls++;
+  }
+}
+
+final class _ControlledStreamClient extends BaseClient {
+  final controller = StreamController<List<int>>();
+  var closeCalls = 0;
+
+  @override
+  Future<StreamedResponse> send(BaseRequest request) async => StreamedResponse(controller.stream, 200);
+
+  @override
+  void close() => closeCalls++;
+}
+
+final class _SynchronousControlledStreamClient extends BaseClient {
+  final controller = StreamController<List<int>>(sync: true);
+  var closeCalls = 0;
+
+  @override
+  Future<StreamedResponse> send(BaseRequest request) async => StreamedResponse(controller.stream, 200);
+
+  @override
+  void close() => closeCalls++;
+}
+
+final class _CancelFailingClient extends BaseClient {
+  _CancelFailingClient() {
+    controller = StreamController<List<int>>(onCancel: () => Future<void>.error(StateError('cancel failed')));
+  }
+
+  late final StreamController<List<int>> controller;
+  var closeCalls = 0;
+
+  @override
+  Future<StreamedResponse> send(BaseRequest request) async => StreamedResponse(controller.stream, 200);
+
+  @override
+  void close() => closeCalls++;
+}
+
+final class _ThrowingCloseClient extends BaseClient {
+  final controller = StreamController<List<int>>();
+  var closeCalls = 0;
+
+  @override
+  Future<StreamedResponse> send(BaseRequest request) async => StreamedResponse(controller.stream, 200);
+
+  @override
+  void close() {
+    closeCalls++;
+    throw StateError('close failed');
+  }
+}
+
+final class _MultipleStreamClient extends BaseClient {
+  _MultipleStreamClient(int count) : controllers = List.generate(count, (_) => StreamController<List<int>>());
+
+  final List<StreamController<List<int>>> controllers;
+  var _request = 0;
+  var closeCalls = 0;
+
+  @override
+  Future<StreamedResponse> send(BaseRequest request) async => StreamedResponse(controllers[_request++].stream, 200);
+
+  @override
+  void close() => closeCalls++;
+}
+
+final class _ResponseClient extends BaseClient {
+  _ResponseClient(this.response);
+
+  final StreamedResponse response;
+
+  @override
+  Future<StreamedResponse> send(BaseRequest request) async => response;
+}
+
+final class _StreamedResponseWithUrl extends StreamedResponse implements BaseResponseWithUrl {
+  _StreamedResponseWithUrl(super.stream, super.statusCode, {required this.url});
+
+  @override
+  final Uri url;
 }

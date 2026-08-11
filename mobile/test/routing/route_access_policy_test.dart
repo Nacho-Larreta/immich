@@ -17,7 +17,7 @@ class _MockLocalAuthService extends Mock implements LocalAuthService {}
 
 void main() {
   test('explicit logout returns to the local-first timeline shell', () {
-    final destination = localShellAfterLogout();
+    final destination = localLibraryShell();
 
     expect(destination, isA<TabShellRoute>());
     expect(destination.initialChildren, hasLength(1));

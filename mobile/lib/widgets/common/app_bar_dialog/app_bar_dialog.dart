@@ -104,7 +104,7 @@ class ImmichAppBarDialog extends HookConsumerWidget {
       final router = context.router;
       return AppBarLogoutAction(
         logout: ref.read(authProvider.notifier).logoutWithOutcome,
-        onLoggedOut: (_) => router.replace(localShellAfterLogout()),
+        onLoggedOut: (_) => router.replace(localLibraryShell()),
       );
     }
 

@@ -1,11 +1,27 @@
 import 'package:http/http.dart' as http;
+import 'package:immich_mobile/infrastructure/http/generation_bound_http_transport.dart';
 
 final class CanonicalOriginClient extends http.BaseClient {
-  CanonicalOriginClient(this._delegate, this._requestOriginContext);
+  CanonicalOriginClient(http.Client delegate, this._requestOriginContext)
+    : _delegate = GenerationBoundHttpTransport(delegate, generation: 0);
 
-  final http.Client _delegate;
+  GenerationBoundHttpTransport _delegate;
   final RequestOriginContext Function() _requestOriginContext;
+  var _generation = 0;
 
+  void replaceDelegate(http.Client delegate) {
+    if (_delegate.owns(delegate)) {
+      return;
+    }
+    final retired = _delegate;
+    _delegate = GenerationBoundHttpTransport(delegate, generation: ++_generation);
+    retired.invalidate();
+  }
+
+  /// The caller owns the returned single-subscription response stream and must
+  /// consume or cancel it, as required by `Client.send`. There is no reliable
+  /// finalization signal for an otherwise abandoned live stream; generation
+  /// replacement still invalidates it and closes its retired native transport.
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) {
     if (request.url.userInfo.isNotEmpty) {
@@ -18,6 +34,7 @@ final class CanonicalOriginClient extends http.BaseClient {
     if (context.allowedOrigins.isNotEmpty && !context.allows(request.url)) {
       throw http.ClientException('Request rejected outside the active server origins', request.url);
     }
+    request.followRedirects = false;
     return _delegate.send(request);
   }
 

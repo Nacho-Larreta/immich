@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:auto_route/auto_route.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -74,6 +75,80 @@ void main() {
     expect(presentations, 1);
   });
 
+  test('an uncommitted session is denied before any remote validation', () async {
+    final apiService = _MockApiService();
+    final authenticationApi = _MockAuthenticationApi();
+    final resolver = _MockNavigationResolver();
+    final router = _MockStackRouter();
+    var presentations = 0;
+    var reauthenticationCalls = 0;
+    when(() => apiService.authenticationApi).thenReturn(authenticationApi);
+    when(authenticationApi.validateAccessToken).thenThrow(const SocketException('offline'));
+    when(() => resolver.next(any())).thenReturn(null);
+    final guard = AuthGuard(
+      apiService,
+      () async => reauthenticationCalls++,
+      readAccessToken: () => 'uncommitted-token',
+      readAuthenticatedSessionReady: () => false,
+      presentAuthentication: (_) async => presentations++,
+    );
+
+    guard.onNavigation(resolver, router);
+    await pumpEventQueue();
+
+    verify(() => resolver.next(false)).called(1);
+    verifyNever(authenticationApi.validateAccessToken);
+    expect(presentations, 1);
+    expect(reauthenticationCalls, 1);
+  });
+
+  test('a committed session keeps the existing offline fail-open contract', () async {
+    final apiService = _MockApiService();
+    final authenticationApi = _MockAuthenticationApi();
+    final resolver = _MockNavigationResolver();
+    final router = _MockStackRouter();
+    var presentations = 0;
+    when(() => apiService.authenticationApi).thenReturn(authenticationApi);
+    when(authenticationApi.validateAccessToken).thenThrow(const SocketException('offline'));
+    when(() => resolver.next(any())).thenReturn(null);
+    final guard = AuthGuard(
+      apiService,
+      () async {},
+      readAccessToken: () => 'committed-token',
+      readAuthenticatedSessionReady: () => true,
+      presentAuthentication: (_) async => presentations++,
+    );
+
+    guard.onNavigation(resolver, router);
+    await pumpEventQueue();
+
+    verify(() => resolver.next(true)).called(1);
+    verify(authenticationApi.validateAccessToken).called(1);
+    expect(presentations, 0);
+  });
+
+  test('a failed local readiness read is denied without contacting the server', () async {
+    final apiService = _MockApiService();
+    final authenticationApi = _MockAuthenticationApi();
+    final resolver = _MockNavigationResolver();
+    final router = _MockStackRouter();
+    when(() => apiService.authenticationApi).thenReturn(authenticationApi);
+    when(() => resolver.next(any())).thenReturn(null);
+    final guard = AuthGuard(
+      apiService,
+      () async {},
+      readAccessToken: () => 'token',
+      readAuthenticatedSessionReady: () => throw StateError('store unavailable'),
+      presentAuthentication: (_) async {},
+    );
+
+    guard.onNavigation(resolver, router);
+    await pumpEventQueue();
+
+    verify(() => resolver.next(false)).called(1);
+    verifyNever(authenticationApi.validateAccessToken);
+  });
+
   for (final invalidAuthentication in <(String, Future<ValidateAccessTokenResponseDto?> Function())>[
     ('authStatus false', () async => ValidateAccessTokenResponseDto(authStatus: false)),
     ('401', () => Future.error(ApiException(401, 'Unauthorized'))),
@@ -92,6 +167,7 @@ void main() {
         apiService,
         () async => reauthenticationCalls++,
         readAccessToken: () => 'expired-token',
+        readAuthenticatedSessionReady: () => true,
         presentAuthentication: (_) async => presentations++,
       );
 

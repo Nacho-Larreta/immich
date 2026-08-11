@@ -1495,6 +1495,7 @@
   "login_disabled": "El inicio de sesión ha sido desactivado",
   "login_form_api_exception": "Excepción producida por API. Por favor, comprueba el URL del servidor e inténtalo de nuevo.",
   "login_form_back_button_text": "Atrás",
+  "login_form_back_to_photos": "Volver a Fotos",
   "login_form_email_hint": "tucorreo@correo.com",
   "login_form_endpoint_hint": "http://tu-ip-de-servidor:puerto",
   "login_form_endpoint_url": "Enlace del punto de acceso (endpoint) del servidor",

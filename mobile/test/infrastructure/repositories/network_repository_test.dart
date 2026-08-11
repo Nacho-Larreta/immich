@@ -1,6 +1,8 @@
 import 'package:drift/drift.dart' hide isNull;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart';
+import 'package:http/testing.dart';
 import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/services/store.service.dart';
@@ -8,6 +10,7 @@ import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/infrastructure/repositories/db.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/network.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/store.repository.dart';
+import 'package:immich_mobile/services/api.service.dart';
 import 'package:immich_mobile/utils/migration.dart';
 
 void main() {
@@ -103,6 +106,45 @@ void main() {
 
     expect(replacements.single, const _NativeReplacement({}, null, null));
     expect(NetworkRepository.activeEndpointSchemePolicy, isNull);
+  });
+
+  test('native bindings preserve the client retained by an existing API graph', () async {
+    final first = MockClient((_) async => Response('', 200));
+    final second = MockClient((_) async => Response('', 200));
+    NetworkRepository.bindClientForTest(first);
+    final retainedClient = NetworkRepository.client;
+    final apiService = ApiService(initialEndpoint: 'https://photos.test/api');
+
+    NetworkRepository.bindClientForTest(second);
+
+    expect(NetworkRepository.client, same(retainedClient));
+    expect(apiService.apiClient.client, same(retainedClient));
+  });
+
+  test('login transport rotation makes the retained API graph use the authenticated native client', () async {
+    final anonymousPaths = <String>[];
+    final authenticatedPaths = <String>[];
+    NetworkRepository.bindClientForTest(
+      MockClient((request) async {
+        anonymousPaths.add(request.url.path);
+        return Response('', 200);
+      }),
+    );
+    final apiService = ApiService(initialEndpoint: 'https://photos.test/api');
+    final retainedClient = apiService.apiClient.client;
+
+    await retainedClient.post(Uri.parse('https://photos.test/api/auth/login'));
+    NetworkRepository.bindClientForTest(
+      MockClient((request) async {
+        authenticatedPaths.add(request.url.path);
+        return Response('', 200);
+      }),
+    );
+    final currentUser = await retainedClient.get(Uri.parse('https://photos.test/api/users/me'));
+
+    expect(currentUser.statusCode, 200);
+    expect(anonymousPaths, ['/api/auth/login']);
+    expect(authenticatedPaths, ['/api/users/me']);
   });
 }
 

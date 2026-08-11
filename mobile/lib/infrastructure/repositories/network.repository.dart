@@ -18,8 +18,7 @@ typedef NativeRequestContextReplacement =
     Future<void> Function(Map<String, String> headers, String? canonicalOrigin, String? accessToken);
 
 class NetworkRepository {
-  static http.Client? _client;
-  static http.Client? _nativeClient;
+  static CanonicalOriginClient? _client;
   static Pointer<Void>? _clientPointer;
   static final _requestOriginGuard = RequestOriginGuard();
   static final _contextQueue = _NetworkContextQueue();
@@ -67,13 +66,12 @@ class NetworkRepository {
     if (clientPointer == _clientPointer && _client != null) {
       return;
     }
-    _clientPointer = clientPointer;
-    _nativeClient?.close();
+    late final http.Client nativeClient;
     if (Platform.isIOS) {
       final session = URLSession.fromRawPointer(clientPointer.cast());
-      _nativeClient = CupertinoClient.fromSharedSession(session);
+      nativeClient = CupertinoClient.fromSharedSession(session);
     } else {
-      _nativeClient = OkHttpClient.fromJniGlobalRef(
+      nativeClient = OkHttpClient.fromJniGlobalRef(
         clientPointer,
         configuration: const OkHttpClientConfiguration(
           connectTimeout: Duration(seconds: 30),
@@ -82,7 +80,20 @@ class NetworkRepository {
         ),
       );
     }
-    _client = CanonicalOriginClient(_nativeClient!, () => _requestOriginGuard.context);
+    _clientPointer = clientPointer;
+    _installNativeClient(nativeClient);
+  }
+
+  @visibleForTesting
+  static void bindClientForTest(http.Client client) => _installNativeClient(client);
+
+  static void _installNativeClient(http.Client nativeClient) {
+    final client = _client;
+    if (client == null) {
+      _client = CanonicalOriginClient(nativeClient, () => _requestOriginGuard.context);
+      return;
+    }
+    client.replaceDelegate(nativeClient);
   }
 
   static Future<void> setHeaders(Map<String, String> headers, List<String> serverUrls, {String? token}) {

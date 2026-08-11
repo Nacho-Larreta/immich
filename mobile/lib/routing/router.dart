@@ -81,7 +81,7 @@ import 'package:maplibre_gl/maplibre_gl.dart';
 
 part 'router.gr.dart';
 
-TabShellRoute localShellAfterLogout() => const TabShellRoute(children: [MainTimelineRoute()]);
+TabShellRoute localLibraryShell() => const TabShellRoute(children: [MainTimelineRoute()]);
 
 final appRouterProvider = Provider(
   (ref) => AppRouter(

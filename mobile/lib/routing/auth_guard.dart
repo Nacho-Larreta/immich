@@ -14,25 +14,36 @@ class AuthGuard extends AutoRouteGuard {
   final ApiService _apiService;
   final AuthGuardReauthenticationCoordinator _reauthenticationCoordinator;
   final String Function() _readAccessToken;
+  final bool Function() _readAuthenticatedSessionReady;
   final Future<void> Function(StackRouter) _presentAuthentication;
   final _log = Logger("AuthGuard");
   AuthGuard(
     this._apiService,
     Future<void> Function() requireReauthentication, {
     String Function()? readAccessToken,
+    bool Function()? readAuthenticatedSessionReady,
     Future<void> Function(StackRouter)? presentAuthentication,
   }) : _reauthenticationCoordinator = AuthGuardReauthenticationCoordinator(requireReauthentication),
        _readAccessToken = readAccessToken ?? _readStoredAccessToken,
+       _readAuthenticatedSessionReady = readAuthenticatedSessionReady ?? _readStoredSessionReadiness,
        _presentAuthentication = presentAuthentication ?? _pushLogin;
 
   static String _readStoredAccessToken() => Store.get(StoreKey.accessToken);
+
+  static bool _readStoredSessionReadiness() => Store.tryGet(StoreKey.authenticatedSessionReady) == true;
 
   static Future<void> _pushLogin(StackRouter router) => router.push(const LoginRoute());
 
   @override
   void onNavigation(NavigationResolver resolver, StackRouter router) async {
+    if (!_hasCommittedCredentials()) {
+      resolver.next(false);
+      _log.warning('Remote route rejected because the authenticated session was not committed.');
+      unawaited(_presentAuthenticationAndInvalidate(router));
+      return;
+    }
+
     try {
-      _readAccessToken();
       final res = await _apiService.authenticationApi.validateAccessToken();
       if (res == null || res.authStatus != true) {
         resolver.next(false);
@@ -56,6 +67,17 @@ class AuthGuard extends AutoRouteGuard {
     } catch (e) {
       _log.warning('Error validating access token from server: $e');
       resolver.next(true);
+    }
+  }
+
+  bool _hasCommittedCredentials() {
+    try {
+      return _readAccessToken().isNotEmpty && _readAuthenticatedSessionReady();
+    } on StoreKeyNotFoundException {
+      return false;
+    } catch (error) {
+      _log.warning('Could not read the local authenticated-session commit: $error');
+      return false;
     }
   }
 
