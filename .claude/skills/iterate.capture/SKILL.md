@@ -26,8 +26,10 @@ paths y reglas con `../iterate/SKILL.md`.
 7. Completar descripción, severidad, aceptación observable y estado inicial.
 8. Registrar decisiones de agrupación y dependencias en `Decisions Log`.
 9. Recalcular `Summary` y ejecutar `validate_round.py`.
-10. Informar conteo e IDs al usuario y pedir confirmación explícita antes de
-    pasar a execute. El diagnóstico read-only puede continuar.
+10. Informar conteo e IDs. Si la ronda pertenece a un smoke o fix ya autorizado,
+    registrar esa continuidad en `History` y pasar a execute sin interrumpir.
+    Pedir confirmación sólo si la ronda amplía alcance, requiere una acción
+    irreversible o abre una bifurcación de producto/política/arquitectura.
 
 ## Schema del round
 

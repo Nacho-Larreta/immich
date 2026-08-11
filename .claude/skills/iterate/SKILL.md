@@ -49,6 +49,9 @@ schemas o ubicaciones alternativas.
 - Capturar tres o más ítems antes de modificar código de producto.
 - Preservar el texto original del usuario sin reinterpretarlo.
 - Asignar todos los IDs antes de delegar.
+- Si el feedback aparece dentro de un smoke o fix ya autorizado, capturar y
+  continuar sin pedir una segunda aprobación. Frenar sólo ante expansión de
+  alcance, acción irreversible o bifurcación de política/arquitectura.
 - Un worktree dirty admite un único mutador; los demás agentes son read-only.
 - Ejecutar gates scoped; no correr suites completas por reflejo.
 - Para UI física iOS, la aceptación manual en dispositivo es obligatoria.
@@ -70,5 +73,5 @@ python3 "$WORKTREE_ROOT/.claude/skills/iterate/scripts/validate_round.py" \
   "$ROUND_FILE"
 ```
 
-El validador es obligatorio antes de reportar conteos, pedir confirmación,
+El validador es obligatorio antes de reportar conteos, comenzar ejecución,
 crear un checkpoint o cerrar la ronda.

@@ -8,7 +8,8 @@ description: Ejecutar items confirmados de una ronda iterate de Immich con owner
 ## Precondiciones
 
 - Leer `../iterate/SKILL.md`, `../bugfix/SKILL.md`, el round y `context.md`.
-- Confirmar en `History` que el usuario autorizó ejecutar la ronda.
+- Confirmar en `History` autorización explícita o continuidad de un smoke/fix
+  activo ya autorizado; no pedir una segunda aprobación para esa continuidad.
 - El round debe validar y no tener ítems ambiguos seleccionados.
 
 ## Procedimiento
