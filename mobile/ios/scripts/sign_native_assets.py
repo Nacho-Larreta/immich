@@ -11,6 +11,10 @@ from pathlib import Path, PurePosixPath
 
 
 NATIVE_ASSET_BUNDLE_PREFIX = "io.flutter.flutter.native-assets."
+SDK_PLATFORM_BY_XCODE_PLATFORM = {
+    "iphoneos": "IOS",
+    "iphonesimulator": "IOSSIMULATOR",
+}
 MACH_O_MAGICS = {
     bytes.fromhex(value)
     for value in (
@@ -36,6 +40,16 @@ def signing_is_required(environment):
         and environment.get("CODE_SIGNING_ALLOWED") == "YES"
         and environment.get("CODE_SIGNING_REQUIRED", "YES") != "NO"
     )
+
+
+def expected_sdk_platform(environment):
+    platform_name = environment.get("PLATFORM_NAME", "").strip()
+    platform = SDK_PLATFORM_BY_XCODE_PLATFORM.get(platform_name)
+    if platform is None:
+        raise NativeAssetSigningError(
+            f"unsupported native asset build platform: {platform_name or 'missing'}"
+        )
+    return platform
 
 
 def resolve_frameworks_root(environment):
@@ -288,6 +302,95 @@ def nested_code_objects(framework, primary_binary):
     return sorted(set(code_objects))
 
 
+def require_executable(environment, variable, default, display_name):
+    executable = Path(environment.get(variable, default))
+    if not executable.is_file() or not os.access(executable, os.X_OK):
+        raise NativeAssetSigningError(f"{display_name} executable is unavailable")
+    return executable
+
+
+def run_platform_tool(executable, arguments, failure_message):
+    result = subprocess.run(
+        [str(executable), *arguments],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise NativeAssetSigningError(failure_message)
+    return result.stdout
+
+
+def binary_architectures(lipo, binary):
+    output = run_platform_tool(
+        lipo,
+        ["-archs", str(binary)],
+        f"native asset architecture inspection failed: {binary.name}",
+    )
+    architectures = output.split()
+    if not architectures:
+        raise NativeAssetSigningError(
+            f"native asset binary has no architectures: {binary.name}"
+        )
+    if len(set(architectures)) != len(architectures) or any(
+        re.fullmatch(r"[A-Za-z0-9_]+", architecture) is None
+        for architecture in architectures
+    ):
+        raise NativeAssetSigningError(
+            f"native asset architecture inspection is ambiguous: {binary.name}"
+        )
+    return architectures
+
+
+def slice_sdk_platform(vtool, binary, architecture):
+    output = run_platform_tool(
+        vtool,
+        ["-arch", architecture, "-show-build", str(binary)],
+        f"native asset platform inspection failed: {binary.name} ({architecture})",
+    )
+    platforms = re.findall(
+        r"^\s*platform\s+([A-Za-z0-9_]+)\s*$", output, re.MULTILINE
+    )
+    if not platforms:
+        raise NativeAssetSigningError(
+            f"native asset slice has no SDK platform: {binary.name} ({architecture})"
+        )
+    if len(platforms) != 1:
+        raise NativeAssetSigningError(
+            f"native asset slice has an ambiguous SDK platform: {binary.name} ({architecture})"
+        )
+    return platforms[0]
+
+
+def validate_binary_sdk_platform(lipo, vtool, binary, expected_platform):
+    if not is_mach_o(binary):
+        raise NativeAssetSigningError(
+            f"native asset primary binary is not Mach-O: {binary.name}"
+        )
+    for architecture in binary_architectures(lipo, binary):
+        actual_platform = slice_sdk_platform(vtool, binary, architecture)
+        if actual_platform != expected_platform:
+            raise NativeAssetSigningError(
+                "native asset SDK platform mismatch: "
+                f"{binary.name} ({architecture}) is {actual_platform}, "
+                f"expected {expected_platform}"
+            )
+
+
+def validate_framework_sdk_platforms(
+    lipo, vtool, declared_frameworks, expected_platform
+):
+    for framework, primary_binary in sorted(declared_frameworks.items()):
+        validate_binary_sdk_platform(
+            lipo, vtool, primary_binary, expected_platform
+        )
+        for code_object in nested_code_objects(framework, primary_binary):
+            if is_mach_o(code_object):
+                validate_binary_sdk_platform(
+                    lipo, vtool, code_object, expected_platform
+                )
+
+
 def run_codesign(codesign, arguments, failure_message):
     result = subprocess.run(
         [str(codesign), *arguments],
@@ -342,9 +445,6 @@ def sign_framework(codesign, identity, expected_team, framework, primary_binary)
 
 
 def sign_native_assets(environment):
-    if not signing_is_required(environment):
-        return
-
     frameworks_root = resolve_frameworks_root(environment)
     manifest_path = (
         frameworks_root / "App.framework" / "flutter_assets" / "NativeAssetsManifest.json"
@@ -370,6 +470,20 @@ def sign_native_assets(environment):
     if not declared_frameworks:
         return
 
+    expected_platform = expected_sdk_platform(environment)
+    lipo = require_executable(
+        environment, "NATIVE_ASSET_LIPO", "/usr/bin/lipo", "lipo"
+    )
+    vtool = require_executable(
+        environment, "NATIVE_ASSET_VTOOL", "/usr/bin/vtool", "vtool"
+    )
+    validate_framework_sdk_platforms(
+        lipo, vtool, declared_frameworks, expected_platform
+    )
+
+    if not signing_is_required(environment):
+        return
+
     identity = environment.get("EXPANDED_CODE_SIGN_IDENTITY", "").strip()
     if not identity or identity == "-":
         raise NativeAssetSigningError(
@@ -381,9 +495,9 @@ def sign_native_assets(environment):
             "DEVELOPMENT_TEAM is required when native assets exist"
         )
 
-    codesign = Path(environment.get("NATIVE_ASSET_CODESIGN", "/usr/bin/codesign"))
-    if not codesign.is_file() or not os.access(codesign, os.X_OK):
-        raise NativeAssetSigningError("codesign executable is unavailable")
+    codesign = require_executable(
+        environment, "NATIVE_ASSET_CODESIGN", "/usr/bin/codesign", "codesign"
+    )
 
     for framework, primary_binary in sorted(declared_frameworks.items()):
         sign_framework(

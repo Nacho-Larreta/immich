@@ -414,7 +414,7 @@
 				9705A1C41CF9048500538489 /* Embed Frameworks */,
 				FAC6F89A2D287C890078CB2F /* Embed Foundation Extensions */,
 				3B06AD1E1E4923F5004D2608 /* Thin Binary */,
-				B2A5100002FA000000000001 /* Sign Flutter Native Assets */,
+				B2A5100002FA000000000001 /* Validate and Sign Flutter Native Assets */,
 				D218A34AEE62BC1EF119F5B0 /* [CP] Embed Pods Frameworks */,
 				6724EEB7D74949FA08581154 /* [CP] Copy Pods Resources */,
 			);
@@ -605,7 +605,7 @@
 			shellPath = /bin/sh;
 			shellScript = "/bin/sh \"$FLUTTER_ROOT/packages/flutter_tools/bin/xcode_backend.sh\" embed_and_thin";
 		};
-		B2A5100002FA000000000001 /* Sign Flutter Native Assets */ = {
+		B2A5100002FA000000000001 /* Validate and Sign Flutter Native Assets */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
@@ -614,7 +614,7 @@
 			inputPaths = (
 				"${SRCROOT}/scripts/sign_native_assets.py",
 			);
-			name = "Sign Flutter Native Assets";
+			name = "Validate and Sign Flutter Native Assets";
 			outputPaths = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
