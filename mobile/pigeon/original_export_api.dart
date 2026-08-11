@@ -13,11 +13,14 @@ import 'package:pigeon/pigeon.dart';
 )
 enum OriginalExportPolicy { localOnly, allowICloud }
 
+enum OriginalExportSchemePolicy { httpsOnly, explicitlyApprovedHttp, registeredLocalHttp }
+
 enum OriginalExportErrorCode {
   assetMissing,
   mediaNotLocal,
   iCloudUnavailable,
   cancelled,
+  staleContext,
   timeout,
   unauthorized,
   wrongServer,
@@ -49,12 +52,20 @@ class RemoteOriginalExportRequest {
     required this.requestId,
     required this.url,
     required this.origin,
+    required this.apiEndpoint,
+    required this.sessionEpoch,
+    required this.expectedContextGeneration,
+    required this.schemePolicy,
     required this.suggestedName,
   });
 
   int requestId;
   String url;
   String origin;
+  String apiEndpoint;
+  int sessionEpoch;
+  int expectedContextGeneration;
+  OriginalExportSchemePolicy schemePolicy;
   String suggestedName;
 }
 

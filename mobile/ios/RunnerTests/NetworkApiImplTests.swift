@@ -616,6 +616,54 @@ final class NetworkApiImplTests: XCTestCase {
     task.cancel()
   }
 
+  func testOriginalExportChallengeRejectsCapturedAuthorizationAfterContextFence() throws {
+    let url = try XCTUnwrap(URL(string: "https://photos.test/api/assets/1/original"))
+    try URLSessionManager.replaceRequestContext(
+      headers: [:],
+      canonicalOrigin: "https://photos.test",
+      token: "old-token"
+    )
+    let staleSession = URLSessionManager.shared.session
+    let staleTask = staleSession.dataTask(with: url)
+    let staleAuthorization = try XCTUnwrap(
+      URLSessionManager.authorize(url, declaredOrigin: "https://photos.test")
+    )
+    try URLSessionManager.replaceRequestContext(
+      headers: [:],
+      canonicalOrigin: "https://photos.test",
+      token: "new-token"
+    )
+    let challenge = URLAuthenticationChallenge(
+      protectionSpace: URLProtectionSpace(
+        host: "photos.test",
+        port: 443,
+        protocol: "https",
+        realm: nil,
+        authenticationMethod: NSURLAuthenticationMethodHTTPBasic
+      ),
+      proposedCredential: nil,
+      previousFailureCount: 0,
+      failureResponse: nil,
+      error: nil,
+      sender: ChallengeSenderStub()
+    )
+    let handled = expectation(description: "stale original export challenge rejected")
+
+    URLSessionManager.shared.delegate.handleChallenge(
+      staleSession,
+      challenge,
+      { disposition, credential in
+        XCTAssertEqual(disposition, .cancelAuthenticationChallenge)
+        XCTAssertNil(credential)
+        handled.fulfill()
+      },
+      task: staleTask,
+      authorization: staleAuthorization
+    )
+
+    wait(for: [handled], timeout: 1)
+  }
+
   func testOriginalExportAuthorizationIsFailClosedAndRevalidated() throws {
     let photosURL = try XCTUnwrap(URL(string: "https://photos.test/api/assets/1/original"))
     let evilURL = try XCTUnwrap(URL(string: "https://evil.test/api/assets/1/original"))

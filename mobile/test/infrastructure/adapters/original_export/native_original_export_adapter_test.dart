@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:immich_mobile/domain/interfaces/temporary_file_lease.interface.dart';
+import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/domain/models/original_export.model.dart' as domain;
 import 'package:immich_mobile/domain/models/server_reachability.model.dart';
 import 'package:immich_mobile/infrastructure/adapters/original_export/native_original_export_adapter.dart';
@@ -83,6 +84,109 @@ void main() {
 
         expect(result, domain.OriginalExportResult.failure(domain.OriginalExportError.values[error.index]));
       }
+    });
+
+    test('retries stale local HTTP exactly once with a new request id and current WiFi lease', () async {
+      final initial = _localHttpSnapshot(generation: 11);
+      final harness = _Harness(snapshot: initial, retryLeaseValid: true);
+      harness.host.remoteResults.addAll([
+        pigeon.OriginalExportResult(error: pigeon.OriginalExportErrorCode.staleContext),
+        pigeon.OriginalExportResult(path: '/tmp/share/photo.jpg', leaseToken: 'lease-2'),
+      ]);
+      harness.host.onRemoteRequest = (_) => harness.snapshot = _localHttpSnapshot(generation: 12);
+
+      final result = await harness.adapter.remote.export(_remoteHttpRequest()).result;
+
+      expect(result, isA<domain.OriginalExportSuccess>());
+      expect(harness.host.remoteRequests.map((request) => request.requestId).toSet(), hasLength(2));
+      expect(harness.host.remoteRequests.map((request) => request.expectedContextGeneration), [11, 12]);
+      expect(harness.retryLeaseChecks, 1);
+    });
+
+    test('malformed stale result releases its token and never retries', () async {
+      final harness = _Harness(snapshot: _localHttpSnapshot(generation: 11), retryLeaseValid: true);
+      harness.host.remoteResult = pigeon.OriginalExportResult(
+        path: '/tmp/share/untrusted.jpg',
+        leaseToken: 'malformed-stale-token',
+        error: pigeon.OriginalExportErrorCode.staleContext,
+      );
+      harness.host.onRemoteRequest = (_) => harness.snapshot = _localHttpSnapshot(generation: 12);
+
+      final result = await harness.adapter.remote.export(_remoteHttpRequest()).result;
+
+      expect(result, const domain.OriginalExportResult.failure(domain.OriginalExportError.writeFailed));
+      expect(harness.host.remoteRequests, hasLength(1));
+      expect(harness.retryLeaseChecks, 0);
+      expect(harness.host.releasedLeaseTokens, ['malformed-stale-token']);
+    });
+
+    test('transport loss during WiFi verification prevents stale retry', () async {
+      final retryGate = Completer<bool>();
+      final harness = _Harness(
+        snapshot: _localHttpSnapshot(generation: 11),
+        retryLeaseVerifier: (_, _) => retryGate.future,
+      );
+      harness.host.remoteResult = pigeon.OriginalExportResult(error: pigeon.OriginalExportErrorCode.staleContext);
+      harness.host.onRemoteRequest = (_) => harness.snapshot = _localHttpSnapshot(generation: 12);
+
+      final operation = harness.adapter.remote.export(_remoteHttpRequest());
+      await pumpEventQueue();
+      harness.availability = TransportAvailability.unavailable;
+      retryGate.complete(true);
+
+      expect(
+        await operation.result,
+        const domain.OriginalExportResult.failure(domain.OriginalExportError.staleContext),
+      );
+      expect(harness.host.remoteRequests, hasLength(1));
+    });
+
+    test('never retries stale HTTPS and returns the typed terminal', () async {
+      final harness = _Harness();
+      harness.host.remoteResult = pigeon.OriginalExportResult(error: pigeon.OriginalExportErrorCode.staleContext);
+
+      final result = await harness.adapter.remote.export(_remoteRequest()).result;
+
+      expect(result, const domain.OriginalExportResult.failure(domain.OriginalExportError.staleContext));
+      expect(harness.host.remoteRequests, hasLength(1));
+      expect(harness.retryLeaseChecks, 0);
+      expect(harness.failures, hasLength(1));
+      expect(harness.failures.single.phase, domain.OriginalExportFailurePhase.native);
+      expect(harness.failures.single.errorCode, domain.OriginalExportError.staleContext);
+      expect(harness.failures.single.attempt, 1);
+      expect(harness.failures.single.sessionRelation, domain.OriginalExportSessionRelation.current);
+    });
+
+    test('a second stale local HTTP response is terminal and never loops', () async {
+      final harness = _Harness(snapshot: _localHttpSnapshot(generation: 11), retryLeaseValid: true);
+      harness.host.remoteResults.addAll([
+        pigeon.OriginalExportResult(error: pigeon.OriginalExportErrorCode.staleContext),
+        pigeon.OriginalExportResult(error: pigeon.OriginalExportErrorCode.staleContext),
+      ]);
+      harness.host.onRemoteRequest = (_) => harness.snapshot = _localHttpSnapshot(generation: 12);
+
+      final result = await harness.adapter.remote.export(_remoteHttpRequest()).result;
+
+      expect(result, const domain.OriginalExportResult.failure(domain.OriginalExportError.staleContext));
+      expect(harness.host.remoteRequests, hasLength(2));
+    });
+
+    test('cancel between stale terminal and retry creates no second native request', () async {
+      final retryGate = Completer<bool>();
+      final harness = _Harness(
+        snapshot: _localHttpSnapshot(generation: 11),
+        retryLeaseVerifier: (_, _) => retryGate.future,
+      );
+      harness.host.remoteResult = pigeon.OriginalExportResult(error: pigeon.OriginalExportErrorCode.staleContext);
+      harness.host.onRemoteRequest = (_) => harness.snapshot = _localHttpSnapshot(generation: 12);
+
+      final operation = harness.adapter.remote.export(_remoteHttpRequest());
+      await pumpEventQueue();
+      await operation.cancel();
+      retryGate.complete(true);
+
+      expect(await operation.result, const domain.OriginalExportResult.failure(domain.OriginalExportError.cancelled));
+      expect(harness.host.remoteRequests, hasLength(1));
     });
   });
 
@@ -239,6 +343,13 @@ domain.RemoteOriginalExportRequest _remoteRequest() {
   );
 }
 
+domain.RemoteOriginalExportRequest _remoteHttpRequest() {
+  return domain.RemoteOriginalExportRequest(
+    resource: Uri.parse('http://photos.test:2283/api/assets/asset-1/original'),
+    suggestedFilename: 'photo.jpg',
+  );
+}
+
 OriginalExportSessionSnapshot _snapshot(ReachabilityPhase phase, {bool sessionActive = true}) {
   return OriginalExportSessionSnapshot(
     reachability: ReachabilityState(
@@ -248,6 +359,37 @@ OriginalExportSessionSnapshot _snapshot(ReachabilityPhase phase, {bool sessionAc
       confirmedEndpoint: phase == ReachabilityPhase.online ? Uri.parse('https://photos.test/api') : null,
     ),
     sessionActive: sessionActive,
+    binding: phase == ReachabilityPhase.online ? _binding() : null,
+  );
+}
+
+domain.OriginalExportContextBinding _binding({int generation = 7}) {
+  return domain.OriginalExportContextBinding(
+    sessionEpoch: 1,
+    expectedContextGeneration: generation,
+    apiEndpoint: Uri.parse('https://photos.test/api'),
+    exactOrigin: Uri.parse('https://photos.test'),
+    schemePolicy: EndpointSchemePolicy.httpsOnly,
+  );
+}
+
+OriginalExportSessionSnapshot _localHttpSnapshot({required int generation}) {
+  final endpoint = Uri.parse('http://photos.test:2283/api');
+  return OriginalExportSessionSnapshot(
+    reachability: ReachabilityState(
+      phase: ReachabilityPhase.online,
+      sessionEpoch: 1,
+      probeGeneration: generation,
+      confirmedEndpoint: endpoint,
+    ),
+    sessionActive: true,
+    binding: domain.OriginalExportContextBinding(
+      sessionEpoch: 1,
+      expectedContextGeneration: generation,
+      apiEndpoint: endpoint,
+      exactOrigin: Uri.parse('http://photos.test:2283'),
+      schemePolicy: EndpointSchemePolicy.registeredLocalHttp,
+    ),
   );
 }
 
@@ -256,6 +398,8 @@ final class _Harness {
     _Host? host,
     this.availability = TransportAvailability.available,
     OriginalExportSessionSnapshot? snapshot,
+    this.retryLeaseValid = false,
+    RegisteredLocalHttpRetryLeaseVerifier? retryLeaseVerifier,
     _Lease? lease,
     this.rejectLease = false,
     TemporaryFileLeaseFactory? leaseFactory,
@@ -266,6 +410,11 @@ final class _Harness {
       api: this.host,
       readTransportAvailability: () => availability,
       readSessionSnapshot: () => this.snapshot,
+      verifyRegisteredLocalHttpRetryLease: (initiating, candidate) async {
+        retryLeaseChecks++;
+        return retryLeaseVerifier?.call(initiating, candidate) ?? retryLeaseValid;
+      },
+      reportFailure: failures.add,
       leaseFactory:
           leaseFactory ??
           (_, _, _) async {
@@ -279,8 +428,11 @@ final class _Harness {
   }
 
   final _Host host;
-  final TransportAvailability availability;
-  final OriginalExportSessionSnapshot snapshot;
+  TransportAvailability availability;
+  OriginalExportSessionSnapshot snapshot;
+  final bool retryLeaseValid;
+  int retryLeaseChecks = 0;
+  final List<domain.OriginalExportFailureEvent> failures = [];
   final _Lease lease;
   final bool rejectLease;
   late final NativeOriginalExportAdapter adapter;
@@ -295,6 +447,8 @@ final class _Host implements OriginalExportHostApi {
     path: null,
     error: pigeon.OriginalExportErrorCode.serverUnavailable,
   );
+  final List<pigeon.OriginalExportResult> remoteResults = [];
+  void Function(pigeon.RemoteOriginalExportRequest request)? onRemoteRequest;
   Completer<pigeon.OriginalExportResult>? controlledLocal;
   Completer<void>? cancelBarrier;
   Completer<void>? cancelAllBarrier;
@@ -312,7 +466,8 @@ final class _Host implements OriginalExportHostApi {
   @override
   Future<pigeon.OriginalExportResult> exportRemote(pigeon.RemoteOriginalExportRequest request) {
     remoteRequests.add(request);
-    return Future.value(remoteResult);
+    onRemoteRequest?.call(request);
+    return Future.value(remoteResults.isEmpty ? remoteResult : remoteResults.removeAt(0));
   }
 
   @override

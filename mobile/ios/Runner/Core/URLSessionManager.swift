@@ -120,6 +120,7 @@ struct NetworkOriginAuthorization: Equatable, Sendable {
   fileprivate let scheme: String
   fileprivate let host: String
   fileprivate let port: Int
+  fileprivate let sessionEpoch: Int64
   fileprivate let requestContextRevision: UInt64
 }
 
@@ -127,6 +128,12 @@ struct AuthorizedNetworkRequestContext: Equatable, Sendable {
   let authorization: NetworkOriginAuthorization
   let headers: [String: String]
   let cookieHeader: String?
+}
+
+enum OriginalExportRequestContextAdmission {
+  case authorized(AuthorizedNetworkRequestContext)
+  case staleContext
+  case rejected
 }
 
 struct CookieReconciliationReport: Equatable {
@@ -299,6 +306,12 @@ class URLSessionManager: NSObject {
     }
   }
 
+  static func requestContextIdentity() -> (sessionEpoch: Int64, generation: Int64) {
+    withRequestContextLock {
+      (requestContextSessionEpoch, Int64(clamping: requestContextRevision))
+    }
+  }
+
   static func retainedPointer<T: AnyObject>(to object: T) -> UnsafeMutableRawPointer {
     Unmanaged.passRetained(object).toOpaque()
   }
@@ -345,6 +358,7 @@ class URLSessionManager: NSObject {
         scheme: declared.scheme,
         host: declared.host,
         port: declared.port,
+        sessionEpoch: requestContextSessionEpoch,
         requestContextRevision: requestContextRevision
       )
     }
@@ -357,6 +371,13 @@ class URLSessionManager: NSObject {
     return withRequestContextLock {
       allowsLocked(url, under: authorization)
     }
+  }
+
+  static func matchesAuthorizedOrigin(
+    _ url: URL,
+    under authorization: NetworkOriginAuthorization
+  ) -> Bool {
+    NetworkCanonicalOrigin(authorization: authorization).matches(url)
   }
 
   static func performAuthorizedDelivery<T>(
@@ -395,6 +416,7 @@ class URLSessionManager: NSObject {
         scheme: declared.scheme,
         host: declared.host,
         port: declared.port,
+        sessionEpoch: requestContextSessionEpoch,
         requestContextRevision: requestContextRevision
       )
     }
@@ -418,6 +440,7 @@ class URLSessionManager: NSObject {
     }
     return withRequestContextLock {
       !isReplacingRequestContext
+        && authorization.sessionEpoch == requestContextSessionEpoch
         && authorization.requestContextRevision == requestContextRevision
         && origin == NetworkCanonicalOrigin(authorization: authorization)
         && activeCanonicalOrigins.contains(origin)
@@ -431,6 +454,7 @@ class URLSessionManager: NSObject {
     return withRequestContextLock {
       guard
         !isReplacingRequestContext,
+        authorization.sessionEpoch == requestContextSessionEpoch,
         authorization.requestContextRevision == requestContextRevision,
         activeCanonicalOrigins.contains(authorizedOrigin)
       else { return nil }
@@ -462,6 +486,7 @@ class URLSessionManager: NSObject {
         scheme: declared.scheme,
         host: declared.host,
         port: declared.port,
+        sessionEpoch: requestContextSessionEpoch,
         requestContextRevision: requestContextRevision
       )
       var headers = activeHeaders
@@ -475,6 +500,70 @@ class URLSessionManager: NSObject {
         headers: headers,
         cookieHeader: exactHostCookieHeaderLocked(for: url, cookieStorage: cookieStorage)
       )
+    }
+  }
+
+  static func captureOriginalExportRequestContext(
+    for url: URL,
+    declaredOrigin: String,
+    apiEndpoint: String,
+    schemePolicy: OriginalExportSchemePolicy,
+    expectedSessionEpoch: Int64,
+    expectedGeneration: Int64,
+    cookieStorage: HTTPCookieStorage
+  ) -> OriginalExportRequestContextAdmission {
+    guard
+      expectedSessionEpoch >= 0,
+      expectedGeneration >= 0,
+      let generation = UInt64(exactly: expectedGeneration),
+      let declared = NetworkCanonicalOrigin(origin: declaredOrigin),
+      let endpointURL = URL(string: apiEndpoint),
+      let endpointOrigin = NetworkCanonicalOrigin(endpoint: apiEndpoint),
+      endpointOrigin == declared,
+      declared.matches(url),
+      declared.matches(endpointURL),
+      originalExportSchemeIsValid(declared.scheme, policy: schemePolicy),
+      url.path.hasPrefix(endpointURL.path.hasSuffix("/") ? endpointURL.path : "\(endpointURL.path)/")
+    else { return .rejected }
+
+    return withRequestContextLock {
+      guard
+        requestContextConfirmed,
+        !isReplacingRequestContext,
+        expectedSessionEpoch == requestContextSessionEpoch,
+        generation == requestContextRevision
+      else { return .staleContext }
+      guard activeCanonicalOrigins.contains(declared) else { return .rejected }
+      let authorization = NetworkOriginAuthorization(
+        scheme: declared.scheme,
+        host: declared.host,
+        port: declared.port,
+        sessionEpoch: requestContextSessionEpoch,
+        requestContextRevision: requestContextRevision
+      )
+      var headers = activeHeaders
+      for key in Array(headers.keys)
+      where key.caseInsensitiveCompare("Cookie") == .orderedSame {
+        headers.removeValue(forKey: key)
+      }
+      headers["User-Agent"] = headers["User-Agent"] ?? userAgent
+      return .authorized(
+        AuthorizedNetworkRequestContext(
+          authorization: authorization,
+          headers: headers,
+          cookieHeader: exactHostCookieHeaderLocked(for: url, cookieStorage: cookieStorage)
+        )
+      )
+    }
+  }
+
+  private static func originalExportSchemeIsValid(
+    _ scheme: String,
+    policy: OriginalExportSchemePolicy
+  ) -> Bool {
+    switch policy {
+    case .httpsOnly: return scheme == "https"
+    case .explicitlyApprovedHttp, .registeredLocalHttp: return scheme == "http"
     }
   }
 
@@ -726,6 +815,7 @@ class URLSessionManager: NSObject {
   ) -> Bool {
     let authorizedOrigin = NetworkCanonicalOrigin(authorization: authorization)
     return requestContextConfirmed && !isReplacingRequestContext
+      && authorization.sessionEpoch == requestContextSessionEpoch
       && authorization.requestContextRevision == requestContextRevision
       && activeCanonicalOrigins.contains(authorizedOrigin)
       && authorizedOrigin.matches(url)
@@ -861,6 +951,7 @@ class URLSessionManager: NSObject {
         scheme: origin.scheme,
         host: origin.host,
         port: origin.port,
+        sessionEpoch: requestContextSessionEpoch,
         requestContextRevision: requestContextRevision
       )
     }
@@ -1081,6 +1172,44 @@ class URLSessionManagerDelegate: NSObject, URLSessionTaskDelegate, URLSessionWeb
       return
     }
     performChallenge(session, challenge, task: task, completion: completionHandler)
+  }
+
+  func handleChallenge(
+    _ session: URLSession,
+    _ challenge: URLAuthenticationChallenge,
+    _ completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void,
+    task: URLSessionTask,
+    authorization: NetworkOriginAuthorization
+  ) {
+    guard
+      let url = task.currentRequest?.url ?? task.originalRequest?.url,
+      URLSessionManager.allowsProtectionSpace(
+        challenge.protectionSpace,
+        under: authorization
+      ),
+      protectionSpace(challenge.protectionSpace, matches: url)
+    else {
+      completionHandler(.cancelAuthenticationChallenge, nil)
+      return
+    }
+    guard
+      URLSessionManager.performAuthorizedDelivery(
+        url,
+        under: authorization,
+        delivery: {
+          self.performChallenge(
+            session,
+            challenge,
+            task: task,
+            completion: completionHandler
+          )
+          return true
+        }
+      ) == true
+    else {
+      completionHandler(.cancelAuthenticationChallenge, nil)
+      return
+    }
   }
 
   private func performChallenge(

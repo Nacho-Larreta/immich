@@ -98,11 +98,14 @@ int _deepHash(Object? value) {
 
 enum OriginalExportPolicy { localOnly, allowICloud }
 
+enum OriginalExportSchemePolicy { httpsOnly, explicitlyApprovedHttp, registeredLocalHttp }
+
 enum OriginalExportErrorCode {
   assetMissing,
   mediaNotLocal,
   iCloudUnavailable,
   cancelled,
+  staleContext,
   timeout,
   unauthorized,
   wrongServer,
@@ -174,6 +177,10 @@ class RemoteOriginalExportRequest {
     required this.requestId,
     required this.url,
     required this.origin,
+    required this.apiEndpoint,
+    required this.sessionEpoch,
+    required this.expectedContextGeneration,
+    required this.schemePolicy,
     required this.suggestedName,
   });
 
@@ -183,10 +190,27 @@ class RemoteOriginalExportRequest {
 
   String origin;
 
+  String apiEndpoint;
+
+  int sessionEpoch;
+
+  int expectedContextGeneration;
+
+  OriginalExportSchemePolicy schemePolicy;
+
   String suggestedName;
 
   List<Object?> _toList() {
-    return <Object?>[requestId, url, origin, suggestedName];
+    return <Object?>[
+      requestId,
+      url,
+      origin,
+      apiEndpoint,
+      sessionEpoch,
+      expectedContextGeneration,
+      schemePolicy,
+      suggestedName,
+    ];
   }
 
   Object encode() {
@@ -199,7 +223,11 @@ class RemoteOriginalExportRequest {
       requestId: result[0]! as int,
       url: result[1]! as String,
       origin: result[2]! as String,
-      suggestedName: result[3]! as String,
+      apiEndpoint: result[3]! as String,
+      sessionEpoch: result[4]! as int,
+      expectedContextGeneration: result[5]! as int,
+      schemePolicy: result[6]! as OriginalExportSchemePolicy,
+      suggestedName: result[7]! as String,
     );
   }
 
@@ -215,6 +243,10 @@ class RemoteOriginalExportRequest {
     return _deepEquals(requestId, other.requestId) &&
         _deepEquals(url, other.url) &&
         _deepEquals(origin, other.origin) &&
+        _deepEquals(apiEndpoint, other.apiEndpoint) &&
+        _deepEquals(sessionEpoch, other.sessionEpoch) &&
+        _deepEquals(expectedContextGeneration, other.expectedContextGeneration) &&
+        _deepEquals(schemePolicy, other.schemePolicy) &&
         _deepEquals(suggestedName, other.suggestedName);
   }
 
@@ -350,23 +382,26 @@ class _PigeonCodec extends StandardMessageCodec {
     } else if (value is OriginalExportPolicy) {
       buffer.putUint8(129);
       writeValue(buffer, value.index);
-    } else if (value is OriginalExportErrorCode) {
+    } else if (value is OriginalExportSchemePolicy) {
       buffer.putUint8(130);
       writeValue(buffer, value.index);
-    } else if (value is LocalOriginalExportRequest) {
+    } else if (value is OriginalExportErrorCode) {
       buffer.putUint8(131);
-      writeValue(buffer, value.encode());
-    } else if (value is RemoteOriginalExportRequest) {
+      writeValue(buffer, value.index);
+    } else if (value is LocalOriginalExportRequest) {
       buffer.putUint8(132);
       writeValue(buffer, value.encode());
-    } else if (value is OriginalExportResult) {
+    } else if (value is RemoteOriginalExportRequest) {
       buffer.putUint8(133);
       writeValue(buffer, value.encode());
-    } else if (value is OriginalExportReleaseResult) {
+    } else if (value is OriginalExportResult) {
       buffer.putUint8(134);
       writeValue(buffer, value.encode());
-    } else if (value is OriginalExportProgress) {
+    } else if (value is OriginalExportReleaseResult) {
       buffer.putUint8(135);
+      writeValue(buffer, value.encode());
+    } else if (value is OriginalExportProgress) {
+      buffer.putUint8(136);
       writeValue(buffer, value.encode());
     } else {
       super.writeValue(buffer, value);
@@ -381,16 +416,19 @@ class _PigeonCodec extends StandardMessageCodec {
         return value == null ? null : OriginalExportPolicy.values[value];
       case 130:
         final value = readValue(buffer) as int?;
-        return value == null ? null : OriginalExportErrorCode.values[value];
+        return value == null ? null : OriginalExportSchemePolicy.values[value];
       case 131:
-        return LocalOriginalExportRequest.decode(readValue(buffer)!);
+        final value = readValue(buffer) as int?;
+        return value == null ? null : OriginalExportErrorCode.values[value];
       case 132:
-        return RemoteOriginalExportRequest.decode(readValue(buffer)!);
+        return LocalOriginalExportRequest.decode(readValue(buffer)!);
       case 133:
-        return OriginalExportResult.decode(readValue(buffer)!);
+        return RemoteOriginalExportRequest.decode(readValue(buffer)!);
       case 134:
-        return OriginalExportReleaseResult.decode(readValue(buffer)!);
+        return OriginalExportResult.decode(readValue(buffer)!);
       case 135:
+        return OriginalExportReleaseResult.decode(readValue(buffer)!);
+      case 136:
         return OriginalExportProgress.decode(readValue(buffer)!);
       default:
         return super.readValueOfType(type, buffer);

@@ -194,21 +194,34 @@ enum class OriginalExportPolicy(val raw: Int) {
   }
 }
 
+enum class OriginalExportSchemePolicy(val raw: Int) {
+  HTTPS_ONLY(0),
+  EXPLICITLY_APPROVED_HTTP(1),
+  REGISTERED_LOCAL_HTTP(2);
+
+  companion object {
+    fun ofRaw(raw: Int): OriginalExportSchemePolicy? {
+      return values().firstOrNull { it.raw == raw }
+    }
+  }
+}
+
 enum class OriginalExportErrorCode(val raw: Int) {
   ASSET_MISSING(0),
   MEDIA_NOT_LOCAL(1),
   I_CLOUD_UNAVAILABLE(2),
   CANCELLED(3),
-  TIMEOUT(4),
-  UNAUTHORIZED(5),
-  WRONG_SERVER(6),
-  SERVER_UNAVAILABLE(7),
-  HTTP_FAILURE(8),
-  STORAGE_UNAVAILABLE(9),
-  WRITE_FAILED(10),
-  CLEANUP_FAILED(11),
-  LEASE_NOT_FOUND(12),
-  PLATFORM_UNSUPPORTED(13);
+  STALE_CONTEXT(4),
+  TIMEOUT(5),
+  UNAUTHORIZED(6),
+  WRONG_SERVER(7),
+  SERVER_UNAVAILABLE(8),
+  HTTP_FAILURE(9),
+  STORAGE_UNAVAILABLE(10),
+  WRITE_FAILED(11),
+  CLEANUP_FAILED(12),
+  LEASE_NOT_FOUND(13),
+  PLATFORM_UNSUPPORTED(14);
 
   companion object {
     fun ofRaw(raw: Int): OriginalExportErrorCode? {
@@ -268,6 +281,10 @@ data class RemoteOriginalExportRequest (
   val requestId: Long,
   val url: String,
   val origin: String,
+  val apiEndpoint: String,
+  val sessionEpoch: Long,
+  val expectedContextGeneration: Long,
+  val schemePolicy: OriginalExportSchemePolicy,
   val suggestedName: String
 )
  {
@@ -276,8 +293,12 @@ data class RemoteOriginalExportRequest (
       val requestId = pigeonVar_list[0] as Long
       val url = pigeonVar_list[1] as String
       val origin = pigeonVar_list[2] as String
-      val suggestedName = pigeonVar_list[3] as String
-      return RemoteOriginalExportRequest(requestId, url, origin, suggestedName)
+      val apiEndpoint = pigeonVar_list[3] as String
+      val sessionEpoch = pigeonVar_list[4] as Long
+      val expectedContextGeneration = pigeonVar_list[5] as Long
+      val schemePolicy = pigeonVar_list[6] as OriginalExportSchemePolicy
+      val suggestedName = pigeonVar_list[7] as String
+      return RemoteOriginalExportRequest(requestId, url, origin, apiEndpoint, sessionEpoch, expectedContextGeneration, schemePolicy, suggestedName)
     }
   }
   fun toList(): List<Any?> {
@@ -285,6 +306,10 @@ data class RemoteOriginalExportRequest (
       requestId,
       url,
       origin,
+      apiEndpoint,
+      sessionEpoch,
+      expectedContextGeneration,
+      schemePolicy,
       suggestedName,
     )
   }
@@ -296,7 +321,7 @@ data class RemoteOriginalExportRequest (
       return true
     }
     val other = other as RemoteOriginalExportRequest
-    return OriginalExportPigeonUtils.deepEquals(this.requestId, other.requestId) && OriginalExportPigeonUtils.deepEquals(this.url, other.url) && OriginalExportPigeonUtils.deepEquals(this.origin, other.origin) && OriginalExportPigeonUtils.deepEquals(this.suggestedName, other.suggestedName)
+    return OriginalExportPigeonUtils.deepEquals(this.requestId, other.requestId) && OriginalExportPigeonUtils.deepEquals(this.url, other.url) && OriginalExportPigeonUtils.deepEquals(this.origin, other.origin) && OriginalExportPigeonUtils.deepEquals(this.apiEndpoint, other.apiEndpoint) && OriginalExportPigeonUtils.deepEquals(this.sessionEpoch, other.sessionEpoch) && OriginalExportPigeonUtils.deepEquals(this.expectedContextGeneration, other.expectedContextGeneration) && OriginalExportPigeonUtils.deepEquals(this.schemePolicy, other.schemePolicy) && OriginalExportPigeonUtils.deepEquals(this.suggestedName, other.suggestedName)
   }
 
   override fun hashCode(): Int {
@@ -304,6 +329,10 @@ data class RemoteOriginalExportRequest (
     result = 31 * result + OriginalExportPigeonUtils.deepHash(this.requestId)
     result = 31 * result + OriginalExportPigeonUtils.deepHash(this.url)
     result = 31 * result + OriginalExportPigeonUtils.deepHash(this.origin)
+    result = 31 * result + OriginalExportPigeonUtils.deepHash(this.apiEndpoint)
+    result = 31 * result + OriginalExportPigeonUtils.deepHash(this.sessionEpoch)
+    result = 31 * result + OriginalExportPigeonUtils.deepHash(this.expectedContextGeneration)
+    result = 31 * result + OriginalExportPigeonUtils.deepHash(this.schemePolicy)
     result = 31 * result + OriginalExportPigeonUtils.deepHash(this.suggestedName)
     return result
   }
@@ -432,30 +461,35 @@ private open class OriginalExportPigeonCodec : StandardMessageCodec() {
       }
       130.toByte() -> {
         return (readValue(buffer) as Long?)?.let {
-          OriginalExportErrorCode.ofRaw(it.toInt())
+          OriginalExportSchemePolicy.ofRaw(it.toInt())
         }
       }
       131.toByte() -> {
-        return (readValue(buffer) as? List<Any?>)?.let {
-          LocalOriginalExportRequest.fromList(it)
+        return (readValue(buffer) as Long?)?.let {
+          OriginalExportErrorCode.ofRaw(it.toInt())
         }
       }
       132.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          RemoteOriginalExportRequest.fromList(it)
+          LocalOriginalExportRequest.fromList(it)
         }
       }
       133.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          OriginalExportResult.fromList(it)
+          RemoteOriginalExportRequest.fromList(it)
         }
       }
       134.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          OriginalExportReleaseResult.fromList(it)
+          OriginalExportResult.fromList(it)
         }
       }
       135.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          OriginalExportReleaseResult.fromList(it)
+        }
+      }
+      136.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
           OriginalExportProgress.fromList(it)
         }
@@ -469,28 +503,32 @@ private open class OriginalExportPigeonCodec : StandardMessageCodec() {
         stream.write(129)
         writeValue(stream, value.raw.toLong())
       }
-      is OriginalExportErrorCode -> {
+      is OriginalExportSchemePolicy -> {
         stream.write(130)
         writeValue(stream, value.raw.toLong())
       }
-      is LocalOriginalExportRequest -> {
+      is OriginalExportErrorCode -> {
         stream.write(131)
-        writeValue(stream, value.toList())
+        writeValue(stream, value.raw.toLong())
       }
-      is RemoteOriginalExportRequest -> {
+      is LocalOriginalExportRequest -> {
         stream.write(132)
         writeValue(stream, value.toList())
       }
-      is OriginalExportResult -> {
+      is RemoteOriginalExportRequest -> {
         stream.write(133)
         writeValue(stream, value.toList())
       }
-      is OriginalExportReleaseResult -> {
+      is OriginalExportResult -> {
         stream.write(134)
         writeValue(stream, value.toList())
       }
-      is OriginalExportProgress -> {
+      is OriginalExportReleaseResult -> {
         stream.write(135)
+        writeValue(stream, value.toList())
+      }
+      is OriginalExportProgress -> {
+        stream.write(136)
         writeValue(stream, value.toList())
       }
       else -> super.writeValue(stream, value)

@@ -167,6 +167,7 @@ String shareFailureMessageKey(ShareFailureDetail failure) {
       OriginalExportError.serverUnavailable => 'timeline_source_server_offline',
       OriginalExportError.assetMissing ||
       OriginalExportError.cancelled ||
+      OriginalExportError.staleContext ||
       OriginalExportError.timeout ||
       OriginalExportError.wrongServer ||
       OriginalExportError.httpFailure ||

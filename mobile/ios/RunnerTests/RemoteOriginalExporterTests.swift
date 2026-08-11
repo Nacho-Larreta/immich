@@ -132,6 +132,32 @@ final class RemoteOriginalExporterTests: XCTestCase {
     XCTAssertTrue(store.destinations.isEmpty)
   }
 
+  func testStaleEpochAndGenerationAreRejectedBeforeTaskOrFileCreation() throws {
+    let staleRequest = makeRequest(id: 23)
+    let nextEpoch = URLSessionManager.requestContextIdentity().sessionEpoch + 1
+    try URLSessionManager.replaceRequestContext(
+      headers: ["X-Context-Revision": "next"],
+      canonicalOrigin: "https://other.example.test",
+      token: nil,
+      sessionEpoch: nextEpoch
+    )
+    ControllableURLProtocol.setRequestHandler { _ in
+      XCTFail("A stale A to B export must not create a URLSession task")
+    }
+
+    let completed = expectation(description: "stale export rejected")
+    var captured: Result<OriginalExportResult, Error>?
+    exporter.export(request: staleRequest) {
+      captured = $0
+      completed.fulfill()
+    }
+    wait(for: [completed], timeout: 1)
+
+    XCTAssertEqual(try XCTUnwrap(captured).get().error, .staleContext)
+    XCTAssertTrue(ControllableURLProtocol.observedRequests.isEmpty)
+    XCTAssertTrue(store.destinations.isEmpty)
+  }
+
   func testSelfDeclaredRogueOriginIsRejectedAgainstActiveNetworkContext() throws {
     ControllableURLProtocol.setRequestHandler { _ in
       XCTFail("A self-declared rogue origin must not create a URLSession task")
@@ -234,9 +260,9 @@ final class RemoteOriginalExporterTests: XCTestCase {
     XCTAssertEqual(recorder.count, 1)
   }
 
-  func testInvalidationTimeoutCancelsActiveExport() throws {
+  func testInvalidationTimeoutTerminatesActiveExportAsStaleContext() throws {
     let started = expectation(description: "remote export started")
-    let completed = expectation(description: "remote export cancelled")
+    let completed = expectation(description: "remote export rejected as stale")
     let recorder = CompletionRecorder<OriginalExportResult>()
     ControllableURLProtocol.setRequestHandler { request in
       XCTAssertTrue(request.respond(statusCode: 200, headers: ["Content-Length": "12"]))
@@ -249,6 +275,10 @@ final class RemoteOriginalExporterTests: XCTestCase {
         requestId: 41,
         url: "https://photos.example.test/api/assets/1/original",
         origin: "https://photos.example.test",
+        apiEndpoint: "https://photos.example.test/api",
+        sessionEpoch: URLSessionManager.requestContextIdentity().sessionEpoch,
+        expectedContextGeneration: URLSessionManager.requestContextIdentity().generation,
+        schemePolicy: .httpsOnly,
         suggestedName: "photo.jpg"
       )
     ) { result in
@@ -268,7 +298,7 @@ final class RemoteOriginalExporterTests: XCTestCase {
     )
 
     wait(for: [completed], timeout: 1)
-    XCTAssertEqual(try recorder.result?.get().error, .cancelled)
+    XCTAssertEqual(try recorder.result?.get().error, .staleContext)
     XCTAssertTrue(
       store.destinations.allSatisfy {
         !FileManager.default.fileExists(atPath: $0.part.path)
@@ -446,10 +476,15 @@ final class RemoteOriginalExporterTests: XCTestCase {
     url: String = "https://photos.example.test/api/assets/1/original",
     origin: String = "https://photos.example.test"
   ) -> RemoteOriginalExportRequest {
-    RemoteOriginalExportRequest(
+    let identity = URLSessionManager.requestContextIdentity()
+    return RemoteOriginalExportRequest(
       requestId: id,
       url: url,
       origin: origin,
+      apiEndpoint: "\(origin)/api",
+      sessionEpoch: identity.sessionEpoch,
+      expectedContextGeneration: identity.generation,
+      schemePolicy: .httpsOnly,
       suggestedName: "asset.jpg"
     )
   }

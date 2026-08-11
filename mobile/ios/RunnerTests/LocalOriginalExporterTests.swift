@@ -280,6 +280,10 @@ final class LocalOriginalExporterTests: XCTestCase {
         requestId: 101,
         url: "https://photos.example.test/api/assets/101/original",
         origin: "https://photos.example.test",
+        apiEndpoint: "https://photos.example.test/api",
+        sessionEpoch: URLSessionManager.requestContextIdentity().sessionEpoch,
+        expectedContextGeneration: URLSessionManager.requestContextIdentity().generation,
+        schemePolicy: .httpsOnly,
         suggestedName: "remote.jpg"
       )
     ) { _ = remoteResult.record($0) }

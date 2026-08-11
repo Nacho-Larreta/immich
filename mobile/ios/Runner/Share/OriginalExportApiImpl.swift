@@ -56,12 +56,13 @@ final class OriginalExportApiImpl: OriginalExportApi {
       remoteExporter: RemoteOriginalExporter(
         sessionConfiguration: URLSessionManager.shared.session.configuration,
         cookieStorage: URLSessionManager.cookieStorage,
-        challengeHandler: { session, challenge, task, completion in
+        challengeHandler: { session, challenge, task, authorization, completion in
           URLSessionManager.shared.delegate.handleChallenge(
             session,
             challenge,
             completion,
-            task: task
+            task: task,
+            authorization: authorization
           )
         },
         fileStore: fileStore,

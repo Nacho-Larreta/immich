@@ -6,6 +6,7 @@ enum OriginalExportFailure: Error, Equatable, Sendable {
   case mediaNotLocal
   case iCloudUnavailable
   case cancelled
+  case staleContext
   case timeout
   case unauthorized
   case wrongServer
@@ -23,6 +24,7 @@ enum OriginalExportFailure: Error, Equatable, Sendable {
     case .mediaNotLocal: .mediaNotLocal
     case .iCloudUnavailable: .iCloudUnavailable
     case .cancelled: .cancelled
+    case .staleContext: .staleContext
     case .timeout: .timeout
     case .unauthorized: .unauthorized
     case .wrongServer: .wrongServer
@@ -466,6 +468,9 @@ final class OriginalExportOperation: @unchecked Sendable {
     ioExecutor: any OriginalExportIOExecuting,
     leaseRegistry: OriginalExportLeaseRegistry,
     waitsForNativeCompletionOnCancel: Bool = true,
+    successCommitFence: @escaping ((() -> OriginalExportResult) -> OriginalExportResult?) = {
+      commit in commit()
+    },
     onFinalized: @escaping (OriginalExportOperation) -> Void,
     completion: @escaping (Result<OriginalExportResult, any Error>) -> Void
   ) {
@@ -473,6 +478,7 @@ final class OriginalExportOperation: @unchecked Sendable {
     self.ioExecutor = ioExecutor
     self.leaseRegistry = leaseRegistry
     self.waitsForNativeCompletionOnCancel = waitsForNativeCompletionOnCancel
+    self.successCommitFence = successCommitFence
     self.onFinalized = onFinalized
     self.completion = completion
   }
@@ -481,6 +487,7 @@ final class OriginalExportOperation: @unchecked Sendable {
   private let ioExecutor: any OriginalExportIOExecuting
   private let leaseRegistry: OriginalExportLeaseRegistry
   private let waitsForNativeCompletionOnCancel: Bool
+  private let successCommitFence: ((() -> OriginalExportResult) -> OriginalExportResult?)
   private let onFinalized: (OriginalExportOperation) -> Void
   private let completion: (Result<OriginalExportResult, any Error>) -> Void
   private let state = Mutex(State())
@@ -676,17 +683,25 @@ final class OriginalExportOperation: @unchecked Sendable {
       guard let writer = terminal.resources.writer else {
         return .failure(.writeFailed)
       }
-      do {
-        let committedURL = try writer.commit()
-        let token = try leaseRegistry.adopt(writer: writer, committedURL: committedURL)
-        return OriginalExportResult(path: committedURL.path, leaseToken: token, error: nil)
-      } catch let failure as OriginalExportFailure {
+      guard
+        let result = successCommitFence({ [leaseRegistry] in
+          do {
+            let committedURL = try writer.commit()
+            let token = try leaseRegistry.adopt(writer: writer, committedURL: committedURL)
+            return OriginalExportResult(path: committedURL.path, leaseToken: token, error: nil)
+          } catch let failure as OriginalExportFailure {
+            let cleanupFailure = writer.cleanup()
+            return .failure(cleanupFailure ?? failure)
+          } catch {
+            let cleanupFailure = writer.cleanup()
+            return .failure(cleanupFailure ?? .writeFailed)
+          }
+        })
+      else {
         let cleanupFailure = writer.cleanup()
-        return .failure(cleanupFailure ?? failure)
-      } catch {
-        let cleanupFailure = writer.cleanup()
-        return .failure(cleanupFailure ?? .writeFailed)
+        return .failure(cleanupFailure ?? .staleContext)
       }
+      return result
     case .failure(let failure):
       let cleanupFailure = terminal.resources.writer?.cleanup()
       return .failure(cleanupFailure ?? failure)

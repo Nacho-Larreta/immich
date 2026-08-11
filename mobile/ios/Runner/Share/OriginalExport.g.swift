@@ -165,21 +165,28 @@ enum OriginalExportPolicy: Int {
   case allowICloud = 1
 }
 
+enum OriginalExportSchemePolicy: Int {
+  case httpsOnly = 0
+  case explicitlyApprovedHttp = 1
+  case registeredLocalHttp = 2
+}
+
 enum OriginalExportErrorCode: Int {
   case assetMissing = 0
   case mediaNotLocal = 1
   case iCloudUnavailable = 2
   case cancelled = 3
-  case timeout = 4
-  case unauthorized = 5
-  case wrongServer = 6
-  case serverUnavailable = 7
-  case httpFailure = 8
-  case storageUnavailable = 9
-  case writeFailed = 10
-  case cleanupFailed = 11
-  case leaseNotFound = 12
-  case platformUnsupported = 13
+  case staleContext = 4
+  case timeout = 5
+  case unauthorized = 6
+  case wrongServer = 7
+  case serverUnavailable = 8
+  case httpFailure = 9
+  case storageUnavailable = 10
+  case writeFailed = 11
+  case cleanupFailed = 12
+  case leaseNotFound = 13
+  case platformUnsupported = 14
 }
 
 /// Generated class from Pigeon that represents data sent in messages.
@@ -233,6 +240,10 @@ struct RemoteOriginalExportRequest: Hashable {
   var requestId: Int64
   var url: String
   var origin: String
+  var apiEndpoint: String
+  var sessionEpoch: Int64
+  var expectedContextGeneration: Int64
+  var schemePolicy: OriginalExportSchemePolicy
   var suggestedName: String
 
 
@@ -241,12 +252,20 @@ struct RemoteOriginalExportRequest: Hashable {
     let requestId = pigeonVar_list[0] as! Int64
     let url = pigeonVar_list[1] as! String
     let origin = pigeonVar_list[2] as! String
-    let suggestedName = pigeonVar_list[3] as! String
+    let apiEndpoint = pigeonVar_list[3] as! String
+    let sessionEpoch = pigeonVar_list[4] as! Int64
+    let expectedContextGeneration = pigeonVar_list[5] as! Int64
+    let schemePolicy = pigeonVar_list[6] as! OriginalExportSchemePolicy
+    let suggestedName = pigeonVar_list[7] as! String
 
     return RemoteOriginalExportRequest(
       requestId: requestId,
       url: url,
       origin: origin,
+      apiEndpoint: apiEndpoint,
+      sessionEpoch: sessionEpoch,
+      expectedContextGeneration: expectedContextGeneration,
+      schemePolicy: schemePolicy,
       suggestedName: suggestedName
     )
   }
@@ -255,6 +274,10 @@ struct RemoteOriginalExportRequest: Hashable {
       requestId,
       url,
       origin,
+      apiEndpoint,
+      sessionEpoch,
+      expectedContextGeneration,
+      schemePolicy,
       suggestedName,
     ]
   }
@@ -262,7 +285,7 @@ struct RemoteOriginalExportRequest: Hashable {
     if Swift.type(of: lhs) != Swift.type(of: rhs) {
       return false
     }
-    return deepEqualsOriginalExport(lhs.requestId, rhs.requestId) && deepEqualsOriginalExport(lhs.url, rhs.url) && deepEqualsOriginalExport(lhs.origin, rhs.origin) && deepEqualsOriginalExport(lhs.suggestedName, rhs.suggestedName)
+    return deepEqualsOriginalExport(lhs.requestId, rhs.requestId) && deepEqualsOriginalExport(lhs.url, rhs.url) && deepEqualsOriginalExport(lhs.origin, rhs.origin) && deepEqualsOriginalExport(lhs.apiEndpoint, rhs.apiEndpoint) && deepEqualsOriginalExport(lhs.sessionEpoch, rhs.sessionEpoch) && deepEqualsOriginalExport(lhs.expectedContextGeneration, rhs.expectedContextGeneration) && deepEqualsOriginalExport(lhs.schemePolicy, rhs.schemePolicy) && deepEqualsOriginalExport(lhs.suggestedName, rhs.suggestedName)
   }
 
   func hash(into hasher: inout Hasher) {
@@ -270,6 +293,10 @@ struct RemoteOriginalExportRequest: Hashable {
     deepHashOriginalExport(value: requestId, hasher: &hasher)
     deepHashOriginalExport(value: url, hasher: &hasher)
     deepHashOriginalExport(value: origin, hasher: &hasher)
+    deepHashOriginalExport(value: apiEndpoint, hasher: &hasher)
+    deepHashOriginalExport(value: sessionEpoch, hasher: &hasher)
+    deepHashOriginalExport(value: expectedContextGeneration, hasher: &hasher)
+    deepHashOriginalExport(value: schemePolicy, hasher: &hasher)
     deepHashOriginalExport(value: suggestedName, hasher: &hasher)
   }
 }
@@ -394,18 +421,24 @@ private class OriginalExportPigeonCodecReader: FlutterStandardReader {
     case 130:
       let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
       if let enumResultAsInt = enumResultAsInt {
-        return OriginalExportErrorCode(rawValue: enumResultAsInt)
+        return OriginalExportSchemePolicy(rawValue: enumResultAsInt)
       }
       return nil
     case 131:
-      return LocalOriginalExportRequest.fromList(self.readValue() as! [Any?])
+      let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
+      if let enumResultAsInt = enumResultAsInt {
+        return OriginalExportErrorCode(rawValue: enumResultAsInt)
+      }
+      return nil
     case 132:
-      return RemoteOriginalExportRequest.fromList(self.readValue() as! [Any?])
+      return LocalOriginalExportRequest.fromList(self.readValue() as! [Any?])
     case 133:
-      return OriginalExportResult.fromList(self.readValue() as! [Any?])
+      return RemoteOriginalExportRequest.fromList(self.readValue() as! [Any?])
     case 134:
-      return OriginalExportReleaseResult.fromList(self.readValue() as! [Any?])
+      return OriginalExportResult.fromList(self.readValue() as! [Any?])
     case 135:
+      return OriginalExportReleaseResult.fromList(self.readValue() as! [Any?])
+    case 136:
       return OriginalExportProgress.fromList(self.readValue() as! [Any?])
     default:
       return super.readValue(ofType: type)
@@ -418,23 +451,26 @@ private class OriginalExportPigeonCodecWriter: FlutterStandardWriter {
     if let value = value as? OriginalExportPolicy {
       super.writeByte(129)
       super.writeValue(value.rawValue)
-    } else if let value = value as? OriginalExportErrorCode {
+    } else if let value = value as? OriginalExportSchemePolicy {
       super.writeByte(130)
       super.writeValue(value.rawValue)
-    } else if let value = value as? LocalOriginalExportRequest {
+    } else if let value = value as? OriginalExportErrorCode {
       super.writeByte(131)
-      super.writeValue(value.toList())
-    } else if let value = value as? RemoteOriginalExportRequest {
+      super.writeValue(value.rawValue)
+    } else if let value = value as? LocalOriginalExportRequest {
       super.writeByte(132)
       super.writeValue(value.toList())
-    } else if let value = value as? OriginalExportResult {
+    } else if let value = value as? RemoteOriginalExportRequest {
       super.writeByte(133)
       super.writeValue(value.toList())
-    } else if let value = value as? OriginalExportReleaseResult {
+    } else if let value = value as? OriginalExportResult {
       super.writeByte(134)
       super.writeValue(value.toList())
-    } else if let value = value as? OriginalExportProgress {
+    } else if let value = value as? OriginalExportReleaseResult {
       super.writeByte(135)
+      super.writeValue(value.toList())
+    } else if let value = value as? OriginalExportProgress {
+      super.writeByte(136)
       super.writeValue(value.toList())
     } else {
       super.writeValue(value)

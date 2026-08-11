@@ -1,8 +1,29 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:immich_mobile/domain/interfaces/temporary_file_lease.interface.dart';
+import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/domain/models/original_export.model.dart';
 
 void main() {
+  test('remote context binding is immutable and binds the complete authorization proof', () {
+    final binding = OriginalExportContextBinding(
+      sessionEpoch: 7,
+      expectedContextGeneration: 19,
+      apiEndpoint: Uri.parse('http://photos.test:2283/api'),
+      exactOrigin: Uri.parse('http://photos.test:2283'),
+      schemePolicy: EndpointSchemePolicy.registeredLocalHttp,
+    );
+
+    expect(binding.sessionEpoch, 7);
+    expect(binding.expectedContextGeneration, 19);
+    expect(binding.apiEndpoint, Uri.parse('http://photos.test:2283/api'));
+    expect(binding.exactOrigin, Uri.parse('http://photos.test:2283'));
+    expect(binding.schemePolicy, EndpointSchemePolicy.registeredLocalHttp);
+  });
+
+  test('stale context is a distinct native terminal', () {
+    expect(OriginalExportError.staleContext.name, 'staleContext');
+  });
+
   group('LocalOriginalExportRequest', () {
     test('has value semantics', () {
       final first = LocalOriginalExportRequest(
@@ -101,6 +122,7 @@ void main() {
         OriginalExportError.mediaNotLocal,
         OriginalExportError.iCloudUnavailable,
         OriginalExportError.cancelled,
+        OriginalExportError.staleContext,
         OriginalExportError.timeout,
         OriginalExportError.unauthorized,
         OriginalExportError.wrongServer,

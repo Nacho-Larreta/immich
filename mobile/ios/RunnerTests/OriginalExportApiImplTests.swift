@@ -119,10 +119,15 @@ final class OriginalExportApiImplTests: XCTestCase {
   }
 
   private func makeRemoteRequest(id: Int64) -> RemoteOriginalExportRequest {
-    RemoteOriginalExportRequest(
+    let identity = URLSessionManager.requestContextIdentity()
+    return RemoteOriginalExportRequest(
       requestId: id,
       url: "https://example.test/original",
       origin: "https://example.test",
+      apiEndpoint: "https://example.test/api",
+      sessionEpoch: identity.sessionEpoch,
+      expectedContextGeneration: identity.generation,
+      schemePolicy: .httpsOnly,
       suggestedName: "original"
     )
   }

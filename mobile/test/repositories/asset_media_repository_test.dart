@@ -340,6 +340,23 @@ void main() {
       expect(lease.releaseCount, 1);
     });
 
+    test('stale remote presentation claim invokes no sheet and releases every lease', () async {
+      final lease = _Lease('/tmp/immich-share-stale/photo.jpg');
+      final sheet = _ShareSheet();
+      final repository = _repository(
+        remote: _RemoteExporter([
+          OriginalExportResult.success(lease, presentationClaim: OriginalExportPresentationClaim(() => false)),
+        ]),
+        sheet: sheet,
+      )..activateRemoteShares();
+
+      final result = await repository.shareAssets([_remoteAsset('stale')]).result;
+
+      expect(result, const ShareResult.failure(ShareSheetFailure(error: ShareSheetError.presentationFailed)));
+      expect(sheet.requests, isEmpty);
+      expect(lease.releaseCount, 1);
+    });
+
     test('dispose rejects local shares and cannot be reversed by remote activation', () async {
       final local = _LocalExporter([]);
       final repository = _repository(local: local);

@@ -4,7 +4,8 @@ final class RemoteOriginalExportSessionDelegate: NSObject, URLSessionDataDelegat
   typealias ChallengeHandler = (
     URLSession,
     URLAuthenticationChallenge,
-    URLSessionTask?,
+    URLSessionTask,
+    NetworkOriginAuthorization,
     @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
   ) -> Void
 
@@ -57,14 +58,14 @@ final class RemoteOriginalExportSessionDelegate: NSObject, URLSessionDataDelegat
     task: URLSessionTask,
     operation: OriginalExportOperation,
     writer: OriginalExportLeaseWriter,
-    authorization: NetworkOriginAuthorization,
+    requestContext: AuthorizedNetworkRequestContext,
     progress: @escaping (Double) -> Void
   ) {
     state.withLock {
       $0.contexts[task.taskIdentifier] = Context(
         operation: operation,
         writer: writer,
-        authorization: authorization,
+        authorization: requestContext.authorization,
         expectedLength: NSURLSessionTransferSizeUnknown,
         progress: progress
       )
@@ -83,16 +84,34 @@ final class RemoteOriginalExportSessionDelegate: NSObject, URLSessionDataDelegat
     completionHandler: @escaping (URLRequest?) -> Void
   ) {
     let context = state.withLock { $0.contexts[task.taskIdentifier] }
-    guard
-      let context,
-      let redirectURL = request.url,
-      URLSessionManager.allows(redirectURL, under: context.authorization)
-    else {
+    guard let context, let redirectURL = request.url else {
       completionHandler(nil)
-      if let context { owner?.finish(context.operation, failure: .wrongServer, cancelNative: true) }
       return
     }
-    completionHandler(request)
+    guard URLSessionManager.matchesAuthorizedOrigin(redirectURL, under: context.authorization) else {
+      completionHandler(nil)
+      owner?.finish(context.operation, failure: .wrongServer, cancelNative: true)
+      return
+    }
+    guard URLSessionManager.allows(redirectURL, under: context.authorization) else {
+      completionHandler(nil)
+      owner?.finish(context.operation, failure: .staleContext, cancelNative: true)
+      return
+    }
+    guard
+      URLSessionManager.performAuthorizedDelivery(
+        redirectURL,
+        under: context.authorization,
+        delivery: {
+          completionHandler(request)
+          return true
+        }
+      ) == true
+    else {
+      completionHandler(nil)
+      owner?.finish(context.operation, failure: .staleContext, cancelNative: true)
+      return
+    }
   }
 
   func urlSession(
@@ -108,10 +127,15 @@ final class RemoteOriginalExportSessionDelegate: NSObject, URLSessionDataDelegat
     guard
       let response = response as? HTTPURLResponse,
       let responseURL = response.url,
-      URLSessionManager.allows(responseURL, under: context.authorization)
+      URLSessionManager.matchesAuthorizedOrigin(responseURL, under: context.authorization)
     else {
       completionHandler(.cancel)
       owner?.finish(context.operation, failure: .wrongServer, cancelNative: true)
+      return
+    }
+    guard URLSessionManager.allows(responseURL, under: context.authorization) else {
+      completionHandler(.cancel)
+      owner?.finish(context.operation, failure: .staleContext, cancelNative: true)
       return
     }
     guard (200..<300).contains(response.statusCode) else {
@@ -125,21 +149,31 @@ final class RemoteOriginalExportSessionDelegate: NSObject, URLSessionDataDelegat
         completionHandler(.cancel)
         return
       }
-      do {
-        try context.writer.open()
-        context.acceptedResponse = true
-        context.expectedLength = response.expectedContentLength
-        completionHandler(.allow)
-      } catch let failure as OriginalExportFailure {
+      let admission = URLSessionManager.performAuthorizedDelivery(
+        responseURL,
+        under: context.authorization,
+        delivery: { () -> OriginalExportFailure? in
+          do {
+            try context.writer.open()
+            context.acceptedResponse = true
+            context.expectedLength = response.expectedContentLength
+            completionHandler(.allow)
+            return nil
+          } catch let failure as OriginalExportFailure {
+            return failure
+          } catch {
+            return .storageUnavailable
+          }
+        }
+      )
+      guard let admission else {
+        completionHandler(.cancel)
+        self.owner?.finish(context.operation, failure: .staleContext, cancelNative: true)
+        return
+      }
+      if let failure = admission {
         completionHandler(.cancel)
         self.owner?.finish(context.operation, failure: failure, cancelNative: true)
-      } catch {
-        completionHandler(.cancel)
-        self.owner?.finish(
-          context.operation,
-          failure: .storageUnavailable,
-          cancelNative: true
-        )
       }
     }
   }
@@ -157,6 +191,10 @@ final class RemoteOriginalExportSessionDelegate: NSObject, URLSessionDataDelegat
         return context
       })
     else { return }
+    guard let requestURL = dataTask.currentRequest?.url ?? dataTask.originalRequest?.url else {
+      owner?.finish(context.operation, failure: .staleContext, cancelNative: true)
+      return
+    }
     dataTask.suspend()
     let writeCompleted = DispatchSemaphore(value: 0)
     ioExecutor.execute { [weak self, weak context] in
@@ -164,19 +202,46 @@ final class RemoteOriginalExportSessionDelegate: NSObject, URLSessionDataDelegat
       guard let self, let context, context.acceptedResponse, context.operation.isActive else {
         return
       }
-      do {
-        try context.writer.append(data)
-        context.receivedLength += Int64(data.count)
-        if context.expectedLength > 0 {
-          context.progress(min(1, Double(context.receivedLength) / Double(context.expectedLength)))
+      let admission = URLSessionManager.performAuthorizedDelivery(
+        requestURL,
+        under: context.authorization,
+        delivery: { () -> OriginalExportFailure? in
+          do {
+            try context.writer.append(data)
+            context.receivedLength += Int64(data.count)
+            if context.expectedLength > 0 {
+              context.progress(min(1, Double(context.receivedLength) / Double(context.expectedLength)))
+            }
+            return nil
+          } catch {
+            return .writeFailed
+          }
         }
-      } catch {
-        self.owner?.finish(context.operation, failure: .writeFailed, cancelNative: true)
+      )
+      guard let admission else {
+        self.owner?.finish(context.operation, failure: .staleContext, cancelNative: true)
+        return
+      }
+      if let failure = admission {
+        self.owner?.finish(context.operation, failure: failure, cancelNative: true)
       }
     }
     writeCompleted.wait()
     state.withLock { $0.pendingWrites -= 1 }
-    dataTask.resume()
+    guard context.operation.isActive else { return }
+    guard
+      URLSessionManager.performAuthorizedDelivery(
+        requestURL,
+        under: context.authorization,
+        delivery: {
+          dataTask.resume()
+          return true
+        }
+      ) == true
+    else {
+      owner?.finish(context.operation, failure: .staleContext, cancelNative: true)
+      return
+    }
   }
 
   func urlSession(
@@ -188,18 +253,41 @@ final class RemoteOriginalExportSessionDelegate: NSObject, URLSessionDataDelegat
     else {
       return
     }
-    let failure: OriginalExportFailure? = error.map {
-      ($0 as? URLError)?.code == .cancelled ? .cancelled : .serverUnavailable
+    guard let requestURL = task.currentRequest?.url ?? task.originalRequest?.url else {
+      owner?.nativeCompleted(context.operation, failure: .staleContext)
+      return
+    }
+    let failure: OriginalExportFailure?
+    if let error {
+      failure = (error as? URLError)?.code == .cancelled ? .cancelled : .serverUnavailable
+    } else if context.acceptedResponse, context.receivedLength > 0 {
+      failure = nil
+    } else {
+      failure = .httpFailure
     }
     ioExecutor.execute { [weak self] in
       guard let self else { return }
-      if let failure {
-        self.owner?.nativeCompleted(context.operation, failure: failure)
-      } else if context.acceptedResponse, context.receivedLength > 0 {
-        self.owner?.nativeCompleted(context.operation, failure: nil)
-      } else {
-        self.owner?.nativeCompleted(context.operation, failure: .httpFailure)
-      }
+      self.completeNative(context, requestURL: requestURL, failure: failure)
+    }
+  }
+
+  private func completeNative(
+    _ context: Context,
+    requestURL: URL,
+    failure: OriginalExportFailure?
+  ) {
+    guard
+      URLSessionManager.performAuthorizedDelivery(
+        requestURL,
+        under: context.authorization,
+        delivery: {
+          owner?.nativeCompleted(context.operation, failure: failure)
+          return true
+        }
+      ) == true
+    else {
+      owner?.nativeCompleted(context.operation, failure: .staleContext)
+      return
     }
   }
 
@@ -226,17 +314,32 @@ final class RemoteOriginalExportSessionDelegate: NSObject, URLSessionDataDelegat
     task: URLSessionTask?,
     completion: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
   ) {
+    guard let task, let context = state.withLock({ $0.contexts[task.taskIdentifier] }) else {
+      completion(.cancelAuthenticationChallenge, nil)
+      return
+    }
     guard
-      let task,
-      let context = state.withLock({ $0.contexts[task.taskIdentifier] }),
       let requestURL = task.currentRequest?.url ?? task.originalRequest?.url,
       URLSessionManager.allows(requestURL, under: context.authorization),
       let challengeHandler
     else {
-      completion(.performDefaultHandling, nil)
+      completion(.cancelAuthenticationChallenge, nil)
+      owner?.finish(context.operation, failure: .staleContext, cancelNative: true)
       return
     }
-    challengeHandler(session, challenge, task, completion)
+    challengeHandler(session, challenge, task, context.authorization) {
+      [weak self, weak context] disposition, credential in
+      guard let context else {
+        completion(.cancelAuthenticationChallenge, nil)
+        return
+      }
+      guard URLSessionManager.allows(requestURL, under: context.authorization) else {
+        completion(.cancelAuthenticationChallenge, nil)
+        self?.owner?.finish(context.operation, failure: .staleContext, cancelNative: true)
+        return
+      }
+      completion(disposition, credential)
+    }
   }
 }
 
@@ -249,8 +352,14 @@ final class RemoteOriginalExporter: NSObject, @unchecked Sendable {
     self.init(
       sessionConfiguration: manager.session.configuration,
       cookieStorage: URLSessionManager.cookieStorage,
-      challengeHandler: { session, challenge, task, completion in
-        manager.delegate.handleChallenge(session, challenge, completion, task: task)
+      challengeHandler: { session, challenge, task, authorization, completion in
+        manager.delegate.handleChallenge(
+          session,
+          challenge,
+          completion,
+          task: task,
+          authorization: authorization
+        )
       },
       fileStore: TemporaryOriginalExportFileStore(),
       ioExecutor: SerialOriginalExportIOExecutor(),
@@ -309,7 +418,7 @@ final class RemoteOriginalExporter: NSObject, @unchecked Sendable {
       object: nil,
       queue: nil
     ) { [weak self] _ in
-      self?.cancelAll()
+      self?.failStaleOperations()
     }
   }
 
@@ -336,10 +445,26 @@ final class RemoteOriginalExporter: NSObject, @unchecked Sendable {
     request: RemoteOriginalExportRequest,
     completion: @escaping (Result<OriginalExportResult, any Error>) -> Void
   ) {
-    guard
-      let url = URL(string: request.url),
-      let authorization = URLSessionManager.authorize(url, declaredOrigin: request.origin)
-    else {
+    guard let url = URL(string: request.url) else {
+      completion(.success(.failure(.wrongServer)))
+      return
+    }
+    let admission = URLSessionManager.captureOriginalExportRequestContext(
+      for: url,
+      declaredOrigin: request.origin,
+      apiEndpoint: request.apiEndpoint,
+      schemePolicy: request.schemePolicy,
+      expectedSessionEpoch: request.sessionEpoch,
+      expectedGeneration: request.expectedContextGeneration,
+      cookieStorage: cookieStorage ?? URLSessionManager.cookieStorage
+    )
+    let requestContext: AuthorizedNetworkRequestContext
+    switch admission {
+    case .authorized(let captured): requestContext = captured
+    case .staleContext:
+      completion(.success(.failure(.staleContext)))
+      return
+    case .rejected:
       completion(.success(.failure(.wrongServer)))
       return
     }
@@ -348,6 +473,13 @@ final class RemoteOriginalExporter: NSObject, @unchecked Sendable {
       id: request.requestId,
       ioExecutor: ioExecutor,
       leaseRegistry: leaseRegistry,
+      successCommitFence: { commit in
+        URLSessionManager.performAuthorizedDelivery(
+          url,
+          under: requestContext.authorization,
+          delivery: commit
+        )
+      },
       onFinalized: { [weak self] operation in
         self?.registry.remove(requestId: operation.id, matching: operation)
       },
@@ -375,7 +507,7 @@ final class RemoteOriginalExporter: NSObject, @unchecked Sendable {
         self.start(
           request: request,
           url: url,
-          authorization: authorization,
+          requestContext: requestContext,
           operation: operation
         )
       }
@@ -385,24 +517,33 @@ final class RemoteOriginalExporter: NSObject, @unchecked Sendable {
   private func start(
     request: RemoteOriginalExportRequest,
     url: URL,
-    authorization: NetworkOriginAuthorization,
+    requestContext: AuthorizedNetworkRequestContext,
     operation: OriginalExportOperation
   ) {
-    guard
-      URLSessionManager.allows(url, under: authorization),
-      let requestHeaders = URLSessionManager.headers(under: authorization)
-    else {
-      finish(operation, failure: .wrongServer)
+    let destinationAdmission = URLSessionManager.performAuthorizedDelivery(
+      url,
+      under: requestContext.authorization,
+      delivery: { () -> Result<OriginalExportDestination, OriginalExportFailure> in
+        do {
+          return .success(
+            try fileStore.createDestination(suggestedName: request.suggestedName)
+          )
+        } catch let failure as OriginalExportFailure {
+          return .failure(failure)
+        } catch {
+          return .failure(.storageUnavailable)
+        }
+      }
+    )
+    guard let destinationAdmission else {
+      finish(operation, failure: .staleContext)
       return
     }
     let destination: OriginalExportDestination
-    do {
-      destination = try fileStore.createDestination(suggestedName: request.suggestedName)
-    } catch let failure as OriginalExportFailure {
+    switch destinationAdmission {
+    case .success(let created): destination = created
+    case .failure(let failure):
       finish(operation, failure: failure)
-      return
-    } catch {
-      finish(operation, failure: .storageUnavailable)
       return
     }
     let writer = OriginalExportLeaseWriter(destination: destination, store: fileStore)
@@ -414,11 +555,11 @@ final class RemoteOriginalExporter: NSObject, @unchecked Sendable {
     var urlRequest = URLRequest(url: url)
     urlRequest.cachePolicy = .reloadIgnoringLocalCacheData
     urlRequest.httpShouldHandleCookies = false
-    for (header, value) in requestHeaders
+    for (header, value) in requestContext.headers
     where header.caseInsensitiveCompare("Cookie") != .orderedSame {
       urlRequest.setValue(value, forHTTPHeaderField: header)
     }
-    if let cookieHeader = exactHostCookieHeader(for: url) {
+    if let cookieHeader = requestContext.cookieHeader {
       urlRequest.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
     }
     let task = session.dataTask(with: urlRequest)
@@ -427,7 +568,7 @@ final class RemoteOriginalExporter: NSObject, @unchecked Sendable {
       task: task,
       operation: operation,
       writer: writer,
-      authorization: authorization,
+      requestContext: requestContext,
       progress: { [weak self, weak operation] fraction in
         guard let self, let operation, operation.isActive else { return }
         self.progressHandler(
@@ -447,7 +588,19 @@ final class RemoteOriginalExporter: NSObject, @unchecked Sendable {
       timeoutTask.cancel()
       return
     }
-    task.resume()
+    guard
+      URLSessionManager.performAuthorizedDelivery(
+        url,
+        under: requestContext.authorization,
+        delivery: {
+          task.resume()
+          return true
+        }
+      ) == true
+    else {
+      finish(operation, failure: .staleContext, cancelNative: true)
+      return
+    }
   }
 
   func cancel(requestId: Int64, completion: @escaping () -> Void = {}) {
@@ -472,6 +625,13 @@ final class RemoteOriginalExporter: NSObject, @unchecked Sendable {
       operation.cancel(after: group.leave)
     }
     group.notify(queue: .global(qos: .userInitiated), execute: completion)
+  }
+
+  private func failStaleOperations() {
+    for operation in registry.all() {
+      if operation.isQueued { pool.removeQueued(operation) }
+      finish(operation, failure: .staleContext, cancelNative: true)
+    }
   }
 
   func dispose(completion: @escaping () -> Void = {}) {
@@ -515,12 +675,4 @@ final class RemoteOriginalExporter: NSObject, @unchecked Sendable {
     operation.fail(failure, cancelNative: cancelNative)
   }
 
-  private func exactHostCookieHeader(for url: URL) -> String? {
-    guard let host = url.host?.lowercased(), let cookieStorage else { return nil }
-    let cookies =
-      cookieStorage.cookies(for: url)?.filter {
-        $0.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")) == host
-      } ?? []
-    return HTTPCookie.requestHeaderFields(with: cookies)["Cookie"]
-  }
 }

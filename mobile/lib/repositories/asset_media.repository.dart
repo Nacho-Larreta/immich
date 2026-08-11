@@ -183,7 +183,8 @@ final class _AssetShareOperation implements ShareOperation {
   final void Function(_AssetShareOperation operation) _onFinished;
   final Completer<ShareResult> _result = Completer();
   final StreamController<ShareProgress> _progress = StreamController.broadcast(sync: true);
-  final List<({String assetId, TemporaryFileLease lease})> _leases = [];
+  final List<({String assetId, TemporaryFileLease lease, OriginalExportPresentationClaim? presentationClaim})> _leases =
+      [];
   CancellableRequest<Object?>? _activeRequest;
   Future<void>? _cancelFuture;
   bool _cancelled = false;
@@ -255,8 +256,12 @@ final class _AssetShareOperation implements ShareOperation {
           ShareAssetFailure(assetId: _assetIdentityForPhase(asset, phase), phase: phase, error: error),
         );
       }
-      final lease = (exportResult as OriginalExportSuccess).lease;
-      _leases.add((assetId: _assetIdentityForPhase(asset, phase), lease: lease));
+      final success = exportResult as OriginalExportSuccess;
+      _leases.add((
+        assetId: _assetIdentityForPhase(asset, phase),
+        lease: success.lease,
+        presentationClaim: success.presentationClaim,
+      ));
       if (_cancelled) {
         return _cancelledResult(asset, phase);
       }
@@ -264,14 +269,27 @@ final class _AssetShareOperation implements ShareOperation {
     }
 
     _publish(SharePhase.presentation, plan.assets.length);
+    if (!_claimPresentationOwnership()) {
+      return const ShareResult.failure(ShareSheetFailure(error: ShareSheetError.presentationFailed));
+    }
+    _presentationOwned = true;
     final presentation = _shareSheet.share(
       ShareSheetRequest(paths: _leases.map((entry) => entry.lease.path), anchor: anchor),
     );
-    _presentationOwned = true;
     _activeRequest = presentation;
     final result = await presentation.result;
     _activeRequest = null;
     return result;
+  }
+
+  bool _claimPresentationOwnership() {
+    for (final entry in _leases) {
+      final claim = entry.presentationClaim;
+      if (claim != null && !claim.claim()) {
+        return false;
+      }
+    }
+    return !_cancelled;
   }
 
   CancellableRequest<OriginalExportResult> _export(_ShareExportStep step) {
