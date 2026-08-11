@@ -17,11 +17,37 @@ void main() {
       policy: RemoteMediaPolicy.cacheOnly,
       kind: MediaRequestKind.thumbnail,
       preferEncoded: false,
+      expectedContextGeneration: null,
     );
 
     expect(request.resource, resource);
     expect(request.origin, Uri.parse('https://photos.example.test'));
     expect(request.policy, RemoteMediaPolicy.cacheOnly);
+    expect(request.expectedContextGeneration, isNull);
+  });
+
+  test('network request requires and preserves its expected native context generation', () {
+    final request = RemoteMediaRequest(
+      requestId: 12,
+      resource: Uri.parse('https://photos.example.test/api/assets/asset-1/thumbnail'),
+      policy: RemoteMediaPolicy.cacheThenNetwork,
+      kind: MediaRequestKind.thumbnail,
+      preferEncoded: false,
+      expectedContextGeneration: 41,
+    );
+
+    expect(request.expectedContextGeneration, 41);
+    expect(
+      () => RemoteMediaRequest(
+        requestId: 13,
+        resource: Uri.parse('https://photos.example.test/api/assets/asset-1/thumbnail'),
+        policy: RemoteMediaPolicy.cacheThenNetwork,
+        kind: MediaRequestKind.thumbnail,
+        preferEncoded: false,
+        expectedContextGeneration: null,
+      ),
+      throwsArgumentError,
+    );
   });
 
   test('local request rejects an empty asset identity', () {

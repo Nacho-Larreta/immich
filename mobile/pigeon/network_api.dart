@@ -19,10 +19,17 @@ class ClientCertPrompt {
 class NetworkRequestContextSnapshot {
   int clientPointer;
   String? canonicalOrigin;
+  int sessionEpoch;
   int generation;
   bool confirmed;
 
-  NetworkRequestContextSnapshot(this.clientPointer, this.canonicalOrigin, this.generation, this.confirmed);
+  NetworkRequestContextSnapshot(
+    this.clientPointer,
+    this.canonicalOrigin,
+    this.sessionEpoch,
+    this.generation,
+    this.confirmed,
+  );
 }
 
 @ConfigurePigeon(
@@ -55,7 +62,7 @@ abstract class NetworkApi {
 
   void setRequestHeaders(Map<String, String> headers, List<String> serverUrls, String? token);
 
-  void replaceRequestContext(Map<String, String> headers, String? canonicalOrigin, String? token);
+  void replaceRequestContext(Map<String, String> headers, String? canonicalOrigin, String? token, int sessionEpoch);
 
   void failClosedRequestContext();
 }

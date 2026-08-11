@@ -8,7 +8,7 @@ void main() {
     final localSync = Completer<void>();
     final events = <String>[];
     final work = SessionWork(
-      activateSession: ({confirmedEndpoint}) => events.add('activate:$confirmedEndpoint'),
+      activateSession: ({confirmedEndpoint}) async => events.add('activate:$confirmedEndpoint'),
       syncLocal: ({required full}) {
         events.add('syncLocal:$full');
         return localSync.future;
@@ -31,7 +31,7 @@ void main() {
   test('starts local sync without activating remote work when no remote authentication exists', () async {
     final events = <String>[];
     final work = SessionWork(
-      activateSession: ({confirmedEndpoint}) => events.add('activate:$confirmedEndpoint'),
+      activateSession: ({confirmedEndpoint}) async => events.add('activate:$confirmedEndpoint'),
       syncLocal: ({required full}) async => events.add('syncLocal:$full'),
       cancelLocalSync: () async {},
     );
@@ -49,7 +49,7 @@ void main() {
   test('can re-dispatch local-only sync after lifecycle cancellation', () async {
     final fullModes = <bool>[];
     final work = SessionWork(
-      activateSession: ({confirmedEndpoint}) {},
+      activateSession: ({confirmedEndpoint}) async {},
       syncLocal: ({required full}) async => fullModes.add(full),
       cancelLocalSync: () async {},
     );

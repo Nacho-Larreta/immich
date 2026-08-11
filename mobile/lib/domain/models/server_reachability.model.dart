@@ -1,10 +1,12 @@
 import 'package:immich_mobile/domain/models/network_uri.model.dart';
+import 'package:immich_mobile/domain/models/confirmed_server_access.model.dart';
 
 enum ReachabilityPhase { unknown, probing, offline, online, paused, disposed }
 
 enum TransportAvailability { unknown, unavailable, available }
 
 const _confirmedEndpointUnchanged = Object();
+const _serverAccessUnchanged = Object();
 
 final class ReachabilityState {
   ReachabilityState({
@@ -12,6 +14,7 @@ final class ReachabilityState {
     required this.sessionEpoch,
     required this.probeGeneration,
     this.confirmedEndpoint,
+    this.serverAccess,
   }) {
     _validateGeneration(sessionEpoch, 'sessionEpoch');
     _validateGeneration(probeGeneration, 'probeGeneration');
@@ -27,12 +30,14 @@ final class ReachabilityState {
   final ReachabilityPhase phase;
   final int sessionEpoch;
   final Uri? confirmedEndpoint;
+  final ConfirmedServerAccess? serverAccess;
   final int probeGeneration;
 
   ReachabilityState copyWith({
     ReachabilityPhase? phase,
     int? sessionEpoch,
     Object? confirmedEndpoint = _confirmedEndpointUnchanged,
+    Object? serverAccess = _serverAccessUnchanged,
     int? probeGeneration,
   }) {
     final nextEndpoint = switch (confirmedEndpoint) {
@@ -41,10 +46,17 @@ final class ReachabilityState {
       _ when identical(confirmedEndpoint, _confirmedEndpointUnchanged) => this.confirmedEndpoint,
       _ => throw ArgumentError.value(confirmedEndpoint, 'confirmedEndpoint', 'Must be a Uri or null'),
     };
+    final nextServerAccess = switch (serverAccess) {
+      final ConfirmedServerAccess access => access,
+      null => null,
+      _ when identical(serverAccess, _serverAccessUnchanged) => this.serverAccess,
+      _ => throw ArgumentError.value(serverAccess, 'serverAccess', 'Must be a ConfirmedServerAccess or null'),
+    };
     return ReachabilityState(
       phase: phase ?? this.phase,
       sessionEpoch: sessionEpoch ?? this.sessionEpoch,
       confirmedEndpoint: nextEndpoint,
+      serverAccess: nextServerAccess,
       probeGeneration: probeGeneration ?? this.probeGeneration,
     );
   }
@@ -55,11 +67,12 @@ final class ReachabilityState {
         other.phase == phase &&
         other.sessionEpoch == sessionEpoch &&
         other.confirmedEndpoint == confirmedEndpoint &&
+        other.serverAccess == serverAccess &&
         other.probeGeneration == probeGeneration;
   }
 
   @override
-  int get hashCode => Object.hash(phase, sessionEpoch, confirmedEndpoint, probeGeneration);
+  int get hashCode => Object.hash(phase, sessionEpoch, confirmedEndpoint, serverAccess, probeGeneration);
 }
 
 final class ReachabilityIdentity {

@@ -4,6 +4,7 @@ abstract interface class AuthRequestContextPort {
   void block();
 
   Future<void> install({
+    required Uri apiEndpoint,
     required Uri canonicalOrigin,
     required String accessToken,
     required EndpointSchemePolicy schemePolicy,

@@ -174,6 +174,7 @@ class URLSessionManager: NSObject {
   private static var activeHeaders: [String: String] = [:]
   private static var sensitiveHeaderNames: Set<String> = ["authorization", "cookie"]
   private static var requestContextRevision: UInt64 = 0
+  private static var requestContextSessionEpoch: Int64 = 0
   private static var requestContextConfirmed = false
   private static var isReplacingRequestContext = false
   private static var cookieReconciliationScheduled = false
@@ -187,6 +188,7 @@ class URLSessionManager: NSObject {
     label: "com.nacholarreta.nachofotos.auth-cookie-reconciliation"
   )
   private static let requestContextLock = NSRecursiveLock()
+  private static let terminalDeliveryGroup = DispatchGroup()
   private static let sessionTransitionLock = NSLock()
   private static let sessionInvalidationTimeout: DispatchTimeInterval = .seconds(5)
   private static var sessionInvalidationBarrierOverride: (() -> Bool)?
@@ -246,23 +248,39 @@ class URLSessionManager: NSObject {
   }
 
   static func replaceRequestContext(
-    headers: [String: String], canonicalOrigin: String?, token: String?
+    headers: [String: String],
+    canonicalOrigin: String?,
+    token: String?,
+    sessionEpoch: Int64 = 0
   ) throws {
+    guard sessionEpoch >= 0 else { throw NetworkContextError.invalidSessionEpoch }
     _ = shared
     let origin = try validateContext(
       headers: headers, canonicalOrigin: canonicalOrigin, token: token)
     try transitionRequestContext(
-      headers: headers, origins: origin.map { [$0] } ?? [], token: token)
+      headers: headers,
+      origins: origin.map { [$0] } ?? [],
+      token: token,
+      sessionEpoch: sessionEpoch
+    )
   }
 
   static func failClosedRequestContext() throws {
     _ = shared
-    try transitionRequestContext(headers: [:], origins: [], token: nil, confirmed: false)
+    let sessionEpoch = withRequestContextLock { requestContextSessionEpoch }
+    try transitionRequestContext(
+      headers: [:],
+      origins: [],
+      token: nil,
+      sessionEpoch: sessionEpoch,
+      confirmed: false
+    )
   }
 
   static func requestContextSnapshot() -> (
     clientPointer: UnsafeMutableRawPointer,
     canonicalOrigin: String?,
+    sessionEpoch: Int64,
     generation: UInt64,
     confirmed: Bool
   ) {
@@ -273,6 +291,7 @@ class URLSessionManager: NSObject {
         (
           clientPointer,
           activeCanonicalOrigins.first?.string,
+          requestContextSessionEpoch,
           requestContextRevision,
           requestContextConfirmed && !isReplacingRequestContext
         )
@@ -295,7 +314,13 @@ class URLSessionManager: NSObject {
     }
     if token != nil && origins.isEmpty { throw NetworkContextError.tokenWithoutOrigin }
     if origins.isEmpty && !headers.isEmpty { throw NetworkContextError.headersWithoutOrigin }
-    try transitionRequestContext(headers: headers, origins: origins, token: token)
+    let sessionEpoch = withRequestContextLock { requestContextSessionEpoch }
+    try transitionRequestContext(
+      headers: headers,
+      origins: origins,
+      token: token,
+      sessionEpoch: sessionEpoch
+    )
   }
 
   static func allows(_ url: URL) -> Bool {
@@ -329,14 +354,49 @@ class URLSessionManager: NSObject {
     _ url: URL,
     under authorization: NetworkOriginAuthorization
   ) -> Bool {
-    let authorizedOrigin = NetworkCanonicalOrigin(
-      authorization: authorization
-    )
     return withRequestContextLock {
-      !isReplacingRequestContext
-        && authorization.requestContextRevision == requestContextRevision
-        && activeCanonicalOrigins.contains(authorizedOrigin)
-        && authorizedOrigin.matches(url)
+      allowsLocked(url, under: authorization)
+    }
+  }
+
+  static func performAuthorizedDelivery<T>(
+    _ url: URL,
+    under authorization: NetworkOriginAuthorization,
+    delivery: () -> T
+  ) -> T? {
+    let admitted = withRequestContextLock { () -> Bool in
+      guard allowsLocked(url, under: authorization) else { return false }
+      terminalDeliveryGroup.enter()
+      return true
+    }
+    guard admitted else { return nil }
+    defer { terminalDeliveryGroup.leave() }
+    return delivery()
+  }
+
+  static func captureCacheReadAuthorization(
+    for url: URL,
+    declaredOrigin: String,
+    expectedGeneration: Int64
+  ) -> NetworkOriginAuthorization? {
+    guard expectedGeneration >= 0, let generation = UInt64(exactly: expectedGeneration) else {
+      return nil
+    }
+    guard let declared = NetworkCanonicalOrigin(origin: declaredOrigin) else { return nil }
+    return withRequestContextLock {
+      guard
+        requestContextConfirmed,
+        !isReplacingRequestContext,
+        generation == requestContextRevision,
+        activeCanonicalOrigins.contains(declared),
+        declared.matches(url)
+      else { return nil }
+      return NetworkOriginAuthorization(
+        scheme: declared.scheme,
+        host: declared.host,
+        port: declared.port,
+        requestContextRevision: requestContextRevision
+      )
     }
   }
 
@@ -383,12 +443,18 @@ class URLSessionManager: NSObject {
   static func captureRequestContext(
     for url: URL,
     declaredOrigin: String,
+    expectedGeneration: Int64,
     cookieStorage: HTTPCookieStorage
   ) -> AuthorizedNetworkRequestContext? {
+    guard expectedGeneration >= 0, let generation = UInt64(exactly: expectedGeneration) else {
+      return nil
+    }
     guard let declared = NetworkCanonicalOrigin(origin: declaredOrigin) else { return nil }
     return withRequestContextLock {
       guard
+        requestContextConfirmed,
         !isReplacingRequestContext,
+        generation == requestContextRevision,
         activeCanonicalOrigins.contains(declared),
         declared.matches(url)
       else { return nil }
@@ -432,6 +498,7 @@ class URLSessionManager: NSObject {
     headers: [String: String],
     origins: [NetworkCanonicalOrigin],
     token: String?,
+    sessionEpoch: Int64,
     confirmed: Bool = true
   ) {
     let replacedOrigins = Array(Set(activeCanonicalOrigins + origins))
@@ -443,6 +510,7 @@ class URLSessionManager: NSObject {
     UserDefaults.group.set(serverUrls, forKey: SERVER_URLS_KEY)
     _ = reconcileAuthCookiesLocked(origins: origins)
     installHeadersLocked(headers)
+    requestContextSessionEpoch = sessionEpoch
     requestContextConfirmed = confirmed
     isReplacingRequestContext = false
   }
@@ -451,13 +519,20 @@ class URLSessionManager: NSObject {
     headers: [String: String],
     origins: [NetworkCanonicalOrigin],
     token: String?,
+    sessionEpoch: Int64,
     confirmed: Bool = true
   ) throws {
     var shouldNotify = false
     do {
       try sessionTransitionLock.withLock {
         let matchesActiveContext = withRequestContextLock {
-          requestContextMatchesLocked(headers: headers, origins: origins, token: token, confirmed: confirmed)
+          requestContextMatchesLocked(
+            headers: headers,
+            origins: origins,
+            token: token,
+            sessionEpoch: sessionEpoch,
+            confirmed: confirmed
+          )
         }
         if matchesActiveContext {
           return
@@ -468,15 +543,29 @@ class URLSessionManager: NSObject {
           requestContextConfirmed = false
         }
         shouldNotify = true
+        guard terminalDeliveryGroup.wait(timeout: .now() + sessionInvalidationTimeout) == .success
+        else { throw NetworkContextError.sessionInvalidationTimedOut }
         guard shared.invalidateCurrentSession() else {
           withRequestContextLock {
-            replaceRequestContextLocked(headers: [:], origins: [], token: nil, confirmed: false)
+            replaceRequestContextLocked(
+              headers: [:],
+              origins: [],
+              token: nil,
+              sessionEpoch: requestContextSessionEpoch,
+              confirmed: false
+            )
           }
           shared.installCurrentSession()
           throw NetworkContextError.sessionInvalidationTimedOut
         }
         withRequestContextLock {
-          replaceRequestContextLocked(headers: headers, origins: origins, token: token, confirmed: confirmed)
+          replaceRequestContextLocked(
+            headers: headers,
+            origins: origins,
+            token: token,
+            sessionEpoch: sessionEpoch,
+            confirmed: confirmed
+          )
         }
         shared.installCurrentSession()
       }
@@ -495,9 +584,11 @@ class URLSessionManager: NSObject {
     headers: [String: String],
     origins: [NetworkCanonicalOrigin],
     token: String?,
+    sessionEpoch: Int64,
     confirmed: Bool
   ) -> Bool {
     guard requestContextConfirmed == confirmed,
+      requestContextSessionEpoch == sessionEpoch,
       !isReplacingRequestContext,
       activeCanonicalOrigins == origins,
       activeAuthCookieValues[.accessToken] == token,
@@ -627,6 +718,17 @@ class URLSessionManager: NSObject {
     requestContextLock.lock()
     defer { requestContextLock.unlock() }
     return try body()
+  }
+
+  private static func allowsLocked(
+    _ url: URL,
+    under authorization: NetworkOriginAuthorization
+  ) -> Bool {
+    let authorizedOrigin = NetworkCanonicalOrigin(authorization: authorization)
+    return requestContextConfirmed && !isReplacingRequestContext
+      && authorization.requestContextRevision == requestContextRevision
+      && activeCanonicalOrigins.contains(authorizedOrigin)
+      && authorizedOrigin.matches(url)
   }
 
   private static func notifyRequestContextDidChange() {
@@ -850,6 +952,7 @@ class URLSessionManager: NSObject {
 }
 
 enum NetworkContextError: Error {
+  case invalidSessionEpoch
   case invalidCanonicalOrigin
   case tokenWithoutOrigin
   case headersWithoutOrigin

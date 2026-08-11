@@ -34,6 +34,7 @@ class RemoteImageRequest {
     required this.preferEncoded,
     required this.policy,
     required this.kind,
+    this.expectedContextGeneration,
   });
 
   String url;
@@ -42,6 +43,7 @@ class RemoteImageRequest {
   bool preferEncoded;
   RemoteImagePolicy policy;
   RemoteImageRequestKind kind;
+  int? expectedContextGeneration;
 }
 
 class RemoteImagePayload {

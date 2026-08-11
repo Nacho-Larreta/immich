@@ -183,20 +183,45 @@ final class RemoteImageOperation: ImageRequest<RemoteImageResult>, @unchecked Se
     var isAccepted = false
     var isCancelled = false
     var isCompleted = false
+    var deliveryURL: URL?
+    var deliveryAuthorization: NetworkOriginAuthorization?
   }
 
   private let state = Mutex(State())
   let id: Int64
   let requiresRequestContext: Bool
+  private let beforeTerminalDelivery: () -> Void
 
   init(
     id: Int64,
     requiresRequestContext: Bool = true,
+    beforeTerminalDelivery: @escaping () -> Void = {},
     completion: @escaping (Result<RemoteImageResult, any Error>) -> Void
   ) {
     self.id = id
     self.requiresRequestContext = requiresRequestContext
+    self.beforeTerminalDelivery = beforeTerminalDelivery
     super.init(completion: completion)
+  }
+
+  func bindDelivery(url: URL, authorization: NetworkOriginAuthorization) {
+    state.withLock {
+      precondition(
+        $0.deliveryAuthorization == nil,
+        "Remote image delivery context bound more than once"
+      )
+      $0.deliveryURL = url
+      $0.deliveryAuthorization = authorization
+    }
+  }
+
+  func completeAuthorized(_ result: RemoteImageResult) -> Bool {
+    beforeTerminalDelivery()
+    let binding = state.withLock { ($0.deliveryURL, $0.deliveryAuthorization) }
+    guard let url = binding.0, let authorization = binding.1 else { return false }
+    return URLSessionManager.performAuthorizedDelivery(url, under: authorization) {
+      complete(.success(result))
+    } ?? false
   }
 
   func markAccepted(
@@ -285,6 +310,8 @@ class RemoteImageApiImpl: NSObject, RemoteImageApi {
   private let cookieStorage: HTTPCookieStorage?
   private let urlCache: URLCache?
   private let performanceRecorder: any PerformanceRecording
+  private let beforeCacheLookup: (URLRequest) -> Void
+  private let beforeTerminalDelivery: () -> Void
   private static let rgbaFormat = vImage_CGImageFormat(
     bitsPerComponent: 8,
     bitsPerPixel: 32,
@@ -309,6 +336,8 @@ class RemoteImageApiImpl: NSObject, RemoteImageApi {
         manager.delegate.handleChallenge(session, challenge, completion, task: task)
       },
       beforeNetworkTaskRegistration: {},
+      beforeCacheLookup: { _ in },
+      beforeTerminalDelivery: {},
       performanceRecorder: PerformanceTelemetry.shared
     )
   }
@@ -316,6 +345,8 @@ class RemoteImageApiImpl: NSObject, RemoteImageApi {
   convenience init(
     sessionConfiguration: URLSessionConfiguration,
     beforeNetworkTaskRegistration: @escaping () -> Void = {},
+    beforeCacheLookup: @escaping (URLRequest) -> Void = { _ in },
+    beforeTerminalDelivery: @escaping () -> Void = {},
     performanceRecorder: any PerformanceRecording = PerformanceTelemetry.shared
   ) {
     self.init(
@@ -323,6 +354,8 @@ class RemoteImageApiImpl: NSObject, RemoteImageApi {
       cookieStorage: sessionConfiguration.httpCookieStorage,
       challengeHandler: nil,
       beforeNetworkTaskRegistration: beforeNetworkTaskRegistration,
+      beforeCacheLookup: beforeCacheLookup,
+      beforeTerminalDelivery: beforeTerminalDelivery,
       performanceRecorder: performanceRecorder
     )
   }
@@ -332,6 +365,8 @@ class RemoteImageApiImpl: NSObject, RemoteImageApi {
     cookieStorage: HTTPCookieStorage?,
     challengeHandler: RemoteImageSessionDelegate.ChallengeHandler?,
     beforeNetworkTaskRegistration: @escaping () -> Void,
+    beforeCacheLookup: @escaping (URLRequest) -> Void,
+    beforeTerminalDelivery: @escaping () -> Void,
     performanceRecorder: any PerformanceRecording
   ) {
     let urlCache = sessionConfiguration.urlCache
@@ -344,17 +379,20 @@ class RemoteImageApiImpl: NSObject, RemoteImageApi {
     self.cookieStorage = cookieStorage
     self.urlCache = urlCache
     self.beforeNetworkTaskRegistration = beforeNetworkTaskRegistration
+    self.beforeCacheLookup = beforeCacheLookup
+    self.beforeTerminalDelivery = beforeTerminalDelivery
     self.performanceRecorder = performanceRecorder
     self.sessionDelegate = sessionDelegate
     self.session = URLSession(
       configuration: configuration, delegate: sessionDelegate, delegateQueue: nil)
     super.init()
+    urlCache?.removeAllCachedResponses()
     requestContextObserver = NotificationCenter.default.addObserver(
       forName: URLSessionManager.requestContextDidChange,
       object: nil,
       queue: nil
     ) { [weak self] _ in
-      self?.cancelRequestsRequiringContext()
+      self?.handleRequestContextChange()
     }
   }
 
@@ -376,7 +414,7 @@ class RemoteImageApiImpl: NSObject, RemoteImageApi {
 
     let request = RemoteImageOperation(
       id: input.requestId,
-      requiresRequestContext: input.policy != .cacheOnly,
+      beforeTerminalDelivery: beforeTerminalDelivery,
       completion: completion
     )
     let replacedRequest = registry.add(requestId: input.requestId, request: request)
@@ -384,12 +422,22 @@ class RemoteImageApiImpl: NSObject, RemoteImageApi {
     _ = replacedRequest?.cancel()
 
     if input.policy == .cacheOnly {
+      guard
+        let expectedGeneration = input.expectedContextGeneration,
+        let authorization = URLSessionManager.captureCacheReadAuthorization(
+          for: url,
+          declaredOrigin: input.origin,
+          expectedGeneration: expectedGeneration
+        )
+      else {
+        Self.finish(request: request, registry: registry, result: Self.failure(.cacheMiss))
+        return
+      }
+      request.bindDelivery(url: url, authorization: authorization)
       var cacheRequest = URLRequest(url: url)
       cacheRequest.cachePolicy = Self.cachePolicy(for: input.policy)
       cacheRequest.httpShouldHandleCookies = false
-      if let cookieHeader = exactHostCookieHeader(for: url) {
-        cacheRequest.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
-      }
+      beforeCacheLookup(cacheRequest)
       guard let cachedResponse = urlCache?.cachedResponse(for: cacheRequest) else {
         Self.finish(request: request, registry: registry, result: Self.failure(.cacheMiss))
         return
@@ -403,21 +451,24 @@ class RemoteImageApiImpl: NSObject, RemoteImageApi {
         response: cachedResponse.response,
         error: nil,
         rejectedRedirect: false,
-        requestContextStillCurrent: true
+        requestContextStillCurrent: URLSessionManager.allows(url, under: authorization)
       )
     }
 
     guard
       let cookieStorage,
+      let expectedGeneration = input.expectedContextGeneration,
       let requestContext = URLSessionManager.captureRequestContext(
         for: url,
         declaredOrigin: input.origin,
+        expectedGeneration: expectedGeneration,
         cookieStorage: cookieStorage
       )
     else {
       Self.finish(request: request, registry: registry, result: Self.failure(.wrongServer))
       return
     }
+    request.bindDelivery(url: url, authorization: requestContext.authorization)
     var urlRequest = URLRequest(url: url)
     urlRequest.cachePolicy = Self.cachePolicy(for: input.policy)
     urlRequest.httpShouldHandleCookies = false
@@ -501,6 +552,11 @@ class RemoteImageApiImpl: NSObject, RemoteImageApi {
       }
       _ = request.cancel()
     }
+  }
+
+  private func handleRequestContextChange() {
+    urlCache?.removeAllCachedResponses()
+    cancelRequestsRequiringContext()
   }
 
   func dispose() {
@@ -626,7 +682,8 @@ class RemoteImageApiImpl: NSObject, RemoteImageApi {
           pointer: Int64(Int(bitPattern: pointer)),
           length: Int64(length)
         )
-      )
+      ),
+      authorizedPayload: true
     )
     RemoteImagePayloadOwnership.releaseIfUndelivered(pointer, delivered: delivered)
   }
@@ -672,7 +729,8 @@ class RemoteImageApiImpl: NSObject, RemoteImageApi {
               height: Int64(buffer.height),
               rowBytes: Int64(buffer.rowBytes)
             )
-          )
+          ),
+          authorizedPayload: true
         )
         RemoteImagePayloadOwnership.releaseIfUndelivered(
           buffer.data,
@@ -689,10 +747,16 @@ class RemoteImageApiImpl: NSObject, RemoteImageApi {
   private static func finish(
     request: RemoteImageOperation,
     registry: RequestRegistry<RemoteImageOperation>,
-    result: RemoteImageResult
+    result: RemoteImageResult,
+    authorizedPayload: Bool = false
   ) -> Bool {
     registry.remove(requestId: request.id, matching: request)
-    return request.complete(.success(result))
+    guard authorizedPayload else { return request.complete(.success(result)) }
+    let delivered = request.completeAuthorized(result)
+    if !delivered {
+      _ = request.complete(.success(failure(.wrongServer)))
+    }
+    return delivered
   }
 
   private static func cachePolicy(for policy: RemoteImagePolicy) -> URLRequest.CachePolicy {
@@ -700,15 +764,6 @@ class RemoteImageApiImpl: NSObject, RemoteImageApi {
     case .cacheOnly: return .returnCacheDataDontLoad
     case .cacheThenNetwork: return .returnCacheDataElseLoad
     }
-  }
-
-  private func exactHostCookieHeader(for url: URL) -> String? {
-    guard let host = url.host?.lowercased(), let cookieStorage else { return nil }
-    let cookies =
-      cookieStorage.cookies(for: url)?.filter {
-        $0.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")) == host
-      } ?? []
-    return HTTPCookie.requestHeaderFields(with: cookies)["Cookie"]
   }
 
   private static func isCacheMiss(policy: RemoteImagePolicy, error: Error?) -> Bool {

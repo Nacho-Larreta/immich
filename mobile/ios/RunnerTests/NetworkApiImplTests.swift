@@ -34,7 +34,8 @@ final class NetworkApiImplTests: XCTestCase {
     try NetworkApiImpl().replaceRequestContext(
       headers: [:],
       canonicalOrigin: "https://photos.test",
-      token: "current-token"
+      token: "current-token",
+      sessionEpoch: 1
     )
 
     let cookies = URLSessionManager.cookieStorage.cookies ?? []
@@ -179,7 +180,8 @@ final class NetworkApiImplTests: XCTestCase {
       headers: [:], canonicalOrigin: "https://old.test", token: "stale"
     )
 
-    try NetworkApiImpl().replaceRequestContext(headers: [:], canonicalOrigin: nil, token: nil)
+    try NetworkApiImpl().replaceRequestContext(
+      headers: [:], canonicalOrigin: nil, token: nil, sessionEpoch: 0)
 
     XCTAssertFalse(
       (URLSessionManager.cookieStorage.cookies ?? []).contains {

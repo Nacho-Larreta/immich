@@ -185,6 +185,7 @@ struct RemoteImageRequest: Hashable {
   var preferEncoded: Bool
   var policy: RemoteImagePolicy
   var kind: RemoteImageRequestKind
+  var expectedContextGeneration: Int64? = nil
 
 
   // swift-format-ignore: AlwaysUseLowerCamelCase
@@ -195,6 +196,7 @@ struct RemoteImageRequest: Hashable {
     let preferEncoded = pigeonVar_list[3] as! Bool
     let policy = pigeonVar_list[4] as! RemoteImagePolicy
     let kind = pigeonVar_list[5] as! RemoteImageRequestKind
+    let expectedContextGeneration: Int64? = nilOrValue(pigeonVar_list[6])
 
     return RemoteImageRequest(
       url: url,
@@ -202,7 +204,8 @@ struct RemoteImageRequest: Hashable {
       requestId: requestId,
       preferEncoded: preferEncoded,
       policy: policy,
-      kind: kind
+      kind: kind,
+      expectedContextGeneration: expectedContextGeneration
     )
   }
   func toList() -> [Any?] {
@@ -213,13 +216,14 @@ struct RemoteImageRequest: Hashable {
       preferEncoded,
       policy,
       kind,
+      expectedContextGeneration,
     ]
   }
   static func == (lhs: RemoteImageRequest, rhs: RemoteImageRequest) -> Bool {
     if Swift.type(of: lhs) != Swift.type(of: rhs) {
       return false
     }
-    return deepEqualsRemoteImages(lhs.url, rhs.url) && deepEqualsRemoteImages(lhs.origin, rhs.origin) && deepEqualsRemoteImages(lhs.requestId, rhs.requestId) && deepEqualsRemoteImages(lhs.preferEncoded, rhs.preferEncoded) && deepEqualsRemoteImages(lhs.policy, rhs.policy) && deepEqualsRemoteImages(lhs.kind, rhs.kind)
+    return deepEqualsRemoteImages(lhs.url, rhs.url) && deepEqualsRemoteImages(lhs.origin, rhs.origin) && deepEqualsRemoteImages(lhs.requestId, rhs.requestId) && deepEqualsRemoteImages(lhs.preferEncoded, rhs.preferEncoded) && deepEqualsRemoteImages(lhs.policy, rhs.policy) && deepEqualsRemoteImages(lhs.kind, rhs.kind) && deepEqualsRemoteImages(lhs.expectedContextGeneration, rhs.expectedContextGeneration)
   }
 
   func hash(into hasher: inout Hasher) {
@@ -230,6 +234,7 @@ struct RemoteImageRequest: Hashable {
     deepHashRemoteImages(value: preferEncoded, hasher: &hasher)
     deepHashRemoteImages(value: policy, hasher: &hasher)
     deepHashRemoteImages(value: kind, hasher: &hasher)
+    deepHashRemoteImages(value: expectedContextGeneration, hasher: &hasher)
   }
 }
 

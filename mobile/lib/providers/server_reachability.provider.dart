@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/interfaces/connectivity_monitor.interface.dart';
+import 'package:immich_mobile/domain/interfaces/confirmed_server_access.interface.dart';
 import 'package:immich_mobile/domain/interfaces/endpoint_activation.interface.dart';
 import 'package:immich_mobile/domain/interfaces/endpoint_probe_cycle.interface.dart';
 import 'package:immich_mobile/domain/interfaces/reachability_scheduler.interface.dart';
@@ -22,6 +23,8 @@ import 'package:immich_mobile/infrastructure/adapters/endpoint_activation/regist
 import 'package:immich_mobile/infrastructure/adapters/endpoint_activation/service_endpoint_activation_collaborators.dart';
 import 'package:immich_mobile/infrastructure/adapters/endpoint_probe/current_session_endpoint_probe_cycle_adapter.dart';
 import 'package:immich_mobile/infrastructure/adapters/reachability/reachability_state_publisher_adapter.dart';
+import 'package:immich_mobile/infrastructure/adapters/reachability/network_confirmed_server_access_adapter.dart';
+import 'package:immich_mobile/infrastructure/adapters/reachability/logging_reachability_failure_reporter.dart';
 import 'package:immich_mobile/infrastructure/adapters/reachability/timer_reachability_scheduler.dart';
 import 'package:immich_mobile/infrastructure/adapters/reconciliation/server_reconciliation_adapter.dart';
 import 'package:immich_mobile/providers/api.provider.dart';
@@ -55,6 +58,10 @@ final serverReachabilityStateProvider = StateProvider<ReachabilityState>((ref) {
 final transportAvailabilityProvider = StateProvider<TransportAvailability>((_) => TransportAvailability.unknown);
 
 final reachabilitySchedulerProvider = Provider<ReachabilitySchedulerPort>((_) => const TimerReachabilityScheduler());
+
+final confirmedServerAccessProvider = Provider<ConfirmedServerAccessPort>(
+  (_) => const NetworkConfirmedServerAccessAdapter(),
+);
 
 final reachabilityStatePublisherProvider = Provider<ReachabilityStatePublisherPort>((ref) {
   final state = ref.read(serverReachabilityStateProvider.notifier);
@@ -166,6 +173,8 @@ final serverReachabilityCoordinatorProvider = Provider<ServerReachabilityCoordin
     statePublisher: ref.read(reachabilityStatePublisherProvider),
     scheduler: ref.read(reachabilitySchedulerProvider),
     requestContextLease: ref.read(requestContextLeaseProvider),
+    confirmedServerAccess: ref.read(confirmedServerAccessProvider),
+    failureReporter: LoggingReachabilityFailureReporter(_log),
   );
   ref.onDispose(() => unawaited(coordinator.dispose()));
   unawaited(

@@ -280,6 +280,7 @@ data class ClientCertPrompt (
 data class NetworkRequestContextSnapshot (
   val clientPointer: Long,
   val canonicalOrigin: String? = null,
+  val sessionEpoch: Long,
   val generation: Long,
   val confirmed: Boolean
 )
@@ -288,15 +289,17 @@ data class NetworkRequestContextSnapshot (
     fun fromList(pigeonVar_list: List<Any?>): NetworkRequestContextSnapshot {
       val clientPointer = pigeonVar_list[0] as Long
       val canonicalOrigin = pigeonVar_list[1] as String?
-      val generation = pigeonVar_list[2] as Long
-      val confirmed = pigeonVar_list[3] as Boolean
-      return NetworkRequestContextSnapshot(clientPointer, canonicalOrigin, generation, confirmed)
+      val sessionEpoch = pigeonVar_list[2] as Long
+      val generation = pigeonVar_list[3] as Long
+      val confirmed = pigeonVar_list[4] as Boolean
+      return NetworkRequestContextSnapshot(clientPointer, canonicalOrigin, sessionEpoch, generation, confirmed)
     }
   }
   fun toList(): List<Any?> {
     return listOf(
       clientPointer,
       canonicalOrigin,
+      sessionEpoch,
       generation,
       confirmed,
     )
@@ -309,13 +312,14 @@ data class NetworkRequestContextSnapshot (
       return true
     }
     val other = other as NetworkRequestContextSnapshot
-    return NetworkPigeonUtils.deepEquals(this.clientPointer, other.clientPointer) && NetworkPigeonUtils.deepEquals(this.canonicalOrigin, other.canonicalOrigin) && NetworkPigeonUtils.deepEquals(this.generation, other.generation) && NetworkPigeonUtils.deepEquals(this.confirmed, other.confirmed)
+    return NetworkPigeonUtils.deepEquals(this.clientPointer, other.clientPointer) && NetworkPigeonUtils.deepEquals(this.canonicalOrigin, other.canonicalOrigin) && NetworkPigeonUtils.deepEquals(this.sessionEpoch, other.sessionEpoch) && NetworkPigeonUtils.deepEquals(this.generation, other.generation) && NetworkPigeonUtils.deepEquals(this.confirmed, other.confirmed)
   }
 
   override fun hashCode(): Int {
     var result = javaClass.hashCode()
     result = 31 * result + NetworkPigeonUtils.deepHash(this.clientPointer)
     result = 31 * result + NetworkPigeonUtils.deepHash(this.canonicalOrigin)
+    result = 31 * result + NetworkPigeonUtils.deepHash(this.sessionEpoch)
     result = 31 * result + NetworkPigeonUtils.deepHash(this.generation)
     result = 31 * result + NetworkPigeonUtils.deepHash(this.confirmed)
     return result
@@ -371,7 +375,7 @@ interface NetworkApi {
   fun getClientPointer(): Long
   fun getRequestContextSnapshot(): NetworkRequestContextSnapshot
   fun setRequestHeaders(headers: Map<String, String>, serverUrls: List<String>, token: String?)
-  fun replaceRequestContext(headers: Map<String, String>, canonicalOrigin: String?, token: String?)
+  fun replaceRequestContext(headers: Map<String, String>, canonicalOrigin: String?, token: String?, sessionEpoch: Long)
   fun failClosedRequestContext()
 
   companion object {
@@ -511,8 +515,9 @@ interface NetworkApi {
             val headersArg = args[0] as Map<String, String>
             val canonicalOriginArg = args[1] as String?
             val tokenArg = args[2] as String?
+            val sessionEpochArg = args[3] as Long
             val wrapped: List<Any?> = try {
-              api.replaceRequestContext(headersArg, canonicalOriginArg, tokenArg)
+              api.replaceRequestContext(headersArg, canonicalOriginArg, tokenArg, sessionEpochArg)
               listOf(null)
             } catch (exception: Throwable) {
               NetworkPigeonUtils.wrapError(exception)

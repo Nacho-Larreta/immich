@@ -19,20 +19,24 @@ final sessionWorkProvider = Provider<SessionWork>((ref) {
 
 final class SessionWork {
   const SessionWork({
-    required void Function({Uri? confirmedEndpoint}) activateSession,
+    required Future<void> Function({Uri? confirmedEndpoint}) activateSession,
     required Future<void> Function({required bool full}) syncLocal,
     required Future<void> Function() cancelLocalSync,
   }) : _activateSession = activateSession,
        _syncLocal = syncLocal,
        _cancelLocalSync = cancelLocalSync;
 
-  final void Function({Uri? confirmedEndpoint}) _activateSession;
+  final Future<void> Function({Uri? confirmedEndpoint}) _activateSession;
   final Future<void> Function({required bool full}) _syncLocal;
   final Future<void> Function() _cancelLocalSync;
 
   void activate({Uri? confirmedEndpoint, bool hasRemoteAuthentication = true, required bool fullLocalSync}) {
     if (hasRemoteAuthentication) {
-      _activateSession(confirmedEndpoint: confirmedEndpoint);
+      unawaited(
+        _activateSession(confirmedEndpoint: confirmedEndpoint).catchError((Object error, StackTrace stackTrace) {
+          _log.warning('Remote session activation failed', error, stackTrace);
+        }),
+      );
     }
     triggerLocalSync(full: fullLocalSync);
   }

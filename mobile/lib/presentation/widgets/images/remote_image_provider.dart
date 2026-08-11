@@ -107,6 +107,9 @@ class RemoteImageProvider extends CancellableImageProvider<RemoteImageProvider>
       uri: key.url,
       policy: key.access.policy,
       kind: key.kind,
+      expectedContextGeneration: key.access.policy == RemoteMediaPolicy.cacheThenNetwork
+          ? key.access.expectedContextGeneration
+          : null,
     );
     return loadRequest(request, decode, isFinal: true);
   }
@@ -245,6 +248,9 @@ class RemoteFullImageProvider extends CancellableImageProvider<RemoteFullImagePr
           .toString(),
       policy: key.access.policy,
       kind: MediaRequestKind.thumbnail,
+      expectedContextGeneration: key.access.policy == RemoteMediaPolicy.cacheThenNetwork
+          ? key.access.expectedContextGeneration
+          : null,
     );
     final loadOriginal = assetType == AssetType.image && AppSetting.get(Setting.loadOriginal);
     yield* loadRequest(previewRequest, decode, isFinal: !loadOriginal);
@@ -262,6 +268,9 @@ class RemoteFullImageProvider extends CancellableImageProvider<RemoteFullImagePr
       uri: key.endpoint.assetOriginal(key.assetId, edited: key.edited).toString(),
       policy: key.access.policy,
       kind: MediaRequestKind.original,
+      expectedContextGeneration: key.access.policy == RemoteMediaPolicy.cacheThenNetwork
+          ? key.access.expectedContextGeneration
+          : null,
     );
     yield* loadRequest(originalRequest, decode, isFinal: true);
   }
@@ -283,6 +292,9 @@ class RemoteFullImageProvider extends CancellableImageProvider<RemoteFullImagePr
           .toString(),
       policy: key.access.policy,
       kind: MediaRequestKind.thumbnail,
+      expectedContextGeneration: key.access.policy == RemoteMediaPolicy.cacheThenNetwork
+          ? key.access.expectedContextGeneration
+          : null,
     );
     yield* loadRequest(previewRequest, decode, isFinal: false);
 
@@ -296,6 +308,9 @@ class RemoteFullImageProvider extends CancellableImageProvider<RemoteFullImagePr
       uri: key.endpoint.assetOriginal(key.assetId, edited: key.edited).toString(),
       policy: key.access.policy,
       kind: MediaRequestKind.original,
+      expectedContextGeneration: key.access.policy == RemoteMediaPolicy.cacheThenNetwork
+          ? key.access.expectedContextGeneration
+          : null,
     );
     final codec = await loadCodecRequest(originalRequest, isFinal: true);
     if (codec == null) {
@@ -327,6 +342,9 @@ class RemoteFullImageProvider extends CancellableImageProvider<RemoteFullImagePr
           .toString(),
       policy: key.access.policy,
       kind: MediaRequestKind.thumbnail,
+      expectedContextGeneration: key.access.policy == RemoteMediaPolicy.cacheThenNetwork
+          ? key.access.expectedContextGeneration
+          : null,
     );
     yield* loadRequest(previewRequest, decode, isFinal: true);
   }

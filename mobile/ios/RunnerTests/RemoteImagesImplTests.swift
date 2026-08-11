@@ -61,7 +61,59 @@ final class RemoteImagesImplTests: XCTestCase {
     XCTAssertEqual(performance.finishedCount(.request(.remoteThumbnail)), 1)
   }
 
-  func testCacheOnlyReturnsCachedPayloadWhileRequestContextIsBlocked() {
+  func testCacheOnlyNeverAddsAuthenticationCookies() {
+    let url = URL(string: "https://photos.example.test/api/assets/no-cookie/thumbnail")!
+    let data = Data("cached-image".utf8)
+    let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+    var observedCacheRequest: URLRequest?
+    api.dispose()
+    api = RemoteImageApiImpl(
+      sessionConfiguration: context.session.configuration,
+      beforeCacheLookup: { observedCacheRequest = $0 },
+      performanceRecorder: performance
+    )
+    context.cache.storeCachedResponse(
+      CachedURLResponse(response: response, data: data, storagePolicy: .allowedInMemoryOnly),
+      for: URLRequest(url: url)
+    )
+
+    let result = request(
+      url: url,
+      origin: "https://photos.example.test",
+      policy: .cacheOnly,
+      requestId: 101
+    )
+
+    assertEncodedPayload(result, equals: data)
+    XCTAssertNil(observedCacheRequest?.value(forHTTPHeaderField: "Cookie"))
+    XCTAssertNil(observedCacheRequest?.value(forHTTPHeaderField: "Authorization"))
+  }
+
+  func testCacheOnlyCannotReplaySessionACacheAfterSessionBActivation() throws {
+    let url = URL(string: "https://photos.example.test/api/assets/session-a/thumbnail")!
+    let data = Data("session-a-image".utf8)
+    let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+    context.cache.storeCachedResponse(
+      CachedURLResponse(response: response, data: data, storagePolicy: .allowedInMemoryOnly),
+      for: URLRequest(url: url)
+    )
+
+    try URLSessionManager.replaceRequestContext(
+      headers: [:],
+      canonicalOrigin: "https://photos.example.test",
+      token: "session-b-token"
+    )
+    let result = request(
+      url: url,
+      origin: "https://photos.example.test",
+      policy: .cacheOnly,
+      requestId: 102
+    )
+
+    XCTAssertEqual(try? result.get().error, .cacheMiss)
+  }
+
+  func testCacheOnlyCannotReplayCachedPayloadWhileRequestContextIsBlocked() {
     let url = URL(string: "https://photos.example.test/api/assets/offline/thumbnail")!
     let data = Data("offline-image".utf8)
     let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
@@ -81,8 +133,34 @@ final class RemoteImagesImplTests: XCTestCase {
       requestId: 82
     )
 
-    assertEncodedPayload(result, equals: data)
+    XCTAssertEqual(try? result.get().error, .cacheMiss)
     XCTAssertTrue(ControllableURLProtocol.observedRequests.isEmpty)
+  }
+
+  func testContextTransitionBetweenCacheReadAndTerminalCallbackDeliversNoPayload() {
+    let url = URL(string: "https://photos.example.test/api/assets/terminal-race/thumbnail")!
+    let data = Data("stale-cache".utf8)
+    let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+    api.dispose()
+    api = RemoteImageApiImpl(
+      sessionConfiguration: context.session.configuration,
+      beforeTerminalDelivery: URLSessionManager.initializeBlockedRequestContext,
+      performanceRecorder: performance
+    )
+    context.cache.storeCachedResponse(
+      CachedURLResponse(response: response, data: data, storagePolicy: .allowedInMemoryOnly),
+      for: URLRequest(url: url)
+    )
+
+    let result = request(
+      url: url,
+      origin: "https://photos.example.test",
+      policy: .cacheOnly,
+      requestId: 103
+    )
+
+    XCTAssertNil(try? result.get().payload)
+    XCTAssertEqual(try? result.get().error, .cancelled)
   }
 
   func testCacheOnlyReturnsCacheMissWithoutStartingNetwork() {
@@ -209,7 +287,8 @@ final class RemoteImagesImplTests: XCTestCase {
         requestId: 81,
         preferEncoded: true,
         policy: .cacheThenNetwork,
-        kind: .thumbnail
+        kind: .thumbnail,
+        expectedContextGeneration: currentGeneration()
       )
     ) {
       result = $0
@@ -275,6 +354,30 @@ final class RemoteImagesImplTests: XCTestCase {
       origin: "https://photos.example.test",
       policy: .cacheThenNetwork,
       requestId: 84
+    )
+
+    XCTAssertEqual(try? result.get().error, .wrongServer)
+    XCTAssertTrue(ControllableURLProtocol.observedRequests.isEmpty)
+  }
+
+  func testStaleGenerationIsRejectedBeforeNetworkAdmission() throws {
+    let staleGeneration = currentGeneration()
+    try URLSessionManager.replaceRequestContext(
+      headers: ["Authorization": "Bearer replacement"],
+      canonicalOrigin: "https://photos.example.test",
+      token: "replacement-token"
+    )
+    XCTAssertNotEqual(currentGeneration(), staleGeneration)
+    ControllableURLProtocol.setRequestHandler { _ in
+      XCTFail("A request from an older native context must not reach URLSession")
+    }
+
+    let result = request(
+      url: URL(string: "https://photos.example.test/api/assets/stale/thumbnail")!,
+      origin: "https://photos.example.test",
+      policy: .cacheThenNetwork,
+      requestId: 86,
+      expectedGeneration: staleGeneration
     )
 
     XCTAssertEqual(try? result.get().error, .wrongServer)
@@ -590,12 +693,19 @@ final class RemoteImagesImplTests: XCTestCase {
     url: URL,
     origin: String,
     policy: RemoteImagePolicy,
-    requestId: Int64
+    requestId: Int64,
+    expectedGeneration: Int64? = nil
   ) -> Result<RemoteImageResult, Error> {
     let completed = expectation(description: "remote image request \(requestId)")
     var captured: Result<RemoteImageResult, Error>?
     api.requestImage(
-      request: makeRequest(url: url, origin: origin, policy: policy, requestId: requestId)
+      request: makeRequest(
+        url: url,
+        origin: origin,
+        policy: policy,
+        requestId: requestId,
+        expectedGeneration: expectedGeneration
+      )
     ) { result in
       captured = result
       completed.fulfill()
@@ -608,7 +718,8 @@ final class RemoteImagesImplTests: XCTestCase {
     url: URL,
     origin: String,
     policy: RemoteImagePolicy,
-    requestId: Int64
+    requestId: Int64,
+    expectedGeneration: Int64? = nil
   ) -> RemoteImageRequest {
     RemoteImageRequest(
       url: url.absoluteString,
@@ -616,8 +727,13 @@ final class RemoteImagesImplTests: XCTestCase {
       requestId: requestId,
       preferEncoded: true,
       policy: policy,
-      kind: .thumbnail
+      kind: .thumbnail,
+      expectedContextGeneration: expectedGeneration ?? currentGeneration()
     )
+  }
+
+  private func currentGeneration() -> Int64 {
+    Int64(URLSessionManager.requestContextSnapshot().generation)
   }
 
   private func assertEncodedPayload(

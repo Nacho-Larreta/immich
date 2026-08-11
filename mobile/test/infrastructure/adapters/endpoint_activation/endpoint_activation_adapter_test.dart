@@ -526,6 +526,7 @@ final class _Native implements NativeRequestContextPort {
   Completer<void>? replaceGate;
   final replaceStarted = Completer<void>();
   NativeRequestContext current = NativeRequestContext(
+    apiEndpoint: Uri.parse('https://old.test/api'),
     canonicalOrigin: Uri.parse('https://old.test'),
     accessToken: 'old-token',
     schemePolicy: EndpointSchemePolicy.httpsOnly,
@@ -534,6 +535,7 @@ final class _Native implements NativeRequestContextPort {
 
   @override
   NativeRequestContext snapshot() => NativeRequestContext(
+    apiEndpoint: current.apiEndpoint,
     canonicalOrigin: current.canonicalOrigin,
     accessToken: current.accessToken,
     schemePolicy: current.schemePolicy,
@@ -573,6 +575,7 @@ final class _Native implements NativeRequestContextPort {
       throw StateError('native clear failed');
     }
     current = NativeRequestContext(
+      apiEndpoint: null,
       canonicalOrigin: null,
       accessToken: null,
       schemePolicy: null,

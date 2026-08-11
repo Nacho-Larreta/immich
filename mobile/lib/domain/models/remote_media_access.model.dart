@@ -1,18 +1,23 @@
 import 'package:immich_mobile/domain/models/media_request.model.dart';
+import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/domain/models/server_reachability.model.dart';
 
 final class RemoteMediaAccessSnapshot {
-  const RemoteMediaAccessSnapshot({required this.policy, required this.sessionEpoch});
+  const RemoteMediaAccessSnapshot({required this.policy, required this.sessionEpoch, this.expectedContextGeneration});
 
   final RemoteMediaPolicy policy;
   final int sessionEpoch;
+  final int? expectedContextGeneration;
 
   @override
   bool operator ==(Object other) =>
-      other is RemoteMediaAccessSnapshot && other.policy == policy && other.sessionEpoch == sessionEpoch;
+      other is RemoteMediaAccessSnapshot &&
+      other.policy == policy &&
+      other.sessionEpoch == sessionEpoch &&
+      other.expectedContextGeneration == expectedContextGeneration;
 
   @override
-  int get hashCode => Object.hash(policy, sessionEpoch);
+  int get hashCode => Object.hash(policy, sessionEpoch, expectedContextGeneration);
 }
 
 final class RemoteMediaEndpointSnapshot {
@@ -54,10 +59,20 @@ final class RemoteMediaEndpointSnapshot {
 }
 
 RemoteMediaAccessSnapshot mapRemoteMediaAccess(ReachabilityState state) {
+  final proof = state.serverAccess;
+  final endpoint = state.confirmedEndpoint;
+  final proofIsCurrent =
+      proof != null &&
+      proof.isCurrent &&
+      endpoint != null &&
+      proof.matches(endpoint: endpoint, origin: Uri.parse(endpoint.origin), policy: proof.schemePolicy);
+  final httpsCanReadWhileValidating = proofIsCurrent && proof.schemePolicy == EndpointSchemePolicy.httpsOnly;
   return RemoteMediaAccessSnapshot(
     policy: switch (state.phase) {
-      ReachabilityPhase.online => RemoteMediaPolicy.cacheThenNetwork,
-      ReachabilityPhase.probing when state.confirmedEndpoint != null => RemoteMediaPolicy.cacheThenNetwork,
+      ReachabilityPhase.online when proofIsCurrent => RemoteMediaPolicy.cacheThenNetwork,
+      ReachabilityPhase.unknown ||
+      ReachabilityPhase.probing when httpsCanReadWhileValidating => RemoteMediaPolicy.cacheThenNetwork,
+      ReachabilityPhase.online ||
       ReachabilityPhase.unknown ||
       ReachabilityPhase.probing ||
       ReachabilityPhase.offline ||
@@ -65,6 +80,7 @@ RemoteMediaAccessSnapshot mapRemoteMediaAccess(ReachabilityState state) {
       ReachabilityPhase.disposed => RemoteMediaPolicy.cacheOnly,
     },
     sessionEpoch: state.sessionEpoch,
+    expectedContextGeneration: proof?.nativeContextGeneration,
   );
 }
 

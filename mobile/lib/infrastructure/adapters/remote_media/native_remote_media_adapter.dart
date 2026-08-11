@@ -255,6 +255,7 @@ final class NativeRemoteMediaAdapter implements RemoteMediaPort<OwnedRemoteMedia
         domain.MediaRequestKind.thumbnail => pigeon.RemoteImageRequestKind.thumbnail,
         domain.MediaRequestKind.original => pigeon.RemoteImageRequestKind.original,
       },
+      expectedContextGeneration: request.expectedContextGeneration,
     );
   }
 

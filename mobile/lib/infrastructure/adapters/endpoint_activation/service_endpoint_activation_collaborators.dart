@@ -99,18 +99,14 @@ final class NetworkNativeRequestContextAdapter implements NativeRequestContextPo
 
   @override
   NativeRequestContext snapshot() {
-    final endpoint = Store.tryGet(StoreKey.serverEndpoint);
-    final endpointUri = endpoint == null || endpoint.isEmpty ? null : Uri.parse(endpoint);
-    final canonicalOrigin = endpointUri == null ? null : Uri.parse(endpointUri.origin);
-    final hasConfirmedContext =
-        canonicalOrigin != null && NetworkRepository.hasConfirmedRequestContext(canonicalOrigin);
+    final evidence = NetworkRepository.serverAccessEvidence;
+    final hasConfirmedContext = evidence.confirmed && !evidence.fenced && evidence.apiEndpoint != null;
     return NativeRequestContext(
-      canonicalOrigin: hasConfirmedContext ? canonicalOrigin : null,
+      apiEndpoint: hasConfirmedContext ? evidence.apiEndpoint : null,
+      canonicalOrigin: hasConfirmedContext ? evidence.canonicalOrigin : null,
       accessToken: hasConfirmedContext ? Store.tryGet(StoreKey.accessToken) : null,
-      schemePolicy: !hasConfirmedContext
-          ? null
-          : parseEndpointSchemePolicy(Store.tryGet(StoreKey.serverEndpointSchemePolicy)) ??
-                (canonicalOrigin.scheme == 'https' ? EndpointSchemePolicy.httpsOnly : null),
+      schemePolicy: hasConfirmedContext ? evidence.schemePolicy : null,
+      sessionEpoch: evidence.sessionEpoch,
       customHeaders: hasConfirmedContext ? ApiService.getRequestHeaders() : const {},
     );
   }
@@ -119,9 +115,11 @@ final class NetworkNativeRequestContextAdapter implements NativeRequestContextPo
   Future<void> replace(NativeRequestContext context) {
     return NetworkRepository.replaceRequestContext(
       headers: context.customHeaders,
+      apiEndpoint: context.apiEndpoint,
       canonicalOrigin: context.canonicalOrigin,
       token: context.accessToken,
       schemePolicy: context.schemePolicy,
+      sessionEpoch: context.sessionEpoch,
     );
   }
 

@@ -41,6 +41,7 @@ final class ResolvedServerEndpointInstallerAdapter implements ResolvedServerEndp
     try {
       await _nativeContext.replace(
         NativeRequestContext(
+          apiEndpoint: endpoint.apiEndpoint,
           canonicalOrigin: endpoint.canonicalOrigin,
           accessToken: null,
           schemePolicy: schemePolicy,

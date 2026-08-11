@@ -21,8 +21,9 @@ class InvalidIsolateUsageException implements Exception {
 }
 
 // !! Should be used only from the root isolate
-Cancelable<T?> runInIsolateGentle<T>({
-  required Future<T> Function(ProviderContainer ref) computation,
+Cancelable<T?> runInIsolateGentle<T, A>({
+  required Future<T> Function(ProviderContainer ref, A argument) computation,
+  required A argument,
   String? debugLabel,
 }) {
   final token = RootIsolateToken.instance;
@@ -47,7 +48,7 @@ Cancelable<T?> runInIsolateGentle<T>({
     );
 
     return executeBackgroundComputation(
-      computation: () => computation(ref),
+      computation: () => computation(ref, argument),
       cleanup: () async {
         try {
           ref.dispose();

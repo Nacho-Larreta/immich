@@ -87,8 +87,13 @@ private class NetworkApiImpl : NetworkApi {
     HttpClientManager.setRequestHeaders(headers, serverUrls, token)
   }
 
-  override fun replaceRequestContext(headers: Map<String, String>, canonicalOrigin: String?, token: String?) {
-    HttpClientManager.replaceRequestContext(headers, canonicalOrigin, token)
+  override fun replaceRequestContext(
+    headers: Map<String, String>,
+    canonicalOrigin: String?,
+    token: String?,
+    sessionEpoch: Long,
+  ) {
+    HttpClientManager.replaceRequestContext(headers, canonicalOrigin, token, sessionEpoch)
   }
 
   override fun failClosedRequestContext() {

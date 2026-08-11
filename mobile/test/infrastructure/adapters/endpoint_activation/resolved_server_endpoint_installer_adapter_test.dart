@@ -17,7 +17,13 @@ final class _PreparedGraph extends Fake implements PreparedApiGraph {}
 void main() {
   setUpAll(() {
     registerFallbackValue(
-      NativeRequestContext(canonicalOrigin: null, accessToken: null, schemePolicy: null, customHeaders: const {}),
+      NativeRequestContext(
+        apiEndpoint: null,
+        canonicalOrigin: null,
+        accessToken: null,
+        schemePolicy: null,
+        customHeaders: const {},
+      ),
     );
     registerFallbackValue(
       ConfirmedServerEndpoint(
@@ -39,6 +45,7 @@ void main() {
     when(() => graph.currentEndpoint).thenReturn(Uri.parse('https://server-a.example.test/api'));
     when(nativeContext.snapshot).thenReturn(
       NativeRequestContext(
+        apiEndpoint: Uri.parse('https://server-a.example.test/api'),
         canonicalOrigin: Uri.parse('https://server-a.example.test'),
         accessToken: 'server-a-token',
         schemePolicy: EndpointSchemePolicy.httpsOnly,
@@ -203,12 +210,14 @@ final class _FaultNativeContext implements NativeRequestContextPort {
   final _InstallationStep failedStep;
   final _RollbackFailure? rollbackFailure;
   final persistedContext = NativeRequestContext(
+    apiEndpoint: Uri.parse('https://server-a.example.test/api'),
     canonicalOrigin: Uri.parse('https://server-a.example.test'),
     accessToken: 'server-a-token',
     schemePolicy: EndpointSchemePolicy.httpsOnly,
     customHeaders: const {'x-server-a-key': 'secret'},
   );
   var context = NativeRequestContext(
+    apiEndpoint: null,
     canonicalOrigin: null,
     accessToken: null,
     schemePolicy: null,
@@ -245,6 +254,7 @@ final class _FaultNativeContext implements NativeRequestContextPort {
       throw StateError('native purge failed');
     }
     context = NativeRequestContext(
+      apiEndpoint: null,
       canonicalOrigin: null,
       accessToken: null,
       schemePolicy: null,

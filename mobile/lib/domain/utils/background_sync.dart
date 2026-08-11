@@ -1,17 +1,15 @@
 import 'dart:async';
 
-import 'package:hooks_riverpod/hooks_riverpod.dart';
-import 'package:immich_mobile/domain/utils/migrate_cloud_ids.dart' as m;
-import 'package:immich_mobile/domain/utils/sync_linked_album.dart';
-import 'package:immich_mobile/providers/infrastructure/sync.provider.dart';
-import 'package:immich_mobile/utils/isolate.dart';
-import 'package:worker_manager/worker_manager.dart';
+import 'package:immich_mobile/domain/interfaces/background_task_runner.interface.dart';
+import 'package:immich_mobile/domain/interfaces/cancellable_request.interface.dart';
+import 'package:immich_mobile/domain/models/background_task.model.dart';
 
 typedef SyncCallback = void Function();
 typedef SyncCallbackWithResult<T> = void Function(T result);
 typedef SyncErrorCallback = void Function(String error);
 typedef SyncOperationTerminalCallback =
     void Function(int operationId, SyncOperationType operation, SyncTerminal terminal);
+typedef BackgroundTaskContextProvider = BackgroundTaskContextBinding Function();
 
 enum SyncOperationType { remote, local, hashing, cloudIds, websocket, linkedAlbums }
 
@@ -19,18 +17,6 @@ enum SyncTerminal { success, error, cancelled }
 
 void consumeBackgroundSyncTap(Future<dynamic> operation) {
   unawaited(operation.then<void>((_) {}, onError: (Object _, StackTrace __) {}));
-}
-
-abstract interface class BackgroundTaskRunner {
-  Cancelable<T?> start<T>({required Future<T> Function(ProviderContainer ref) computation, String? debugLabel});
-}
-
-final class IsolateBackgroundTaskRunner implements BackgroundTaskRunner {
-  const IsolateBackgroundTaskRunner();
-
-  @override
-  Cancelable<T?> start<T>({required Future<T> Function(ProviderContainer ref) computation, String? debugLabel}) =>
-      runInIsolateGentle(computation: computation, debugLabel: debugLabel);
 }
 
 class BackgroundSyncManager {
@@ -55,6 +41,7 @@ class BackgroundSyncManager {
   final SyncCallback? onCloudIdSyncCancelled;
   final SyncOperationTerminalCallback? onTerminal;
   final BackgroundTaskRunner _taskRunner;
+  final BackgroundTaskContextProvider _remoteTaskContext;
 
   _SyncOperation<bool>? _syncTask;
   _SyncOperation<void>? _syncWebsocketTask;
@@ -82,36 +69,38 @@ class BackgroundSyncManager {
     this.onHashingCancelled,
     this.onCloudIdSyncCancelled,
     this.onTerminal,
-    BackgroundTaskRunner taskRunner = const IsolateBackgroundTaskRunner(),
-  }) : _taskRunner = taskRunner;
+    required BackgroundTaskRunner taskRunner,
+    required BackgroundTaskContextProvider remoteTaskContext,
+  }) : _taskRunner = taskRunner,
+       _remoteTaskContext = remoteTaskContext;
 
   Future<void> cancel() async {
     final futures = <Future>[];
 
     if (_syncTask != null) {
       futures.add(_syncTask!.completion);
+      futures.add(_syncTask!.task.cancel());
     }
-    _syncTask?.task.cancel();
 
     if (_syncWebsocketTask != null) {
       futures.add(_syncWebsocketTask!.completion);
+      futures.add(_syncWebsocketTask!.task.cancel());
     }
-    _syncWebsocketTask?.task.cancel();
 
     if (_cloudIdSyncTask != null) {
       futures.add(_cloudIdSyncTask!.completion);
+      futures.add(_cloudIdSyncTask!.task.cancel());
     }
-    _cloudIdSyncTask?.task.cancel();
 
     if (_linkedAlbumSyncTask != null) {
       futures.add(_linkedAlbumSyncTask!.completion);
+      futures.add(_linkedAlbumSyncTask!.task.cancel());
     }
-    _linkedAlbumSyncTask?.task.cancel();
 
     try {
       await Future.wait(futures);
-    } on CanceledError {
-      // Cancellation is the requested terminal state.
+    } on BackgroundTaskCancelled {
+      return;
     }
   }
 
@@ -120,18 +109,18 @@ class BackgroundSyncManager {
 
     if (_hashTask != null) {
       futures.add(_hashTask!.completion);
+      futures.add(_hashTask!.task.cancel());
     }
-    _hashTask?.task.cancel();
 
     if (_deviceAlbumSyncTask != null) {
       futures.add(_deviceAlbumSyncTask!.completion);
+      futures.add(_deviceAlbumSyncTask!.task.cancel());
     }
-    _deviceAlbumSyncTask?.task.cancel();
 
     try {
       await Future.wait(futures);
-    } on CanceledError {
-      // Cancellation is the requested terminal state.
+    } on BackgroundTaskCancelled {
+      return;
     }
   }
 
@@ -145,13 +134,13 @@ class BackgroundSyncManager {
     try {
       onLocalSyncStart?.call();
       late final _SyncOperation<void> operation;
-      final task = _taskRunner.start<void>(
-        computation: (ref) => ref.read(localSyncServiceProvider).sync(full: full),
+      final task = _taskRunner.start(
+        task: BackgroundTaskDescriptor.localSync(full: full),
         debugLabel: 'local-sync-full-$full',
       );
       operation = _SyncOperation(operationId, task);
       _deviceAlbumSyncTask = operation;
-      operation.completion = task
+      operation.completion = task.result
           .then<void>(
             (_) => _complete(operation, SyncOperationType.local, SyncTerminal.success, onLocalSyncComplete),
             onError: (Object error, StackTrace stackTrace) {
@@ -178,13 +167,10 @@ class BackgroundSyncManager {
     try {
       onHashingStart?.call();
       late final _SyncOperation<void> operation;
-      final task = _taskRunner.start<void>(
-        computation: (ref) => ref.read(hashServiceProvider).hashAssets(),
-        debugLabel: 'hash-assets',
-      );
+      final task = _taskRunner.start(task: const BackgroundTaskDescriptor.hashAssets(), debugLabel: 'hash-assets');
       operation = _SyncOperation(operationId, task);
       _hashTask = operation;
-      operation.completion = task
+      operation.completion = task.result
           .then<void>(
             (_) => _complete(operation, SyncOperationType.hashing, SyncTerminal.success, onHashingComplete),
             onError: (Object error, StackTrace stackTrace) {
@@ -211,16 +197,16 @@ class BackgroundSyncManager {
     try {
       onRemoteSyncStart?.call();
       late final _SyncOperation<bool> operation;
-      final task = _taskRunner.start<bool>(
-        computation: (ref) => ref.read(syncStreamServiceProvider).sync(),
+      final task = _taskRunner.start(
+        task: _bindToCurrentServer(const BackgroundTaskDescriptor.remoteSync()),
         debugLabel: 'remote-sync',
       );
       operation = _SyncOperation(operationId, task);
       _syncTask = operation;
-      operation.completion = task
+      operation.completion = task.result
           .then<bool>(
             (result) {
-              final success = result ?? false;
+              final success = result is bool && result;
               _complete(
                 operation,
                 SyncOperationType.remote,
@@ -249,7 +235,7 @@ class BackgroundSyncManager {
       return _syncWebsocketTask!.completion;
     }
     return _startWebsocketOperation(
-      computation: (ref) => ref.read(syncStreamServiceProvider).handleWsAssetUploadReadyV1Batch(batchData),
+      task: _bindToCurrentServer(BackgroundTaskDescriptor.websocketBatch(batchData)),
       debugLabel: 'websocket-batch',
     );
   }
@@ -259,7 +245,7 @@ class BackgroundSyncManager {
       return _syncWebsocketTask!.completion;
     }
     return _startWebsocketOperation(
-      computation: (ref) => ref.read(syncStreamServiceProvider).handleWsAssetEditReadyV1(data),
+      task: _bindToCurrentServer(BackgroundTaskDescriptor.websocketEdit(data)),
       debugLabel: 'websocket-edit',
     );
   }
@@ -272,10 +258,13 @@ class BackgroundSyncManager {
     final operationId = ++_nextOperationId;
     try {
       late final _SyncOperation<void> operation;
-      final task = _taskRunner.start<void>(computation: syncLinkedAlbumsIsolated, debugLabel: 'linked-album-sync');
+      final task = _taskRunner.start(
+        task: _bindToCurrentServer(const BackgroundTaskDescriptor.linkedAlbums()),
+        debugLabel: 'linked-album-sync',
+      );
       operation = _SyncOperation(operationId, task);
       _linkedAlbumSyncTask = operation;
-      operation.completion = task
+      operation.completion = task.result
           .then<void>(
             (_) => _complete(operation, SyncOperationType.linkedAlbums, SyncTerminal.success, null),
             onError: (Object error, StackTrace stackTrace) {
@@ -293,17 +282,14 @@ class BackgroundSyncManager {
     }
   }
 
-  Future<void> _startWebsocketOperation({
-    required Future<void> Function(ProviderContainer ref) computation,
-    required String debugLabel,
-  }) {
+  Future<void> _startWebsocketOperation({required BackgroundTaskDescriptor task, required String debugLabel}) {
     final operationId = ++_nextOperationId;
     try {
       late final _SyncOperation<void> operation;
-      final task = _taskRunner.start<void>(computation: computation, debugLabel: debugLabel);
-      operation = _SyncOperation(operationId, task);
+      final runningTask = _taskRunner.start(task: task, debugLabel: debugLabel);
+      operation = _SyncOperation(operationId, runningTask);
       _syncWebsocketTask = operation;
-      operation.completion = task
+      operation.completion = runningTask.result
           .then<void>(
             (_) => _complete(operation, SyncOperationType.websocket, SyncTerminal.success, null),
             onError: (Object error, StackTrace stackTrace) {
@@ -330,10 +316,10 @@ class BackgroundSyncManager {
     try {
       onCloudIdSyncStart?.call();
       late final _SyncOperation<void> operation;
-      final task = _taskRunner.start<void>(computation: m.syncCloudIds);
+      final task = _taskRunner.start(task: _bindToCurrentServer(const BackgroundTaskDescriptor.cloudIds()));
       operation = _SyncOperation(operationId, task);
       _cloudIdSyncTask = operation;
-      operation.completion = task
+      operation.completion = task.result
           .then<void>(
             (_) => _complete(operation, SyncOperationType.cloudIds, SyncTerminal.success, onCloudIdSyncComplete),
             onError: (Object error, StackTrace stackTrace) {
@@ -349,6 +335,10 @@ class BackgroundSyncManager {
       _emitStartFailure(operationId, SyncOperationType.cloudIds, error, onCloudIdSyncError);
       return Future<void>.error(error, stackTrace);
     }
+  }
+
+  BackgroundTaskDescriptor _bindToCurrentServer(BackgroundTaskDescriptor task) {
+    return task.boundTo(_remoteTaskContext());
   }
 
   void _complete<T>(
@@ -372,7 +362,7 @@ class BackgroundSyncManager {
     SyncErrorCallback? errorCallback,
     SyncCallback? cancelledCallback,
   ) {
-    final cancelled = error is CanceledError;
+    final cancelled = error is BackgroundTaskCancelled;
     if (operation.markTerminal()) {
       try {
         if (cancelled) {
@@ -399,7 +389,7 @@ final class _SyncOperation<T> {
   _SyncOperation(this.id, this.task);
 
   final int id;
-  final Cancelable<T?> task;
+  final CancellableRequest<Object?> task;
   late final Future<T> completion;
   var _terminal = false;
 

@@ -83,6 +83,7 @@ RemoteImageRequest _request(
     uri: 'https://photos.example.test/api/assets/1/thumbnail',
     policy: policy,
     kind: kind,
+    expectedContextGeneration: policy == RemoteMediaPolicy.cacheThenNetwork ? 1 : null,
   );
 }
 

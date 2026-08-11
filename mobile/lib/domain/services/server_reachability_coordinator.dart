@@ -1,14 +1,17 @@
 import 'dart:async';
 
 import 'package:immich_mobile/domain/interfaces/cancellable_request.interface.dart';
+import 'package:immich_mobile/domain/interfaces/confirmed_server_access.interface.dart';
 import 'package:immich_mobile/domain/interfaces/connectivity_monitor.interface.dart';
 import 'package:immich_mobile/domain/interfaces/endpoint_activation.interface.dart';
 import 'package:immich_mobile/domain/interfaces/endpoint_probe_cycle.interface.dart';
 import 'package:immich_mobile/domain/interfaces/reachability_scheduler.interface.dart';
+import 'package:immich_mobile/domain/interfaces/reachability_failure_reporter.interface.dart';
 import 'package:immich_mobile/domain/interfaces/reachability_state_publisher.interface.dart';
 import 'package:immich_mobile/domain/interfaces/reconciliation.interface.dart';
 import 'package:immich_mobile/domain/interfaces/request_context_lease.interface.dart';
 import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
+import 'package:immich_mobile/domain/models/confirmed_server_access.model.dart';
 import 'package:immich_mobile/domain/models/offline_result.model.dart';
 import 'package:immich_mobile/domain/models/server_reachability.model.dart';
 import 'package:immich_mobile/domain/services/session_epoch_controller.dart';
@@ -23,6 +26,8 @@ final class ServerReachabilityCoordinator {
     required ReachabilityStatePublisherPort statePublisher,
     required ReachabilitySchedulerPort scheduler,
     required RequestContextLeasePort requestContextLease,
+    ConfirmedServerAccessPort confirmedServerAccess = const _NoConfirmedServerAccess(),
+    ReachabilityFailureReporterPort failureReporter = const _NoReachabilityFailureReporter(),
     this.debounce = const Duration(milliseconds: 750),
   }) : _epochs = epochs,
        _connectivity = connectivity,
@@ -32,6 +37,8 @@ final class ServerReachabilityCoordinator {
        _statePublisher = statePublisher,
        _scheduler = scheduler,
        _requestContextLease = requestContextLease,
+       _confirmedServerAccess = confirmedServerAccess,
+       _failureReporter = failureReporter,
        _state = ReachabilityState(
          phase: ReachabilityPhase.unknown,
          sessionEpoch: epochs.current.sessionEpoch,
@@ -50,6 +57,8 @@ final class ServerReachabilityCoordinator {
   final ReachabilityStatePublisherPort _statePublisher;
   final ReachabilitySchedulerPort _scheduler;
   final RequestContextLeasePort _requestContextLease;
+  final ConfirmedServerAccessPort _confirmedServerAccess;
+  final ReachabilityFailureReporterPort _failureReporter;
   final Duration debounce;
 
   ReachabilityState _state;
@@ -67,6 +76,7 @@ final class ServerReachabilityCoordinator {
   bool _paused = false;
   bool _disposed = false;
   bool _rerunRequested = false;
+  int _sessionActivationRevision = 0;
 
   Future<void> start() {
     if (_disposed) {
@@ -75,8 +85,13 @@ final class ServerReachabilityCoordinator {
     return _startFuture ??= _start();
   }
 
-  void activateSession({Uri? confirmedEndpoint}) {
+  Future<void> activateSession({Uri? confirmedEndpoint}) async {
     _ensureNotDisposed();
+    final revision = ++_sessionActivationRevision;
+    await start();
+    if (_disposed || revision != _sessionActivationRevision) {
+      return;
+    }
     _sessionActive = true;
     _publish(
       _paused ? ReachabilityPhase.paused : _phaseForAvailability(),
@@ -84,7 +99,7 @@ final class ServerReachabilityCoordinator {
       confirmedEndpoint: confirmedEndpoint,
     );
     if (!_paused && _availability == TransportAvailability.available) {
-      _scheduleCycle();
+      _runCycleImmediately();
     }
   }
 
@@ -127,6 +142,7 @@ final class ServerReachabilityCoordinator {
       return;
     }
     _sessionActive = false;
+    _sessionActivationRevision++;
     _paused = false;
     _epochs.invalidateSession();
     _cancelScheduledCycle();
@@ -141,6 +157,7 @@ final class ServerReachabilityCoordinator {
       return existing;
     }
     _disposed = true;
+    _sessionActivationRevision++;
     _sessionActive = false;
     _paused = false;
     _epochs.invalidateProbeGeneration();
@@ -152,16 +169,57 @@ final class ServerReachabilityCoordinator {
 
   Future<void> _start() async {
     final revisionBeforeInitialAvailability = _availabilityRevision;
-    _connectivitySubscription = _connectivity.events.listen(_handleAvailability);
+    _connectivitySubscription = _connectivity.events.listen(
+      _ownAvailabilityEvent,
+      onError: (Object error, StackTrace stackTrace) {
+        _reportException(
+          ReachabilityFailureStage.connectivity,
+          ReachabilityFailureCode.connectivityException,
+          _epochs.current,
+          error,
+          stackTrace,
+        );
+        if (_sessionActive && !_paused) {
+          _publish(ReachabilityPhase.offline, identity: _epochs.current, confirmedEndpoint: _state.confirmedEndpoint);
+        }
+      },
+    );
     _statePublisher.publish(_state);
-    final initialAvailability = await _connectivity.initialAvailability;
+    late final TransportAvailability initialAvailability;
+    try {
+      initialAvailability = await _connectivity.initialAvailability;
+    } on Object catch (error, stackTrace) {
+      _reportException(
+        ReachabilityFailureStage.connectivity,
+        ReachabilityFailureCode.connectivityException,
+        _epochs.current,
+        error,
+        stackTrace,
+      );
+      return;
+    }
     if (_disposed || revisionBeforeInitialAvailability != _availabilityRevision) {
       return;
     }
-    _handleAvailability(initialAvailability);
+    await _handleAvailability(initialAvailability);
   }
 
-  void _handleAvailability(TransportAvailability availability) {
+  void _ownAvailabilityEvent(TransportAvailability availability) {
+    final identity = _epochs.current;
+    unawaited(
+      _handleAvailability(availability).catchError((Object error, StackTrace stackTrace) {
+        _reportException(
+          ReachabilityFailureStage.connectivity,
+          ReachabilityFailureCode.transportReviewCancellationException,
+          identity,
+          error,
+          stackTrace,
+        );
+      }),
+    );
+  }
+
+  Future<void> _handleAvailability(TransportAvailability availability) async {
     if (_disposed) {
       return;
     }
@@ -174,7 +232,10 @@ final class ServerReachabilityCoordinator {
     if (!duplicate) {
       _availability = availability;
     }
-    _invalidatePipelineForTransportReview(availability, forceGenerationChange: localContextInvalidated);
+    final cancellation = _invalidatePipelineForTransportReview(
+      availability,
+      forceGenerationChange: localContextInvalidated,
+    );
     if (localContextInvalidated && _sessionActive && !_paused) {
       _publish(ReachabilityPhase.probing, identity: _epochs.current, confirmedEndpoint: null);
     }
@@ -182,12 +243,14 @@ final class ServerReachabilityCoordinator {
       case TransportAvailability.unknown:
         _cancelScheduledCycle();
         _rerunRequested = false;
+        await cancellation;
         return;
       case TransportAvailability.unavailable:
         _handleUnavailable();
       case TransportAvailability.available:
         _handleAvailable();
     }
+    await cancellation;
   }
 
   void _handleUnavailable() {
@@ -198,20 +261,20 @@ final class ServerReachabilityCoordinator {
     }
   }
 
-  void _invalidatePipelineForTransportReview(
+  Future<void> _invalidatePipelineForTransportReview(
     TransportAvailability reviewedAvailability, {
     bool forceGenerationChange = false,
   }) {
     final run = _pipeline;
     if (run == null && reviewedAvailability != TransportAvailability.unavailable && !forceGenerationChange) {
-      return;
+      return Future.value();
     }
     _epochs.invalidateProbeGeneration();
     if (run == null) {
-      return;
+      return Future.value();
     }
     _rerunRequested = reviewedAvailability == TransportAvailability.available && _sessionActive && !_paused;
-    unawaited(_cancelPipelineAndWait());
+    return _cancelPipelineAndWait();
   }
 
   void _handleAvailable() {
@@ -257,13 +320,26 @@ final class ServerReachabilityCoordinator {
     late final EndpointProbeResult probeResult;
     try {
       probeResult = await _runProbe(run);
-    } on Object {
+    } on Object catch (error, stackTrace) {
+      _reportException(
+        ReachabilityFailureStage.probe,
+        ReachabilityFailureCode.probeException,
+        run.identity,
+        error,
+        stackTrace,
+      );
       _requestContextLease.invalidateAfterValidationFailure();
       _publishOfflineIfCurrent(run.identity);
       return;
     }
     if (!_isCurrent(run.identity) || probeResult is! ValidatedEndpointProbeResult) {
       if (_isCurrent(run.identity) && probeResult is RejectedEndpointProbeResult) {
+        _reportRejection(
+          ReachabilityFailureStage.probe,
+          ReachabilityFailureCode.probeRejected,
+          run.identity,
+          probeResult.error,
+        );
         _requestContextLease.invalidateAfterValidationFailure();
         _publishProbeFailure(probeResult, run.identity);
       }
@@ -273,7 +349,14 @@ final class ServerReachabilityCoordinator {
     late final OfflineResult<EndpointActivationReceipt> activationResult;
     try {
       activationResult = await _runActivation(run, probeResult);
-    } on Object {
+    } on Object catch (error, stackTrace) {
+      _reportException(
+        ReachabilityFailureStage.activation,
+        ReachabilityFailureCode.activationException,
+        run.identity,
+        error,
+        stackTrace,
+      );
       _requestContextLease.invalidateAfterValidationFailure();
       _publishOfflineIfCurrent(run.identity);
       return;
@@ -283,6 +366,12 @@ final class ServerReachabilityCoordinator {
     }
     final receipt = activationResult.valueOrNull;
     if (receipt == null) {
+      _reportRejection(
+        ReachabilityFailureStage.activation,
+        ReachabilityFailureCode.activationRejected,
+        run.identity,
+        activationResult.errorOrNull,
+      );
       _requestContextLease.invalidateAfterValidationFailure();
       _publishEffectFailure(activationResult.errorOrNull, run.identity);
       return;
@@ -291,10 +380,46 @@ final class ServerReachabilityCoordinator {
       return;
     }
 
+    final proof = _confirmedServerAccess.read();
+    if (proof == null ||
+        !proof.matches(
+          endpoint: receipt.confirmedEndpoint,
+          origin: receipt.canonicalOrigin,
+          policy: receipt.schemePolicy,
+        )) {
+      _requestContextLease.invalidateAfterValidationFailure();
+      _failureReporter.report(
+        ReachabilityFailure(
+          stage: ReachabilityFailureStage.activation,
+          reason: ReachabilityFailureReason.staleProof,
+          code: ReachabilityFailureCode.staleActivationProof,
+          identity: run.identity,
+        ),
+      );
+      _publishOfflineIfCurrent(run.identity);
+      return;
+    }
+
     _publish(ReachabilityPhase.online, identity: run.identity, confirmedEndpoint: receipt.confirmedEndpoint);
     try {
-      await _runReconciliation(run, receipt);
-    } on Object {
+      final result = await _runReconciliation(run, receipt);
+      final offlineCode = result.errorOrNull;
+      if (offlineCode != null && offlineCode != OfflineErrorCode.cancelled) {
+        _reportRejection(
+          ReachabilityFailureStage.reconciliation,
+          ReachabilityFailureCode.reconciliationRejected,
+          run.identity,
+          offlineCode,
+        );
+      }
+    } on Object catch (error, stackTrace) {
+      _reportException(
+        ReachabilityFailureStage.reconciliation,
+        ReachabilityFailureCode.reconciliationException,
+        run.identity,
+        error,
+        stackTrace,
+      );
       return;
     }
   }
@@ -423,6 +548,16 @@ final class ServerReachabilityCoordinator {
     _scheduledCycle = null;
   }
 
+  void _runCycleImmediately() {
+    if (!_canRunCycle) return;
+    if (_pipeline != null) {
+      _rerunRequested = true;
+      return;
+    }
+    _cancelScheduledCycle();
+    _beginCycle();
+  }
+
   ReachabilityPhase _phaseForAvailability() {
     return switch (_availability) {
       TransportAvailability.unknown => ReachabilityPhase.unknown,
@@ -442,13 +577,57 @@ final class ServerReachabilityCoordinator {
   }
 
   void _publish(ReachabilityPhase phase, {required ReachabilityIdentity identity, required Uri? confirmedEndpoint}) {
+    final proof = confirmedEndpoint == null ? null : _matchingProof(confirmedEndpoint);
     _state = ReachabilityState(
       phase: phase,
       sessionEpoch: identity.sessionEpoch,
       probeGeneration: identity.probeGeneration,
       confirmedEndpoint: confirmedEndpoint,
+      serverAccess: proof,
     );
     _statePublisher.publish(_state);
+  }
+
+  ConfirmedServerAccess? _matchingProof(Uri endpoint) {
+    final proof = _confirmedServerAccess.read();
+    return proof?.isCurrent == true && proof!.apiEndpoint == endpoint ? proof : null;
+  }
+
+  void _reportException(
+    ReachabilityFailureStage stage,
+    ReachabilityFailureCode code,
+    ReachabilityIdentity identity,
+    Object cause,
+    StackTrace stackTrace,
+  ) {
+    _failureReporter.report(
+      ReachabilityFailure(
+        stage: stage,
+        reason: ReachabilityFailureReason.exception,
+        code: code,
+        identity: identity,
+        causeType: cause.runtimeType.toString(),
+        causeMessage: sanitizeReachabilityFailureMessage(cause),
+        stackTrace: stackTrace,
+      ),
+    );
+  }
+
+  void _reportRejection(
+    ReachabilityFailureStage stage,
+    ReachabilityFailureCode code,
+    ReachabilityIdentity identity,
+    OfflineErrorCode? offlineCode,
+  ) {
+    _failureReporter.report(
+      ReachabilityFailure(
+        stage: stage,
+        reason: ReachabilityFailureReason.rejected,
+        code: code,
+        identity: identity,
+        offlineCode: offlineCode,
+      ),
+    );
   }
 
   void _ensureNotDisposed() {
@@ -465,4 +644,18 @@ final class _PipelineRun {
   late final Future<void> future;
   CancellableRequest<Object?>? operation;
   Future<void>? cancellation;
+}
+
+final class _NoConfirmedServerAccess implements ConfirmedServerAccessPort {
+  const _NoConfirmedServerAccess();
+
+  @override
+  ConfirmedServerAccess? read() => null;
+}
+
+final class _NoReachabilityFailureReporter implements ReachabilityFailureReporterPort {
+  const _NoReachabilityFailureReporter();
+
+  @override
+  void report(ReachabilityFailure failure) {}
 }

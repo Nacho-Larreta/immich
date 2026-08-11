@@ -176,6 +176,7 @@ class NetworkRequestContextSnapshot {
   NetworkRequestContextSnapshot({
     required this.clientPointer,
     this.canonicalOrigin,
+    required this.sessionEpoch,
     required this.generation,
     required this.confirmed,
   });
@@ -184,12 +185,14 @@ class NetworkRequestContextSnapshot {
 
   String? canonicalOrigin;
 
+  int sessionEpoch;
+
   int generation;
 
   bool confirmed;
 
   List<Object?> _toList() {
-    return <Object?>[clientPointer, canonicalOrigin, generation, confirmed];
+    return <Object?>[clientPointer, canonicalOrigin, sessionEpoch, generation, confirmed];
   }
 
   Object encode() {
@@ -201,8 +204,9 @@ class NetworkRequestContextSnapshot {
     return NetworkRequestContextSnapshot(
       clientPointer: result[0]! as int,
       canonicalOrigin: result[1] as String?,
-      generation: result[2]! as int,
-      confirmed: result[3]! as bool,
+      sessionEpoch: result[2]! as int,
+      generation: result[3]! as int,
+      confirmed: result[4]! as bool,
     );
   }
 
@@ -217,6 +221,7 @@ class NetworkRequestContextSnapshot {
     }
     return _deepEquals(clientPointer, other.clientPointer) &&
         _deepEquals(canonicalOrigin, other.canonicalOrigin) &&
+        _deepEquals(sessionEpoch, other.sessionEpoch) &&
         _deepEquals(generation, other.generation) &&
         _deepEquals(confirmed, other.confirmed);
   }
@@ -388,7 +393,12 @@ class NetworkApi {
     _extractReplyValueOrThrow(pigeonVar_replyList, pigeonVar_channelName, isNullValid: true);
   }
 
-  Future<void> replaceRequestContext(Map<String, String> headers, String? canonicalOrigin, String? token) async {
+  Future<void> replaceRequestContext(
+    Map<String, String> headers,
+    String? canonicalOrigin,
+    String? token,
+    int sessionEpoch,
+  ) async {
     final pigeonVar_channelName =
         'dev.flutter.pigeon.immich_mobile.NetworkApi.replaceRequestContext$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
@@ -396,7 +406,12 @@ class NetworkApi {
       pigeonChannelCodec,
       binaryMessenger: pigeonVar_binaryMessenger,
     );
-    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[headers, canonicalOrigin, token]);
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[
+      headers,
+      canonicalOrigin,
+      token,
+      sessionEpoch,
+    ]);
     final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
 
     _extractReplyValueOrThrow(pigeonVar_replyList, pigeonVar_channelName, isNullValid: true);

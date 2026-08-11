@@ -196,6 +196,7 @@ domain.RemoteMediaRequest _request({
     policy: policy,
     kind: kind,
     preferEncoded: preferEncoded,
+    expectedContextGeneration: policy == domain.RemoteMediaPolicy.cacheThenNetwork ? 3 : null,
   );
 }
 

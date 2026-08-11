@@ -35,7 +35,11 @@ void main() {
     final firstPort = _Port();
     final secondPort = _Port();
     const offline = RemoteMediaAccessSnapshot(policy: RemoteMediaPolicy.cacheOnly, sessionEpoch: 3);
-    const online = RemoteMediaAccessSnapshot(policy: RemoteMediaPolicy.cacheThenNetwork, sessionEpoch: 3);
+    const online = RemoteMediaAccessSnapshot(
+      policy: RemoteMediaPolicy.cacheThenNetwork,
+      sessionEpoch: 3,
+      expectedContextGeneration: 3,
+    );
     const relogged = RemoteMediaAccessSnapshot(policy: RemoteMediaPolicy.cacheOnly, sessionEpoch: 4);
 
     final base = _image(firstPort, offline);
@@ -45,6 +49,19 @@ void main() {
     expect(base.hashCode, same.hashCode);
     expect(base, isNot(_image(firstPort, offline, edited: false)));
     expect(base, isNot(_image(firstPort, online)));
+    expect(
+      _image(firstPort, online),
+      isNot(
+        _image(
+          firstPort,
+          const RemoteMediaAccessSnapshot(
+            policy: RemoteMediaPolicy.cacheThenNetwork,
+            sessionEpoch: 3,
+            expectedContextGeneration: 4,
+          ),
+        ),
+      ),
+    );
     expect(base, isNot(_image(firstPort, relogged)));
     expect(base, isNot(_image(secondPort, offline)));
     expect(base, isNot(_image(firstPort, offline, endpoint: _otherEndpoint)));
@@ -66,7 +83,11 @@ void main() {
       isNot(
         _full(
           port,
-          const RemoteMediaAccessSnapshot(policy: RemoteMediaPolicy.cacheThenNetwork, sessionEpoch: 1),
+          const RemoteMediaAccessSnapshot(
+            policy: RemoteMediaPolicy.cacheThenNetwork,
+            sessionEpoch: 1,
+            expectedContextGeneration: 1,
+          ),
           assetType: AssetType.image,
         ),
       ),
@@ -87,8 +108,16 @@ void main() {
   test('offline to online and relogin build new keys and issue isolated requests', () async {
     final port = _Port(result: const OfflineResult.failure(OfflineErrorCode.cacheMiss));
     const offline = RemoteMediaAccessSnapshot(policy: RemoteMediaPolicy.cacheOnly, sessionEpoch: 9);
-    const online = RemoteMediaAccessSnapshot(policy: RemoteMediaPolicy.cacheThenNetwork, sessionEpoch: 9);
-    const relogged = RemoteMediaAccessSnapshot(policy: RemoteMediaPolicy.cacheThenNetwork, sessionEpoch: 10);
+    const online = RemoteMediaAccessSnapshot(
+      policy: RemoteMediaPolicy.cacheThenNetwork,
+      sessionEpoch: 9,
+      expectedContextGeneration: 9,
+    );
+    const relogged = RemoteMediaAccessSnapshot(
+      policy: RemoteMediaPolicy.cacheThenNetwork,
+      sessionEpoch: 10,
+      expectedContextGeneration: 10,
+    );
 
     final providers = [_image(port, offline), _image(port, online), _image(port, relogged)];
 
@@ -180,7 +209,11 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    access.value = const RemoteMediaAccessSnapshot(policy: RemoteMediaPolicy.cacheThenNetwork, sessionEpoch: 2);
+    access.value = const RemoteMediaAccessSnapshot(
+      policy: RemoteMediaPolicy.cacheThenNetwork,
+      sessionEpoch: 2,
+      expectedContextGeneration: 2,
+    );
     await tester.pumpAndSettle();
 
     expect(port.requests.map((request) => request.policy), [
@@ -261,7 +294,11 @@ void main() {
     );
     final provider = _full(
       port,
-      const RemoteMediaAccessSnapshot(policy: RemoteMediaPolicy.cacheThenNetwork, sessionEpoch: 1),
+      const RemoteMediaAccessSnapshot(
+        policy: RemoteMediaPolicy.cacheThenNetwork,
+        sessionEpoch: 1,
+        expectedContextGeneration: 1,
+      ),
       assetType: AssetType.image,
     );
 
@@ -289,7 +326,11 @@ void main() {
       isAnimated: true,
       edited: true,
       media: port,
-      access: const RemoteMediaAccessSnapshot(policy: RemoteMediaPolicy.cacheThenNetwork, sessionEpoch: 1),
+      access: const RemoteMediaAccessSnapshot(
+        policy: RemoteMediaPolicy.cacheThenNetwork,
+        sessionEpoch: 1,
+        expectedContextGeneration: 1,
+      ),
       endpoint: _endpoint,
     );
 
@@ -474,7 +515,15 @@ final class _Operation implements CancellableMediaRequest<OwnedRemoteMediaPayloa
 
 extension on RemoteImageProvider {
   Stream<ImageInfo> loadForTesting(ImageDecoderCallback decode) {
-    final request = RemoteImageRequest(media: media, uri: url, policy: access.policy, kind: kind);
+    final request = RemoteImageRequest(
+      media: media,
+      uri: url,
+      policy: access.policy,
+      kind: kind,
+      expectedContextGeneration: access.policy == RemoteMediaPolicy.cacheThenNetwork
+          ? access.expectedContextGeneration
+          : null,
+    );
     return loadRequest(request, decode, isFinal: true);
   }
 }

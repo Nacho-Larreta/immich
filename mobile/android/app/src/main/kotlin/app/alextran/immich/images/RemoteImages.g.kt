@@ -226,7 +226,8 @@ data class RemoteImageRequest (
   val requestId: Long,
   val preferEncoded: Boolean,
   val policy: RemoteImagePolicy,
-  val kind: RemoteImageRequestKind
+  val kind: RemoteImageRequestKind,
+  val expectedContextGeneration: Long? = null
 )
  {
   companion object {
@@ -237,7 +238,8 @@ data class RemoteImageRequest (
       val preferEncoded = pigeonVar_list[3] as Boolean
       val policy = pigeonVar_list[4] as RemoteImagePolicy
       val kind = pigeonVar_list[5] as RemoteImageRequestKind
-      return RemoteImageRequest(url, origin, requestId, preferEncoded, policy, kind)
+      val expectedContextGeneration = pigeonVar_list[6] as Long?
+      return RemoteImageRequest(url, origin, requestId, preferEncoded, policy, kind, expectedContextGeneration)
     }
   }
   fun toList(): List<Any?> {
@@ -248,6 +250,7 @@ data class RemoteImageRequest (
       preferEncoded,
       policy,
       kind,
+      expectedContextGeneration,
     )
   }
   override fun equals(other: Any?): Boolean {
@@ -258,7 +261,7 @@ data class RemoteImageRequest (
       return true
     }
     val other = other as RemoteImageRequest
-    return RemoteImagesPigeonUtils.deepEquals(this.url, other.url) && RemoteImagesPigeonUtils.deepEquals(this.origin, other.origin) && RemoteImagesPigeonUtils.deepEquals(this.requestId, other.requestId) && RemoteImagesPigeonUtils.deepEquals(this.preferEncoded, other.preferEncoded) && RemoteImagesPigeonUtils.deepEquals(this.policy, other.policy) && RemoteImagesPigeonUtils.deepEquals(this.kind, other.kind)
+    return RemoteImagesPigeonUtils.deepEquals(this.url, other.url) && RemoteImagesPigeonUtils.deepEquals(this.origin, other.origin) && RemoteImagesPigeonUtils.deepEquals(this.requestId, other.requestId) && RemoteImagesPigeonUtils.deepEquals(this.preferEncoded, other.preferEncoded) && RemoteImagesPigeonUtils.deepEquals(this.policy, other.policy) && RemoteImagesPigeonUtils.deepEquals(this.kind, other.kind) && RemoteImagesPigeonUtils.deepEquals(this.expectedContextGeneration, other.expectedContextGeneration)
   }
 
   override fun hashCode(): Int {
@@ -269,6 +272,7 @@ data class RemoteImageRequest (
     result = 31 * result + RemoteImagesPigeonUtils.deepHash(this.preferEncoded)
     result = 31 * result + RemoteImagesPigeonUtils.deepHash(this.policy)
     result = 31 * result + RemoteImagesPigeonUtils.deepHash(this.kind)
+    result = 31 * result + RemoteImagesPigeonUtils.deepHash(this.expectedContextGeneration)
     return result
   }
 }

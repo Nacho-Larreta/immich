@@ -90,9 +90,11 @@ final class EndpointActivationAdapter implements EndpointActivationPort {
       try {
         await _nativeContext.replace(
           NativeRequestContext(
+            apiEndpoint: request.endpoint.apiEndpoint,
             canonicalOrigin: request.endpoint.canonicalOrigin,
             accessToken: initialSession.accessToken,
             schemePolicy: request.endpoint.schemePolicy,
+            sessionEpoch: request.sessionEpoch,
             customHeaders: initialSession.customHeaders,
           ),
         );

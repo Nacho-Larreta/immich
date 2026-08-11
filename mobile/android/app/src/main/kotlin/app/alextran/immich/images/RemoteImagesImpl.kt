@@ -10,7 +10,8 @@ import app.alextran.immich.core.HttpClientManager
 import app.alextran.immich.core.NetworkContextBoundWork
 import app.alextran.immich.core.NetworkContextBoundWorkRegistry
 import app.alextran.immich.core.NetworkContextWorkPhase
-import kotlinx.coroutines.*
+import app.alextran.immich.core.RemoteImageAuthorization
+import app.alextran.immich.core.RemoteImageCacheClaim
 import okhttp3.Cache
 import okhttp3.Call
 import okhttp3.Callback
@@ -24,12 +25,19 @@ import java.io.EOFException
 import java.io.File
 import java.io.IOException
 import java.nio.ByteBuffer
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
-private class RemoteRequest(val cancellationSignal: CancellationSignal)
+private class RemoteRequest(
+  val cancellationSignal: CancellationSignal,
+)
 
-class RemoteImagesImpl(context: Context) : RemoteImageApi {
+private const val MAX_REDIRECTS = 5
+
+class RemoteImagesImpl(
+  context: Context,
+) : RemoteImageApi {
   private val requestMap = ConcurrentHashMap<Long, RemoteRequest>()
 
   init {
@@ -44,40 +52,103 @@ class RemoteImagesImpl(context: Context) : RemoteImageApi {
     request: RemoteImageRequest,
     callback: (Result<RemoteImageResult>) -> Unit,
   ) {
+    if (request.policy == RemoteImagePolicy.CACHE_ONLY) {
+      requestCachedImage(request, callback)
+      return
+    }
+    val expectedGeneration = request.expectedContextGeneration
+    val authorization =
+      expectedGeneration?.let {
+        HttpClientManager.captureRemoteImageAuthorization(request.url, request.origin, it)
+      }
+    if (expectedGeneration == null || authorization == null) {
+      callback(Result.success(RemoteImageResult(error = RemoteImageErrorCode.WRONG_SERVER)))
+      return
+    }
+    val signal = CancellationSignal()
+    val admitted =
+      HttpClientManager.admitRemoteImageRequest(authorization) {
+        requestMap[request.requestId] = RemoteRequest(signal)
+        ImageFetcherManager.fetch(
+          authorization,
+          signal,
+          onSuccess = { buffer -> completeRequest(request, authorization, signal, buffer, callback) },
+          onFailure = {
+            requestMap.remove(request.requestId)
+            callback(
+              if (signal.isCanceled) {
+                CANCELLED
+              } else {
+                Result.success(RemoteImageResult(error = RemoteImageErrorCode.SERVER_UNAVAILABLE))
+              },
+            )
+          },
+        )
+      }
+    if (!admitted) callback(Result.success(RemoteImageResult(error = RemoteImageErrorCode.WRONG_SERVER)))
+  }
+
+  private fun requestCachedImage(
+    request: RemoteImageRequest,
+    callback: (Result<RemoteImageResult>) -> Unit,
+  ) {
+    val generation = request.expectedContextGeneration
+    val claim = generation?.let { HttpClientManager.claimRemoteImageCacheRead(request.url, request.origin, it) }
+    if (claim == null) {
+      callback(Result.success(RemoteImageResult(error = RemoteImageErrorCode.CACHE_MISS)))
+      return
+    }
     val signal = CancellationSignal()
     requestMap[request.requestId] = RemoteRequest(signal)
-
-    ImageFetcherManager.fetch(
-      request.url,
-      signal,
-      onSuccess = { buffer ->
-        requestMap.remove(request.requestId)
-        if (signal.isCanceled) {
-          NativeBuffer.free(buffer.pointer)
-          return@fetch callback(CANCELLED)
+    ImageFetcherManager.readCache(claim, signal) { cached ->
+      requestMap.remove(request.requestId)
+      if (signal.isCanceled) {
+        cached?.free()
+        callback(CANCELLED)
+      } else {
+        val delivered =
+          cached != null &&
+            HttpClientManager.deliverRemoteImageCache(claim) {
+              callback(Result.success(cached.toRemoteImageResult()))
+            }
+        if (!delivered) {
+          cached?.free()
+          callback(Result.success(RemoteImageResult(error = RemoteImageErrorCode.CACHE_MISS)))
         }
+      }
+    }
+  }
 
-        callback(
-          Result.success(
-            RemoteImageResult(
-              payload = RemoteImagePayload(
-                pointer = buffer.pointer,
-                length = buffer.offset.toLong(),
-              ),
-            ),
-          ),
-        )
-      },
-      onFailure = { e ->
-        requestMap.remove(request.requestId)
-        val result = if (signal.isCanceled) {
-          CANCELLED
-        } else {
-          Result.success(RemoteImageResult(error = RemoteImageErrorCode.SERVER_UNAVAILABLE))
-        }
-        callback(result)
-      },
-    )
+  private fun completeRequest(
+    request: RemoteImageRequest,
+    authorization: RemoteImageAuthorization,
+    signal: CancellationSignal,
+    buffer: NativeByteBuffer,
+    callback: (Result<RemoteImageResult>) -> Unit,
+  ) {
+    requestMap.remove(request.requestId)
+    if (signal.isCanceled) {
+      buffer.free()
+      callback(CANCELLED)
+      return
+    }
+    val completion = HttpClientManager.claimRemoteImageCompletion(authorization)
+    if (completion == null) {
+      buffer.free()
+      callback(Result.success(RemoteImageResult(error = RemoteImageErrorCode.WRONG_SERVER)))
+      return
+    }
+    val preparedWrite = ImageFetcherManager.prepareCacheWrite(completion, buffer)
+    val delivered =
+      HttpClientManager.deliverRemoteImageCache(completion) {
+        preparedWrite?.enqueue()
+        callback(Result.success(buffer.toRemoteImageResult()))
+      }
+    if (!delivered) {
+      preparedWrite?.close()
+      buffer.free()
+      callback(Result.success(RemoteImageResult(error = RemoteImageErrorCode.WRONG_SERVER)))
+    }
   }
 
   override fun cancelRequest(requestId: Long) {
@@ -94,33 +165,30 @@ class RemoteImagesImpl(context: Context) : RemoteImageApi {
     request: RemoteImageCacheClearRequest,
     callback: (Result<RemoteImageCacheClearResult>) -> Unit,
   ) {
-    CoroutineScope(Dispatchers.IO).launch {
-      try {
-        ImageFetcherManager.clearCache { result ->
-          callback(
-            Result.success(
-              result.fold(
-                onSuccess = { RemoteImageCacheClearResult(clearedBytes = it) },
-                onFailure = {
-                  RemoteImageCacheClearResult(error = RemoteImageErrorCode.SERVER_UNAVAILABLE)
-                },
-              ),
-            ),
-          )
-        }
-      } catch (e: Exception) {
-        callback(
-          Result.success(
-            RemoteImageCacheClearResult(error = RemoteImageErrorCode.SERVER_UNAVAILABLE),
+    ImageFetcherManager.clearCache { result ->
+      callback(
+        Result.success(
+          result.fold(
+            onSuccess = { RemoteImageCacheClearResult(clearedBytes = it) },
+            onFailure = { RemoteImageCacheClearResult(error = RemoteImageErrorCode.SERVER_UNAVAILABLE) },
           ),
-        )
-      }
+        ),
+      )
     }
   }
 }
 
+private fun NativeByteBuffer.toRemoteImageResult() =
+  RemoteImageResult(
+    payload = RemoteImagePayload(pointer = pointer, length = offset.toLong()),
+  )
+
 private object ImageFetcherManager : NetworkContextBoundWork {
   private lateinit var cacheDir: File
+  private lateinit var diskCache: RemoteImageDiskCache
+  private val cacheExecutor = RemoteImageCacheExecutor()
+  @Volatile
+  private var cacheUsable = true
   private lateinit var fetcher: ImageFetcher
   private var initialized = false
   private var fenced = false
@@ -134,6 +202,7 @@ private object ImageFetcherManager : NetworkContextBoundWork {
     synchronized(this) {
       if (initialized) return
       cacheDir = context.cacheDir
+      diskCache = RemoteImageDiskCache(File(cacheDir, "remote-images"))
       fetcher = build()
       HttpClientManager.addClientChangedListener(::invalidate)
       initialized = true
@@ -141,21 +210,22 @@ private object ImageFetcherManager : NetworkContextBoundWork {
   }
 
   fun fetch(
-    url: String,
+    authorization: RemoteImageAuthorization,
     signal: CancellationSignal,
     onSuccess: (NativeByteBuffer) -> Unit,
     onFailure: (Exception) -> Unit,
   ) {
-    val activeFetcher = synchronized(this) {
-      if (fenced) null else fetcher.also { activeSignals.add(signal) }
-    }
+    val activeFetcher =
+      synchronized(this) {
+        if (fenced) null else fetcher.also { activeSignals.add(signal) }
+      }
     if (activeFetcher == null) {
       onFailure(OperationCanceledException("Network request context is fenced"))
       return
     }
     try {
       activeFetcher.fetch(
-        url,
+        authorization,
         signal,
         onSuccess = { buffer ->
           try {
@@ -181,34 +251,95 @@ private object ImageFetcherManager : NetworkContextBoundWork {
     }
   }
 
+  fun readCache(
+    claim: RemoteImageCacheClaim,
+    signal: CancellationSignal,
+    onRead: (NativeByteBuffer?) -> Unit,
+  ) {
+    if (!cacheUsable) return onRead(null)
+    val accepted =
+      cacheExecutor.execute {
+        if (signal.isCanceled) return@execute onRead(null)
+        val bytes = diskCache.read(claim.cacheScope, claim.url) ?: return@execute onRead(null)
+        val buffer = NativeByteBuffer(bytes.size)
+        try {
+          NativeBuffer.wrap(buffer.pointer, bytes.size).put(bytes)
+          buffer.advance(bytes.size)
+          onRead(buffer)
+        } catch (_: Exception) {
+          buffer.free()
+          onRead(null)
+        }
+      }
+    if (!accepted) onRead(null)
+  }
+
+  fun prepareCacheWrite(
+    claim: RemoteImageCacheClaim,
+    buffer: NativeByteBuffer,
+  ): PreparedRemoteImageCacheWrite? {
+    if (!cacheUsable) return null
+    val reservation = cacheExecutor.reserve(buffer.offset.toLong()) ?: return null
+    return try {
+      val bytes = ByteArray(buffer.offset)
+      NativeBuffer.wrap(buffer.pointer, buffer.offset).get(bytes)
+      PreparedRemoteImageCacheWrite(reservation, diskCache, claim, bytes)
+    } catch (error: Exception) {
+      reservation.close()
+      null
+    }
+  }
+
   fun clearCache(onCleared: (Result<Long>) -> Unit) {
-    fetcher.clearCache(onCleared)
+    cacheUsable = false
+    cacheExecutor.submitBarrier { diskCache.clear() }.whenComplete { diskBytes, diskError ->
+      if (diskError != null || diskBytes == null) {
+        onCleared(Result.failure(diskError ?: IllegalStateException("Remote image cache clear returned no result")))
+      } else {
+        val clearedDiskBytes = diskBytes
+        cacheUsable = true
+        fetcher.clearCache { fetcherResult ->
+          onCleared(
+            fetcherResult.map { fetcherBytes -> clearedDiskBytes + fetcherBytes },
+          )
+        }
+      }
+    }
   }
 
   private fun invalidate() {
-    val oldFetcher = synchronized(this) {
-      val oldFetcher = fetcher
-      fetcher = build()
-      oldFetcher
-    }
+    val oldFetcher =
+      synchronized(this) {
+        val oldFetcher = fetcher
+        fetcher = build()
+        oldFetcher
+      }
     oldFetcher.drain()
+    val scope = HttpClientManager.currentRemoteImageCacheScope()
+    cacheUsable = false
+    cacheExecutor.submitBarrier { diskCache.retainOnly(scope) }.whenComplete { _, error ->
+      cacheUsable = error == null
+    }
   }
 
   override fun fenceAndCancel(phase: NetworkContextWorkPhase): CompletableFuture<Unit> {
-    val (signals, drained, activeFetcher) = synchronized(this) {
-      if (phase.revision < phaseRevision) return CompletableFuture.completedFuture(Unit)
-      phaseRevision = phase.revision
-      fenced = true
-      val signals = activeSignals.toList()
-      val drained = if (signals.isEmpty()) {
-        CompletableFuture.completedFuture(Unit)
-      } else {
-        pendingDrains.getOrPut(phase.transitionEpoch) {
-          PendingDrain(signals.toMutableSet(), CompletableFuture())
-        }.future
+    val (signals, drained, activeFetcher) =
+      synchronized(this) {
+        if (phase.revision < phaseRevision) return CompletableFuture.completedFuture(Unit)
+        phaseRevision = phase.revision
+        fenced = true
+        val signals = activeSignals.toList()
+        val drained =
+          if (signals.isEmpty()) {
+            CompletableFuture.completedFuture(Unit)
+          } else {
+            pendingDrains
+              .getOrPut(phase.transitionEpoch) {
+                PendingDrain(signals.toMutableSet(), CompletableFuture())
+              }.future
+          }
+        Triple(signals, drained, if (initialized) fetcher else null)
       }
-      Triple(signals, drained, if (initialized) fetcher else null)
-    }
     var drainFailure: Exception? = null
     try {
       activeFetcher?.drain()
@@ -232,23 +363,37 @@ private object ImageFetcherManager : NetworkContextBoundWork {
   }
 
   private fun complete(signal: CancellationSignal) {
-    val drained = synchronized(this) {
-      if (!activeSignals.remove(signal)) return
-      pendingDrains.values.forEach { it.remaining.remove(signal) }
-      val completed = pendingDrains.filterValues { it.remaining.isEmpty() }
-      completed.keys.forEach(pendingDrains::remove)
-      completed.values.map { it.future }
-    }
+    val drained =
+      synchronized(this) {
+        if (!activeSignals.remove(signal)) return
+        pendingDrains.values.forEach { it.remaining.remove(signal) }
+        val completed = pendingDrains.filterValues { it.remaining.isEmpty() }
+        completed.keys.forEach(pendingDrains::remove)
+        completed.values.map { it.future }
+      }
     drained.forEach { it.complete(Unit) }
   }
 
-  private fun build(): ImageFetcher {
-    return if (HttpClientManager.isMtls) {
+  private fun build(): ImageFetcher =
+    if (HttpClientManager.isMtls) {
       OkHttpImageFetcher.create(cacheDir)
     } else {
       CronetImageFetcher()
     }
-  }
+}
+
+private class PreparedRemoteImageCacheWrite(
+  private val reservation: RemoteImageCacheExecutor.Reservation,
+  private val diskCache: RemoteImageDiskCache,
+  private val claim: RemoteImageCacheClaim,
+  private val bytes: ByteArray,
+) : java.io.Closeable {
+  fun enqueue(): Boolean =
+    reservation.execute {
+      runCatching { diskCache.write(claim.cacheScope, claim.url, bytes) }
+    }
+
+  override fun close() = reservation.close()
 }
 
 private data class PendingDrain<T>(
@@ -258,7 +403,7 @@ private data class PendingDrain<T>(
 
 private sealed interface ImageFetcher {
   fun fetch(
-    url: String,
+    authorization: RemoteImageAuthorization,
     signal: CancellationSignal,
     onSuccess: (NativeByteBuffer) -> Unit,
     onFailure: (Exception) -> Unit,
@@ -276,25 +421,33 @@ private class CronetImageFetcher : ImageFetcher {
   private var onCacheCleared: ((Result<Long>) -> Unit)? = null
 
   override fun fetch(
-    url: String,
+    authorization: RemoteImageAuthorization,
     signal: CancellationSignal,
     onSuccess: (NativeByteBuffer) -> Unit,
     onFailure: (Exception) -> Unit,
   ) {
-    val rejected = synchronized(stateLock) {
-      if (draining) {
-        true
-      } else {
-        activeCount++
-        false
+    val rejected =
+      synchronized(stateLock) {
+        if (draining) {
+          true
+        } else {
+          activeCount++
+          false
+        }
       }
-    }
     if (rejected) return onFailure(IllegalStateException("Engine is draining"))
 
-    val callback = FetchCallback(onSuccess, onFailure, ::onComplete)
-    val requestBuilder = HttpClientManager.cronetEngine!!
-      .newUrlRequestBuilder(url, callback, HttpClientManager.cronetExecutor)
-    HttpClientManager.getAuthHeaders(url).forEach { (key, value) ->
+    val callback =
+      FetchCallback(
+        authorization,
+        onSuccess,
+        onFailure,
+        ::onComplete,
+      )
+    val requestBuilder =
+      HttpClientManager.cronetEngine!!
+        .newUrlRequestBuilder(authorization.url, callback, HttpClientManager.cronetExecutor)
+    authorization.headers.forEach { (key, value) ->
       requestBuilder.addHeader(key, value)
     }
     val request = requestBuilder.build()
@@ -303,32 +456,35 @@ private class CronetImageFetcher : ImageFetcher {
   }
 
   private fun onComplete() {
-    val didDrain = synchronized(stateLock) {
-      activeCount--
-      draining && activeCount == 0
-    }
+    val didDrain =
+      synchronized(stateLock) {
+        activeCount--
+        draining && activeCount == 0
+      }
     if (didDrain) {
       onDrained()
     }
   }
 
   override fun drain() {
-    val didDrain = synchronized(stateLock) {
-      if (draining) return
-      draining = true
-      activeCount == 0
-    }
+    val didDrain =
+      synchronized(stateLock) {
+        if (draining) return
+        draining = true
+        activeCount == 0
+      }
     if (didDrain) {
       onDrained()
     }
   }
 
   private fun onDrained() {
-    val onCacheCleared = synchronized(stateLock) {
-      val onCacheCleared = this.onCacheCleared
-      this.onCacheCleared = null
-      onCacheCleared
-    } ?: return
+    val onCacheCleared =
+      synchronized(stateLock) {
+        val onCacheCleared = this.onCacheCleared
+        this.onCacheCleared = null
+        onCacheCleared
+      } ?: return
 
     CoroutineScope(Dispatchers.IO).launch {
       val result = HttpClientManager.rebuildCronetEngine()
@@ -338,19 +494,21 @@ private class CronetImageFetcher : ImageFetcher {
   }
 
   override fun clearCache(onCleared: (Result<Long>) -> Unit) {
-    val alreadyClearing = synchronized(stateLock) {
-      if (onCacheCleared != null) {
-        true
-      } else {
-        onCacheCleared = onCleared
-        false
+    val alreadyClearing =
+      synchronized(stateLock) {
+        if (onCacheCleared != null) {
+          true
+        } else {
+          onCacheCleared = onCleared
+          false
+        }
       }
-    }
     if (alreadyClearing) return onCleared(Result.success(-1))
     drain()
   }
 
   private class FetchCallback(
+    private val authorization: RemoteImageAuthorization,
     private val onSuccess: (NativeByteBuffer) -> Unit,
     private val onFailure: (Exception) -> Unit,
     private val onComplete: () -> Unit,
@@ -358,12 +516,30 @@ private class CronetImageFetcher : ImageFetcher {
     private var buffer: NativeByteBuffer? = null
     private var wrapped: ByteBuffer? = null
     private var error: Exception? = null
+    private var redirectCount = 0
 
-    override fun onRedirectReceived(request: UrlRequest, info: UrlResponseInfo, newUrl: String) {
-      request.followRedirect()
+    override fun onRedirectReceived(
+      request: UrlRequest,
+      info: UrlResponseInfo,
+      newUrl: String,
+    ) {
+      val redirected = authorization.redirectedTo(newUrl)
+      val admitted =
+        redirectCount < MAX_REDIRECTS &&
+          HttpClientManager.admitRemoteImageRequest(redirected) {
+            redirectCount++
+            request.followRedirect()
+          }
+      if (!admitted) {
+        error = IOException("Redirect left the authorized request context")
+        request.cancel()
+      }
     }
 
-    override fun onResponseStarted(request: UrlRequest, info: UrlResponseInfo) {
+    override fun onResponseStarted(
+      request: UrlRequest,
+      info: UrlResponseInfo,
+    ) {
       if (info.httpStatusCode !in 200..299) {
         error = IOException("HTTP ${info.httpStatusCode}: ${info.httpStatusText}")
         return request.cancel()
@@ -388,18 +564,19 @@ private class CronetImageFetcher : ImageFetcher {
     override fun onReadCompleted(
       request: UrlRequest,
       info: UrlResponseInfo,
-      byteBuffer: ByteBuffer
+      byteBuffer: ByteBuffer,
     ) {
       try {
-        val buf = if (wrapped == null) {
-          buffer!!.run {
-            advance(byteBuffer.position())
-            ensureHeadroom()
-            wrapRemaining()
+        val buf =
+          if (wrapped == null) {
+            buffer!!.run {
+              advance(byteBuffer.position())
+              ensureHeadroom()
+              wrapRemaining()
+            }
+          } else {
+            wrapped
           }
-        } else {
-          wrapped
-        }
         request.read(buf)
       } catch (e: Exception) {
         error = e
@@ -407,25 +584,34 @@ private class CronetImageFetcher : ImageFetcher {
       }
     }
 
-    override fun onSucceeded(request: UrlRequest, info: UrlResponseInfo) {
+    override fun onSucceeded(
+      request: UrlRequest,
+      info: UrlResponseInfo,
+    ) {
       wrapped?.let { buffer!!.advance(it.position()) }
       onComplete()
       onSuccess(buffer!!)
     }
 
-    override fun onFailed(request: UrlRequest, info: UrlResponseInfo?, error: CronetException) {
+    override fun onFailed(
+      request: UrlRequest,
+      info: UrlResponseInfo?,
+      error: CronetException,
+    ) {
       buffer?.free()
       onComplete()
       onFailure(error)
     }
 
-    override fun onCanceled(request: UrlRequest, info: UrlResponseInfo?) {
+    override fun onCanceled(
+      request: UrlRequest,
+      info: UrlResponseInfo?,
+    ) {
       buffer?.free()
       onComplete()
       onFailure(error ?: OperationCanceledException())
     }
   }
-
 }
 
 private class OkHttpImageFetcher private constructor(
@@ -439,19 +625,25 @@ private class OkHttpImageFetcher private constructor(
     fun create(cacheDir: File): OkHttpImageFetcher {
       val dir = File(cacheDir, "okhttp")
 
-      val client = HttpClientManager.getClient().newBuilder()
-        .cache(Cache(File(dir, "thumbnails"), HttpClientManager.MEDIA_CACHE_SIZE_BYTES))
-        .build()
+      val client =
+        HttpClientManager
+          .getClient()
+          .newBuilder()
+          .cache(Cache(File(dir, "thumbnails"), HttpClientManager.MEDIA_CACHE_SIZE_BYTES))
+          .followRedirects(false)
+          .followSslRedirects(false)
+          .build()
 
       return OkHttpImageFetcher(client)
     }
   }
 
   private fun onComplete(): Exception? {
-    val shouldClose = synchronized(stateLock) {
-      activeCount--
-      draining && activeCount == 0
-    }
+    val shouldClose =
+      synchronized(stateLock) {
+        activeCount--
+        draining && activeCount == 0
+      }
     if (!shouldClose) return null
     return try {
       client.cache?.close()
@@ -462,55 +654,137 @@ private class OkHttpImageFetcher private constructor(
   }
 
   override fun fetch(
-    url: String,
+    authorization: RemoteImageAuthorization,
     signal: CancellationSignal,
     onSuccess: (NativeByteBuffer) -> Unit,
     onFailure: (Exception) -> Unit,
   ) {
-    val rejected = synchronized(stateLock) {
-      if (draining) {
-        true
-      } else {
-        activeCount++
-        false
+    val rejected =
+      synchronized(stateLock) {
+        if (draining) {
+          true
+        } else {
+          activeCount++
+          false
+        }
       }
-    }
     if (rejected) return onFailure(IllegalStateException("Client is draining"))
 
-    val requestBuilder = Request.Builder().url(url)
-    val call = client.newCall(requestBuilder.build())
-    signal.setOnCancelListener(call::cancel)
-
-    call.enqueue(object : Callback {
-      override fun onFailure(call: Call, e: IOException) {
-        onFailure(onComplete() ?: e)
-      }
-
-      override fun onResponse(call: Call, response: Response) {
-        var buffer: NativeByteBuffer? = null
-        var failure: Exception? = null
-        try {
-          response.use { buffer = readResponse(call, response) }
-        } catch (error: Exception) {
-          failure = error
-        }
-        val completionFailure = onComplete()
-        failure = failure ?: completionFailure
-        if (failure != null) {
-          try {
-            buffer?.free()
-          } catch (freeError: Exception) {
-            failure = failure ?: freeError
-          } finally {
-            buffer = null
-          }
-        }
-        failure?.let(onFailure) ?: onSuccess(buffer!!)
-      }
-    })
+    RedirectingRequest(authorization, signal, onSuccess, onFailure).startInitial()
   }
 
-  private fun readResponse(call: Call, response: Response): NativeByteBuffer {
+  private inner class RedirectingRequest(
+    private val initialAuthorization: RemoteImageAuthorization,
+    private val signal: CancellationSignal,
+    private val onSuccess: (NativeByteBuffer) -> Unit,
+    private val onFailure: (Exception) -> Unit,
+  ) {
+    private val terminal = AtomicBoolean(false)
+    private var activeCall: Call? = null
+    private var redirectCount = 0
+
+    init {
+      signal.setOnCancelListener { synchronized(this) { activeCall }?.cancel() }
+    }
+
+    fun startInitial() = startCall(initialAuthorization)
+
+    private fun startRedirect(authorization: RemoteImageAuthorization) {
+      val admitted = HttpClientManager.admitRemoteImageRequest(authorization) { startCall(authorization) }
+      if (!admitted) finishFailure(IOException("Redirect left the authorized request context"))
+    }
+
+    private fun startCall(authorization: RemoteImageAuthorization) {
+      if (signal.isCanceled) return finishFailure(OperationCanceledException())
+      val requestBuilder = Request.Builder().url(authorization.url)
+      authorization.headers.forEach(requestBuilder::addHeader)
+      val call = client.newCall(requestBuilder.build())
+      synchronized(this) { activeCall = call }
+      if (signal.isCanceled) call.cancel()
+      call.enqueue(
+        object : Callback {
+          override fun onFailure(
+            call: Call,
+            error: IOException,
+          ) = finishFailure(error)
+
+          override fun onResponse(
+            call: Call,
+            response: Response,
+          ) {
+            if (response.code in 300..399) {
+              followRedirect(response)
+            } else {
+              readTerminalResponse(call, response)
+            }
+          }
+        },
+      )
+    }
+
+    private fun followRedirect(response: Response) {
+      val location = response.header("Location")
+      val redirectedUrl = location?.let(response.request.url::resolve)?.toString()
+      response.close()
+      if (redirectCount >= MAX_REDIRECTS || redirectedUrl == null) {
+        finishFailure(IOException("Invalid or excessive remote image redirect"))
+        return
+      }
+      redirectCount++
+      startRedirect(initialAuthorization.redirectedTo(redirectedUrl))
+    }
+
+    private fun readTerminalResponse(
+      call: Call,
+      response: Response,
+    ) {
+      var buffer: NativeByteBuffer? = null
+      var failure: Exception? = null
+      try {
+        if (!HttpClientManager.isRemoteImageContextCurrent(
+            response.request.url.toString(),
+            initialAuthorization.declaredOrigin,
+            initialAuthorization.expectedGeneration,
+          )
+        ) {
+          throw IOException("Response left the authorized request context")
+        }
+        response.use { buffer = readResponse(call, response) }
+      } catch (error: Exception) {
+        failure = error
+      }
+      if (failure != null) {
+        buffer?.free()
+        finishFailure(failure)
+      } else {
+        finishSuccess(buffer!!)
+      }
+    }
+
+    private fun finishSuccess(buffer: NativeByteBuffer) {
+      if (!terminal.compareAndSet(false, true)) {
+        buffer.free()
+        return
+      }
+      val completionFailure = onComplete()
+      if (completionFailure == null) {
+        onSuccess(buffer)
+      } else {
+        buffer.free()
+        onFailure(completionFailure)
+      }
+    }
+
+    private fun finishFailure(error: Exception) {
+      if (!terminal.compareAndSet(false, true)) return
+      onFailure(onComplete() ?: error)
+    }
+  }
+
+  private fun readResponse(
+    call: Call,
+    response: Response,
+  ): NativeByteBuffer {
     if (!response.isSuccessful) {
       throw IOException("HTTP ${response.code}: ${response.message}")
     }
@@ -546,11 +820,12 @@ private class OkHttpImageFetcher private constructor(
   }
 
   override fun drain() {
-    val shouldClose = synchronized(stateLock) {
-      if (draining) return
-      draining = true
-      activeCount == 0
-    }
+    val shouldClose =
+      synchronized(stateLock) {
+        if (draining) return
+        draining = true
+        activeCount == 0
+      }
     if (shouldClose) {
       client.cache?.close()
     }

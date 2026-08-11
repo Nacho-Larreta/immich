@@ -92,6 +92,7 @@ dependencies {
   implementation libs.guava
   implementation libs.glide
   implementation libs.kotlinx.serialization.json
+  testImplementation libs.junit
 
   ksp libs.glide.ksp
   coreLibraryDesugaring libs.desugar.jdk.libs

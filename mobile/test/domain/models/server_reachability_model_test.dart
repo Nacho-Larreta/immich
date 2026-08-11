@@ -1,4 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:immich_mobile/domain/models/confirmed_server_access.model.dart';
+import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/domain/models/server_reachability.model.dart';
 
 void main() {
@@ -54,6 +56,29 @@ void main() {
 
       expect(loggedOut.phase, ReachabilityPhase.offline);
       expect(loggedOut.confirmedEndpoint, isNull);
+    });
+
+    test('can explicitly clear immutable server access proof', () {
+      final proof = ConfirmedServerAccess(
+        apiEndpoint: Uri.parse('https://photos.example.test/api'),
+        canonicalOrigin: Uri.parse('https://photos.example.test'),
+        schemePolicy: EndpointSchemePolicy.httpsOnly,
+        nativeContextGeneration: 4,
+        confirmed: true,
+        fenced: false,
+      );
+      final state = ReachabilityState(
+        phase: ReachabilityPhase.probing,
+        sessionEpoch: 1,
+        confirmedEndpoint: proof.apiEndpoint,
+        serverAccess: proof,
+        probeGeneration: 2,
+      );
+
+      final cleared = state.copyWith(confirmedEndpoint: null, serverAccess: null);
+
+      expect(cleared.confirmedEndpoint, isNull);
+      expect(cleared.serverAccess, isNull);
     });
 
     test('rejects negative generations', () {

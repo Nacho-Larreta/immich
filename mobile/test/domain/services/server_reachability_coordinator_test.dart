@@ -3,14 +3,19 @@ import 'dart:collection';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:immich_mobile/domain/interfaces/cancellable_request.interface.dart';
+import 'package:immich_mobile/domain/interfaces/confirmed_server_access.interface.dart';
 import 'package:immich_mobile/domain/interfaces/connectivity_monitor.interface.dart';
 import 'package:immich_mobile/domain/interfaces/endpoint_activation.interface.dart';
 import 'package:immich_mobile/domain/interfaces/endpoint_probe_cycle.interface.dart';
 import 'package:immich_mobile/domain/interfaces/reachability_state_publisher.interface.dart';
+import 'package:immich_mobile/domain/interfaces/reachability_failure_reporter.interface.dart';
 import 'package:immich_mobile/domain/interfaces/reconciliation.interface.dart';
 import 'package:immich_mobile/domain/interfaces/request_context_lease.interface.dart';
 import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
+import 'package:immich_mobile/domain/models/confirmed_server_access.model.dart';
 import 'package:immich_mobile/domain/models/offline_result.model.dart';
+import 'package:immich_mobile/domain/models/media_request.model.dart';
+import 'package:immich_mobile/domain/models/remote_media_access.model.dart';
 import 'package:immich_mobile/domain/models/server_reachability.model.dart';
 import 'package:immich_mobile/domain/services/server_reachability_coordinator.dart';
 import 'package:immich_mobile/domain/services/session_epoch_controller.dart';
@@ -18,6 +23,47 @@ import 'package:immich_mobile/domain/services/session_epoch_controller.dart';
 import 'support/manual_reachability_scheduler.dart';
 
 void main() {
+  test('rehydrated HTTPS proof flows through coordinator into a generation-bound media request', () async {
+    final connectivity = _ConnectivityMonitor(initialAvailability: Future.value(TransportAvailability.available));
+    final harness = _Harness(connectivity: connectivity);
+    final probe = harness.probes.enqueuePending();
+
+    await harness.startSession();
+    final access = mapRemoteMediaAccess(harness.coordinator.state);
+    final request = RemoteMediaRequest(
+      requestId: 1,
+      resource: Uri.parse('https://cached.example.test/api/assets/1/thumbnail'),
+      policy: access.policy,
+      kind: MediaRequestKind.thumbnail,
+      preferEncoded: false,
+      expectedContextGeneration: access.expectedContextGeneration,
+    );
+
+    expect(harness.coordinator.state.phase, ReachabilityPhase.probing);
+    expect(request.policy, RemoteMediaPolicy.cacheThenNetwork);
+    expect(request.expectedContextGeneration, 11);
+    probe.complete(const EndpointProbeResult.rejected(OfflineErrorCode.cancelled));
+    await harness.dispose();
+  });
+
+  for (final policy in [EndpointSchemePolicy.explicitlyApprovedHttp, EndpointSchemePolicy.registeredLocalHttp]) {
+    test('${policy.name} starts cache-only and immediate available probe publishes online', () async {
+      final connectivity = _ConnectivityMonitor(initialAvailability: Future.value(TransportAvailability.available));
+      final harness = _Harness(connectivity: connectivity);
+      harness.probes.enqueueCompleted(_validatedEndpoint(policy: policy));
+      harness.activations.enqueueSuccess();
+      harness.reconciliations.enqueueSuccess();
+
+      await harness.startSession(endpoint: Uri.parse('http://photos.example.test/family/api'), policy: policy);
+      await pumpEventQueue();
+
+      expect(harness.probes.identities, hasLength(1));
+      expect(harness.coordinator.state.phase, ReachabilityPhase.online);
+      expect(mapRemoteMediaAccess(harness.coordinator.state).policy, RemoteMediaPolicy.cacheThenNetwork);
+      await harness.dispose();
+    });
+  }
+
   test('keeps availability unknown and starts a probe exactly at 750ms', () async {
     final harness = _Harness();
     final probe = harness.probes.enqueuePending();
@@ -45,11 +91,10 @@ void main() {
     final probe = harness.probes.enqueuePending();
     final start = harness.coordinator.start();
     await pumpEventQueue();
-    harness.coordinator.activateSession();
-
+    final activation = harness.coordinator.activateSession();
     connectivity.emit(TransportAvailability.available);
     initialAvailability.complete(TransportAvailability.unavailable);
-    await start;
+    await Future.wait([start, activation]);
     harness.scheduler.elapse(const Duration(milliseconds: 750));
     await pumpEventQueue();
 
@@ -136,6 +181,7 @@ void main() {
     await pumpEventQueue();
     expect(staleActivation.cancelCount, 0);
 
+    harness.confirmedAccess.proof = _proofFor(staleIdentity.endpoint.apiEndpoint, staleIdentity.endpoint.schemePolicy);
     staleActivation.complete(
       OfflineResult.success(
         EndpointActivationReceipt(
@@ -157,19 +203,21 @@ void main() {
     final connectivity = _ConnectivityMonitor(initialAvailability: Future.value(TransportAvailability.available));
     final lease = _RequestContextLease(localActive: true);
     final harness = _Harness(connectivity: connectivity, requestContextLease: lease);
-    final probe = harness.probes.enqueuePending();
+    harness.probes.enqueuePending();
+    final replacementProbe = harness.probes.enqueuePending();
 
     await harness.startSession();
     connectivity.emit(TransportAvailability.available);
 
     expect(lease.transportInvalidations, 2);
     expect(lease.blocked, isTrue);
-    expect(harness.probes.identities, isEmpty);
+    expect(harness.probes.identities, hasLength(1));
+    await pumpEventQueue();
     harness.scheduler.elapse(const Duration(milliseconds: 750));
     await pumpEventQueue();
-    expect(harness.probes.identities, hasLength(1));
+    expect(harness.probes.identities, hasLength(2));
 
-    probe.complete(const EndpointProbeResult.rejected(OfflineErrorCode.cancelled));
+    replacementProbe.complete(const EndpointProbeResult.rejected(OfflineErrorCode.cancelled));
     await harness.dispose();
   });
 
@@ -367,9 +415,9 @@ void main() {
     final harness = _Harness();
 
     await Future.wait([harness.coordinator.start(), harness.coordinator.start()]);
-    harness.coordinator.activateSession();
+    await harness.coordinator.activateSession();
     await harness.coordinator.logout();
-    harness.coordinator.activateSession();
+    await harness.coordinator.activateSession();
     await harness.coordinator.dispose();
 
     expect(harness.connectivity.listenCount, 1);
@@ -421,14 +469,93 @@ void main() {
 
   test('maps a thrown probe exception to offline without activation', () async {
     final harness = _Harness();
-    harness.probes.enqueueException(StateError('probe failed'));
+    harness.probes.enqueueException(
+      StateError(
+        'probe failed at https://photos.example.test/api; '
+        'Authorization: Bearer bearer-secret; '
+        'Proxy-Authorization=Basic dXNlcjpwYXNz; '
+        'token=token-secret; Cookie: session=cookie-secret',
+      ),
+    );
     await harness.startSession();
 
     await harness.runCycle();
 
     expect(harness.coordinator.state.phase, ReachabilityPhase.offline);
     expect(harness.activations.requests, isEmpty);
+    final failure = harness.failures.failures.single;
+    expect(failure.code, ReachabilityFailureCode.probeException);
+    expect(failure.reason, ReachabilityFailureReason.exception);
+    expect(failure.causeType, 'StateError');
+    expect(failure.causeMessage, contains('probe failed'));
+    expect(failure.causeMessage, isNot(contains('https://photos.example.test/api')));
+    expect(failure.causeMessage, isNot(contains('bearer-secret')));
+    expect(failure.causeMessage, isNot(contains('dXNlcjpwYXNz')));
+    expect(failure.causeMessage, isNot(contains('token-secret')));
+    expect(failure.causeMessage, isNot(contains('cookie-secret')));
+    expect(
+      failure.causeMessage,
+      'Bad state: probe failed at [redacted-url] authorization=[redacted] '
+      'proxy-authorization=[redacted] token=[redacted] cookie=[redacted]',
+    );
+    expect(failure.stackTrace, isNotNull);
     await harness.dispose();
+  });
+
+  test('sanitizer redacts folded credential headers and bare authentication schemes', () {
+    final sanitized = sanitizeReachabilityFailureMessage(
+      'probe failed with Bearer bare-bearer and Basic bare-basic\r\n'
+      'Authorization:\r\n Bearer folded-bearer\r\n'
+      'Cookie: session=cookie-secret; Path=/\r\n'
+      'Set-Cookie: refresh=set-cookie-secret; HttpOnly\r\n'
+      'Proxy-Authorization: Basic folded-basic',
+    );
+
+    for (final secret in [
+      'folded-bearer',
+      'cookie-secret',
+      'set-cookie-secret',
+      'folded-basic',
+      'bare-bearer',
+      'bare-basic',
+    ]) {
+      expect(sanitized, isNot(contains(secret)));
+    }
+    expect(sanitized, contains('authorization=[redacted]'));
+    expect(sanitized, contains('cookie=[redacted]'));
+    expect(sanitized, contains('set-cookie=[redacted]'));
+    expect(sanitized, contains('proxy-authorization=[redacted]'));
+    expect(sanitized, contains('[redacted-auth]'));
+  });
+
+  test('availability event owns and reports pipeline cancellation failure without a zone error', () async {
+    final uncaught = <Object>[];
+    late _Harness harness;
+    late _ControlledRequest<EndpointProbeResult> pending;
+    final cancelError = StateError('transport review cancel failed');
+
+    await runZonedGuarded(() async {
+      harness = _Harness();
+      pending = harness.probes.enqueuePending(cancelError: cancelError, completesOnCancel: false);
+      await harness.startSession();
+      harness.connectivity.emit(TransportAvailability.available);
+      harness.scheduler.elapse(const Duration(milliseconds: 750));
+      await pumpEventQueue();
+
+      harness.connectivity.emit(TransportAvailability.unavailable);
+      pending.complete(const EndpointProbeResult.rejected(OfflineErrorCode.cancelled));
+      await pumpEventQueue();
+
+      final failure = harness.failures.failures.singleWhere(
+        (failure) => failure.code == ReachabilityFailureCode.transportReviewCancellationException,
+      );
+      expect(failure.causeType, 'StateError');
+      expect(failure.causeMessage, contains('transport review cancel failed'));
+      expect(failure.stackTrace, isNotNull);
+      await harness.dispose();
+    }, (error, _) => uncaught.add(error));
+
+    expect(uncaught, isEmpty);
   });
 
   test('maps a thrown activation exception to offline without reconciliation', () async {
@@ -511,9 +638,11 @@ final class _Harness {
   final _ConnectivityMonitor connectivity;
   final RequestContextLeasePort requestContextLease;
   final probes = _ProbeCycles();
-  final activations = _Activations();
+  final confirmedAccess = _ConfirmedAccess();
+  late final activations = _Activations(confirmedAccess);
   final reconciliations = _Reconciliations();
   final publisher = _Publisher();
+  final failures = _FailureReporter();
 
   late final coordinator = ServerReachabilityCoordinator(
     epochs: epochs,
@@ -524,11 +653,15 @@ final class _Harness {
     statePublisher: publisher,
     scheduler: scheduler,
     requestContextLease: requestContextLease,
+    confirmedServerAccess: confirmedAccess,
+    failureReporter: failures,
   );
 
-  Future<void> startSession() async {
+  Future<void> startSession({Uri? endpoint, EndpointSchemePolicy policy = EndpointSchemePolicy.httpsOnly}) async {
     await coordinator.start();
-    coordinator.activateSession(confirmedEndpoint: Uri.parse('https://cached.example.test/api'));
+    final activeEndpoint = endpoint ?? Uri.parse('https://cached.example.test/api');
+    confirmedAccess.proof = _proofFor(activeEndpoint, policy);
+    await coordinator.activateSession(confirmedEndpoint: activeEndpoint);
   }
 
   Future<void> runCycle() async {
@@ -538,6 +671,13 @@ final class _Harness {
   }
 
   Future<void> dispose() => coordinator.dispose();
+}
+
+final class _FailureReporter implements ReachabilityFailureReporterPort {
+  final failures = <ReachabilityFailure>[];
+
+  @override
+  void report(ReachabilityFailure failure) => failures.add(failure);
 }
 
 final class _RequestContextLease implements RequestContextLeasePort {
@@ -656,6 +796,9 @@ final class _ProbeCycles implements EndpointProbeCyclePort {
 }
 
 final class _Activations implements EndpointActivationPort {
+  _Activations(this.confirmedAccess);
+
+  final _ConfirmedAccess confirmedAccess;
   final Queue<CancellableRequest<OfflineResult<EndpointActivationReceipt>>> _operations = Queue();
   final List<EndpointActivationRequest> requests = [];
 
@@ -682,6 +825,7 @@ final class _Activations implements EndpointActivationPort {
     requests.add(request);
     final operation = _operations.removeFirst();
     if (operation is _ReceiptRequest) {
+      confirmedAccess.proof = _proofFor(request.endpoint.apiEndpoint, request.endpoint.schemePolicy);
       operation.complete(
         OfflineResult.success(
           EndpointActivationReceipt(
@@ -694,6 +838,24 @@ final class _Activations implements EndpointActivationPort {
     }
     return operation;
   }
+}
+
+final class _ConfirmedAccess implements ConfirmedServerAccessPort {
+  ConfirmedServerAccess? proof;
+
+  @override
+  ConfirmedServerAccess? read() => proof;
+}
+
+ConfirmedServerAccess _proofFor(Uri endpoint, EndpointSchemePolicy policy) {
+  return ConfirmedServerAccess(
+    apiEndpoint: endpoint,
+    canonicalOrigin: Uri.parse(endpoint.origin),
+    schemePolicy: policy,
+    nativeContextGeneration: 11,
+    confirmed: true,
+    fenced: false,
+  );
 }
 
 final class _Reconciliations implements ReconciliationPort {

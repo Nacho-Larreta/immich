@@ -3,7 +3,9 @@ import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/infrastructure/repositories/network.repository.dart';
 
 final class NetworkAuthRequestContextAdapter implements AuthRequestContextPort {
-  const NetworkAuthRequestContextAdapter();
+  const NetworkAuthRequestContextAdapter(this._currentSessionEpoch);
+
+  final int Function() _currentSessionEpoch;
 
   @override
   void block() {
@@ -12,6 +14,7 @@ final class NetworkAuthRequestContextAdapter implements AuthRequestContextPort {
 
   @override
   Future<void> install({
+    required Uri apiEndpoint,
     required Uri canonicalOrigin,
     required String accessToken,
     required EndpointSchemePolicy schemePolicy,
@@ -23,9 +26,11 @@ final class NetworkAuthRequestContextAdapter implements AuthRequestContextPort {
     }
     return NetworkRepository.replaceRequestContext(
       headers: customHeaders,
+      apiEndpoint: apiEndpoint,
       canonicalOrigin: canonicalOrigin,
       token: accessToken,
       schemePolicy: schemePolicy,
+      sessionEpoch: _currentSessionEpoch(),
     );
   }
 

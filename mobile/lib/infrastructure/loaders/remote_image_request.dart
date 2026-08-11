@@ -10,12 +10,19 @@ final class RemoteMediaLoadFailure implements Exception {
 }
 
 class RemoteImageRequest extends ImageRequest {
-  RemoteImageRequest({required this.media, required this.uri, required this.policy, required this.kind});
+  RemoteImageRequest({
+    required this.media,
+    required this.uri,
+    required this.policy,
+    required this.kind,
+    this.expectedContextGeneration,
+  });
 
   final RemoteMediaPort<OwnedRemoteMediaPayload> media;
   final String uri;
   final media_domain.RemoteMediaPolicy policy;
   final media_domain.MediaRequestKind kind;
+  final int? expectedContextGeneration;
   CancellableMediaRequest<OwnedRemoteMediaPayload>? _operation;
   OfflineErrorCode? lastFailure;
 
@@ -96,6 +103,7 @@ class RemoteImageRequest extends ImageRequest {
         policy: policy,
         kind: kind,
         preferEncoded: preferEncoded,
+        expectedContextGeneration: expectedContextGeneration,
       ),
     );
     final result = await operation.result;

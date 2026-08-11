@@ -11,6 +11,7 @@ import 'package:immich_mobile/domain/models/album/remote_album_scope.model.dart'
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/events.model.dart';
 import 'package:immich_mobile/domain/models/server_access.model.dart';
+import 'package:immich_mobile/domain/models/remote_media_access.model.dart';
 import 'package:immich_mobile/domain/services/timeline.service.dart';
 import 'package:immich_mobile/domain/services/remote_album_viewer_session.dart';
 import 'package:immich_mobile/domain/utils/event_stream.dart';
@@ -146,6 +147,7 @@ class _AssetViewerState extends ConsumerState<AssetViewer> {
   late int _totalAssets = ref.read(timelineServiceProvider).totalAssets;
 
   StreamSubscription? _reloadSubscription;
+  ProviderSubscription<RemoteMediaAccessSnapshot>? _remoteAccessSubscription;
   KeepAliveLink? _stackChildrenKeepAlive;
 
   void _onTapNavigate(int direction) {
@@ -168,6 +170,11 @@ class _AssetViewerState extends ConsumerState<AssetViewer> {
     if (asset != null) _stackChildrenKeepAlive = ref.read(stackChildrenNotifier(asset).notifier).ref.keepAlive();
 
     _reloadSubscription = EventStream.shared.listen(_onEvent);
+    _remoteAccessSubscription = ref.listenManual(
+      remoteMediaAccessSnapshotProvider,
+      (_, access) => _preloader.remoteAccessChanged(access),
+      fireImmediately: true,
+    );
 
     WidgetsBinding.instance.addPostFrameCallback(_onAssetInit);
 
@@ -180,6 +187,7 @@ class _AssetViewerState extends ConsumerState<AssetViewer> {
     _pageController.dispose();
     _preloader.dispose();
     _reloadSubscription?.cancel();
+    _remoteAccessSubscription?.close();
     _stackChildrenKeepAlive?.close();
 
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);

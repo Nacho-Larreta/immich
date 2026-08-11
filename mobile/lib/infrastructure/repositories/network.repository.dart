@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
+import 'package:immich_mobile/domain/models/network_uri.model.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/infrastructure/http/canonical_origin_client.dart';
 import 'package:immich_mobile/infrastructure/http/network_web_socket_lifecycle.dart';
@@ -17,10 +18,30 @@ import 'package:ok_http/ok_http.dart';
 import 'package:web_socket/web_socket.dart';
 
 typedef NativeRequestContextReplacement =
-    Future<void> Function(Map<String, String> headers, String? canonicalOrigin, String? accessToken);
+    Future<void> Function(Map<String, String> headers, String? canonicalOrigin, String? accessToken, int sessionEpoch);
 typedef NativeRequestContextFailClosed = Future<void> Function();
 
 enum NetworkContextRole { rootWriter, attachedWorker }
+
+final class NativeServerAccessEvidence {
+  const NativeServerAccessEvidence({
+    required this.apiEndpoint,
+    required this.canonicalOrigin,
+    required this.schemePolicy,
+    required this.sessionEpoch,
+    required this.generation,
+    required this.confirmed,
+    required this.fenced,
+  });
+
+  final Uri? apiEndpoint;
+  final Uri? canonicalOrigin;
+  final EndpointSchemePolicy? schemePolicy;
+  final int sessionEpoch;
+  final int generation;
+  final bool confirmed;
+  final bool fenced;
+}
 
 final class NetworkTransportDrainTimeout implements Exception {
   const NetworkTransportDrainTimeout(this.timeout);
@@ -41,6 +62,15 @@ class NetworkRepository {
   static EndpointSchemePolicy? _activeSchemePolicy;
   static int? _nativeGeneration;
   static var _transportFenced = false;
+  static NativeServerAccessEvidence _serverAccessEvidence = const NativeServerAccessEvidence(
+    apiEndpoint: null,
+    canonicalOrigin: null,
+    schemePolicy: null,
+    sessionEpoch: 0,
+    generation: 0,
+    confirmed: false,
+    fenced: true,
+  );
   static NetworkContextRole _contextRole = NetworkContextRole.rootWriter;
   static _NativeRequestContextFingerprint? _activeFingerprint;
   static const _transportDrainTimeout = Duration(seconds: 5);
@@ -78,6 +108,18 @@ class NetworkRepository {
   ) {
     _contextRole = NetworkContextRole.rootWriter;
     _activeFingerprint = null;
+    _activeSchemePolicy = null;
+    _nativeGeneration = null;
+    _transportFenced = false;
+    _serverAccessEvidence = const NativeServerAccessEvidence(
+      apiEndpoint: null,
+      canonicalOrigin: null,
+      schemePolicy: null,
+      sessionEpoch: 0,
+      generation: 0,
+      confirmed: false,
+      fenced: true,
+    );
     _requestOriginGuard.invalidate();
     return _init(
       replaceNativeContext: replaceNativeContext,
@@ -114,7 +156,7 @@ class NetworkRepository {
       await drainTransport();
       var nativeContextConfirmed = false;
       try {
-        await replaceNativeContext(restored.customHeaders, restored.canonicalOrigin?.origin, restored.accessToken);
+        await replaceNativeContext(restored.customHeaders, restored.canonicalOrigin?.origin, restored.accessToken, 0);
         nativeContextConfirmed = true;
         await bindNativeClient();
         _publishContext(
@@ -123,6 +165,8 @@ class NetworkRepository {
               ? const RequestOriginContext.cleared()
               : RequestOriginContext.restricted([restored.canonicalOrigin!]),
           restored.schemePolicy,
+          restored.apiEndpoint,
+          0,
         );
         if (_requestOriginGuard.isCurrent(transition)) {
           _activeFingerprint = fingerprint;
@@ -193,6 +237,8 @@ class NetworkRepository {
           : origin.scheme == 'https'
           ? EndpointSchemePolicy.httpsOnly
           : EndpointSchemePolicy.registeredLocalHttp,
+      null,
+      snapshot.sessionEpoch,
     );
   }
 
@@ -233,21 +279,28 @@ class NetworkRepository {
     }
     return replaceRequestContext(
       headers: headers,
+      apiEndpoint: activeEndpoint,
       canonicalOrigin: activeOrigin,
       token: token ?? (authenticatedSessionReady ? Store.tryGet(StoreKey.accessToken) : null),
       schemePolicy: policy,
+      sessionEpoch: _serverAccessEvidence.sessionEpoch,
     );
   }
 
   static Future<void> replaceRequestContext({
     required Map<String, String> headers,
+    required Uri? apiEndpoint,
     required Uri? canonicalOrigin,
     required String? token,
     required EndpointSchemePolicy? schemePolicy,
+    required int sessionEpoch,
   }) async {
     _ensureRootWriter();
     if (token != null && canonicalOrigin == null) {
       throw ArgumentError('A token requires a canonical origin');
+    }
+    if (sessionEpoch < 0) {
+      throw ArgumentError.value(sessionEpoch, 'sessionEpoch', 'Session epoch must not be negative');
     }
     if (headers.isNotEmpty && canonicalOrigin == null) {
       throw ArgumentError('Custom headers require a canonical origin');
@@ -256,6 +309,15 @@ class NetworkRepository {
       throw ArgumentError('An endpoint scheme policy requires a canonical origin');
     }
     final origin = canonicalOrigin == null ? null : validateCanonicalOrigin(canonicalOrigin);
+    if ((apiEndpoint == null) != (origin == null)) {
+      throw ArgumentError('An API endpoint and canonical origin must be installed or cleared together');
+    }
+    if (apiEndpoint != null) {
+      validateHttpEndpoint(apiEndpoint, 'apiEndpoint');
+      if (apiEndpoint.origin != origin!.origin) {
+        throw ArgumentError('The API endpoint must belong to the canonical origin');
+      }
+    }
     if (origin != null) {
       final policy = schemePolicy;
       if (policy == null) {
@@ -264,7 +326,14 @@ class NetworkRepository {
       validateEndpointSchemePolicy(origin, policy);
     }
     _validateHeaders(headers);
-    final fingerprint = _NativeRequestContextFingerprint(headers: headers, canonicalOrigin: origin, token: token);
+    final fingerprint = _NativeRequestContextFingerprint(
+      headers: headers,
+      apiEndpoint: apiEndpoint,
+      canonicalOrigin: origin,
+      schemePolicy: schemePolicy,
+      token: token,
+      sessionEpoch: sessionEpoch,
+    );
     if (_requestOriginGuard.context.nativeContextConfirmed && _activeFingerprint == fingerprint) {
       _activeSchemePolicy = schemePolicy;
       return;
@@ -275,13 +344,15 @@ class NetworkRepository {
       await _fenceAndDrainTransport();
       var nativeContextConfirmed = false;
       try {
-        await networkApi.replaceRequestContext(headers, origin?.origin, token);
+        await networkApi.replaceRequestContext(headers, origin?.origin, token, sessionEpoch);
         nativeContextConfirmed = true;
         await _bindNativeClient();
         _publishContext(
           transition,
           origin == null ? const RequestOriginContext.cleared() : RequestOriginContext.restricted([origin]),
           schemePolicy,
+          apiEndpoint,
+          sessionEpoch,
         );
         if (_requestOriginGuard.isCurrent(transition)) {
           _activeFingerprint = fingerprint;
@@ -298,13 +369,20 @@ class NetworkRepository {
   }
 
   static void blockRequests() {
-    _requestOriginGuard.invalidate();
+    _blockForContextTransition();
     _confirmedBlockedClearTransition = null;
     _activeFingerprint = null;
   }
 
   static Future<void> clearRequestContext() {
-    return replaceRequestContext(headers: const {}, canonicalOrigin: null, token: null, schemePolicy: null);
+    return replaceRequestContext(
+      headers: const {},
+      apiEndpoint: null,
+      canonicalOrigin: null,
+      token: null,
+      schemePolicy: null,
+      sessionEpoch: _serverAccessEvidence.sessionEpoch,
+    );
   }
 
   static bool hasConfirmedRequestContext(Uri canonicalOrigin) {
@@ -316,6 +394,8 @@ class NetworkRepository {
   }
 
   static EndpointSchemePolicy? get activeEndpointSchemePolicy => _activeSchemePolicy;
+
+  static NativeServerAccessEvidence get serverAccessEvidence => _serverAccessEvidence;
 
   static Future<void> purgeRequestContext() {
     _ensureRootWriter();
@@ -363,7 +443,7 @@ class NetworkRepository {
       }
       var nativeContextConfirmed = false;
       try {
-        await replaceNativeContext(const {}, null, null);
+        await replaceNativeContext(const {}, null, null, _serverAccessEvidence.sessionEpoch);
         nativeContextConfirmed = true;
         await bindNativeClient();
         if (_requestOriginGuard.isCurrent(transition)) {
@@ -384,6 +464,15 @@ class NetworkRepository {
     if (_confirmedBlockedClearTransition != null && _requestOriginGuard.isCurrent(_confirmedBlockedClearTransition!)) {
       _requestOriginGuard.publish(_confirmedBlockedClearTransition!, const RequestOriginContext.cleared());
       _activeSchemePolicy = null;
+      _serverAccessEvidence = NativeServerAccessEvidence(
+        apiEndpoint: null,
+        canonicalOrigin: null,
+        schemePolicy: null,
+        sessionEpoch: _serverAccessEvidence.sessionEpoch,
+        generation: _nativeGeneration ?? _serverAccessEvidence.generation,
+        confirmed: true,
+        fenced: _transportFenced,
+      );
       _confirmedBlockedClearTransition = null;
     }
   }
@@ -415,6 +504,15 @@ class NetworkRepository {
 
   static int _blockForContextTransition() {
     _confirmedBlockedClearTransition = null;
+    _serverAccessEvidence = NativeServerAccessEvidence(
+      apiEndpoint: _serverAccessEvidence.apiEndpoint,
+      canonicalOrigin: _serverAccessEvidence.canonicalOrigin,
+      schemePolicy: _serverAccessEvidence.schemePolicy,
+      sessionEpoch: _serverAccessEvidence.sessionEpoch,
+      generation: _serverAccessEvidence.generation,
+      confirmed: false,
+      fenced: true,
+    );
     return _requestOriginGuard.block();
   }
 
@@ -449,17 +547,33 @@ class NetworkRepository {
     }
   }
 
-  static void _publishContext(int transition, RequestOriginContext context, EndpointSchemePolicy? schemePolicy) {
+  static void _publishContext(
+    int transition,
+    RequestOriginContext context,
+    EndpointSchemePolicy? schemePolicy,
+    Uri? apiEndpoint,
+    int sessionEpoch,
+  ) {
     if (_requestOriginGuard.isCurrent(transition)) {
       _requestOriginGuard.publish(transition, context);
       _activeSchemePolicy = schemePolicy;
       _confirmedBlockedClearTransition = null;
+      _serverAccessEvidence = NativeServerAccessEvidence(
+        apiEndpoint: apiEndpoint,
+        canonicalOrigin: context.allowedOrigins.length == 1 ? context.allowedOrigins.single : null,
+        schemePolicy: schemePolicy,
+        sessionEpoch: sessionEpoch,
+        generation: _nativeGeneration ?? 0,
+        confirmed: context.nativeContextConfirmed,
+        fenced: _transportFenced,
+      );
     }
   }
 }
 
 final class StoredNativeRequestContext {
   const StoredNativeRequestContext._({
+    required this.apiEndpoint,
     required this.canonicalOrigin,
     required this.accessToken,
     required this.schemePolicy,
@@ -467,7 +581,7 @@ final class StoredNativeRequestContext {
   });
 
   const StoredNativeRequestContext.cleared()
-    : this._(canonicalOrigin: null, accessToken: null, schemePolicy: null, customHeaders: const {});
+    : this._(apiEndpoint: null, canonicalOrigin: null, accessToken: null, schemePolicy: null, customHeaders: const {});
 
   factory StoredNativeRequestContext.restore({
     required String? endpoint,
@@ -495,6 +609,7 @@ final class StoredNativeRequestContext {
       final origin = canonicalOriginOfEndpoint(endpointUri);
       validateEndpointSchemePolicy(origin, policy);
       return StoredNativeRequestContext._(
+        apiEndpoint: endpointUri,
         canonicalOrigin: origin,
         accessToken: accessToken,
         schemePolicy: policy,
@@ -505,6 +620,7 @@ final class StoredNativeRequestContext {
     }
   }
 
+  final Uri? apiEndpoint;
   final Uri? canonicalOrigin;
   final String? accessToken;
   final EndpointSchemePolicy? schemePolicy;
@@ -540,32 +656,51 @@ final class _NetworkContextQueue {
 final class _NativeRequestContextFingerprint {
   _NativeRequestContextFingerprint({
     required Map<String, String> headers,
+    required this.apiEndpoint,
     required this.canonicalOrigin,
+    required this.schemePolicy,
     required this.token,
+    required this.sessionEpoch,
   }) : headers = Map.unmodifiable({for (final entry in headers.entries) entry.key.toLowerCase(): entry.value});
 
   factory _NativeRequestContextFingerprint.fromStored(StoredNativeRequestContext context) =>
       _NativeRequestContextFingerprint(
         headers: context.customHeaders,
+        apiEndpoint: context.apiEndpoint,
         canonicalOrigin: context.canonicalOrigin,
+        schemePolicy: context.schemePolicy,
         token: context.accessToken,
+        sessionEpoch: 0,
       );
 
   final Map<String, String> headers;
+  final Uri? apiEndpoint;
   final Uri? canonicalOrigin;
+  final EndpointSchemePolicy? schemePolicy;
   final String? token;
+  final int sessionEpoch;
 
   @override
   bool operator ==(Object other) =>
       other is _NativeRequestContextFingerprint &&
+      apiEndpoint == other.apiEndpoint &&
       canonicalOrigin == other.canonicalOrigin &&
+      schemePolicy == other.schemePolicy &&
       token == other.token &&
+      sessionEpoch == other.sessionEpoch &&
       mapEquals(headers, other.headers);
 
   @override
   int get hashCode {
     final names = headers.keys.toList(growable: false)..sort();
-    return Object.hash(canonicalOrigin, token, Object.hashAll(names.map((name) => Object.hash(name, headers[name]))));
+    return Object.hash(
+      apiEndpoint,
+      canonicalOrigin,
+      schemePolicy,
+      token,
+      sessionEpoch,
+      Object.hashAll(names.map((name) => Object.hash(name, headers[name]))),
+    );
   }
 }
 

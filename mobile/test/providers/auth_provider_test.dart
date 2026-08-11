@@ -71,7 +71,13 @@ void main() {
       ),
     );
     registerFallbackValue(
-      NativeRequestContext(canonicalOrigin: null, accessToken: null, schemePolicy: null, customHeaders: const {}),
+      NativeRequestContext(
+        apiEndpoint: null,
+        canonicalOrigin: null,
+        accessToken: null,
+        schemePolicy: null,
+        customHeaders: const {},
+      ),
     );
     registerFallbackValue(
       ConfirmedServerEndpoint(
@@ -1012,6 +1018,7 @@ final class _RecordingAuthRequestContext implements AuthRequestContextPort {
 
   @override
   Future<void> install({
+    required Uri apiEndpoint,
     required Uri canonicalOrigin,
     required String accessToken,
     required EndpointSchemePolicy schemePolicy,
@@ -1232,6 +1239,7 @@ final class _ActivationFixture {
     when(() => apiGraph.install(preparedGraph)).thenAnswer((_) async {});
     when(nativeContext.snapshot).thenReturn(
       NativeRequestContext(
+        apiEndpoint: Uri.parse('https://old.test/api'),
         canonicalOrigin: Uri.parse('https://old.test'),
         accessToken: 'old-token',
         schemePolicy: EndpointSchemePolicy.httpsOnly,

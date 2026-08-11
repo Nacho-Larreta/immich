@@ -39,7 +39,7 @@ void main() {
   tearDownAll(() => db.close());
 
   Future<void> init() => NetworkRepository.initForTest(
-    replaceNativeContext: (headers, origin, token) async {
+    replaceNativeContext: (headers, origin, token, sessionEpoch) async {
       replacements.add(_NativeReplacement(headers, origin, token));
     },
   );
@@ -93,6 +93,26 @@ void main() {
     expect(replacements.single, const _NativeReplacement({'X-Server': 'header'}, 'https://photos.test', 'token'));
     expect(NetworkRepository.hasConfirmedRequestContext(Uri.parse('https://photos.test')), isTrue);
     expect(NetworkRepository.activeEndpointSchemePolicy, EndpointSchemePolicy.httpsOnly);
+    expect(NetworkRepository.serverAccessEvidence.apiEndpoint, Uri.parse('https://photos.test/api'));
+  });
+
+  test('runtime proof is immutable when Store changes and is replaced only by a runtime transition', () async {
+    await _storeSession(endpoint: 'https://photos.test/api', policy: EndpointSchemePolicy.httpsOnly, ready: true);
+    await init();
+    final restored = NetworkRepository.serverAccessEvidence;
+
+    await Store.put(StoreKey.serverEndpoint, 'https://photos.test/changed-api');
+    await Store.put(StoreKey.serverEndpointSchemePolicy, EndpointSchemePolicy.explicitlyApprovedHttp.name);
+
+    expect(NetworkRepository.serverAccessEvidence, same(restored));
+    expect(NetworkRepository.serverAccessEvidence.apiEndpoint, Uri.parse('https://photos.test/api'));
+
+    await Store.put(StoreKey.serverEndpoint, 'https://photos.test/runtime-api');
+    await Store.put(StoreKey.serverEndpointSchemePolicy, EndpointSchemePolicy.httpsOnly.name);
+    await init();
+
+    expect(NetworkRepository.serverAccessEvidence, isNot(same(restored)));
+    expect(NetworkRepository.serverAccessEvidence.apiEndpoint, Uri.parse('https://photos.test/runtime-api'));
   });
 
   test('binding failure after native confirmation purges natively and keeps Dart fenced', () async {
@@ -101,7 +121,7 @@ void main() {
 
     await expectLater(
       NetworkRepository.initForTest(
-        replaceNativeContext: (headers, origin, token) async => events.add('replace:$origin'),
+        replaceNativeContext: (headers, origin, token, sessionEpoch) async => events.add('replace:$origin'),
         bindNativeClient: () async {
           events.add('bind');
           throw StateError('snapshot failed');
@@ -125,7 +145,7 @@ void main() {
           events.add('drain');
           throw timeout;
         },
-        replaceNativeContext: (headers, origin, token) async => events.add('replace'),
+        replaceNativeContext: (headers, origin, token, sessionEpoch) async => events.add('replace'),
         bindNativeClient: () async => events.add('bind'),
         failClosedNativeContext: () async => events.add('failClosed'),
       ),
@@ -147,7 +167,7 @@ void main() {
             events.add('drain');
             throw cancellationError;
           },
-          replaceNativeContext: (headers, origin, token) async => events.add('replace'),
+          replaceNativeContext: (headers, origin, token, sessionEpoch) async => events.add('replace'),
           bindNativeClient: () async => events.add('bind'),
           failClosedNativeContext: () async => events.add('failClosed'),
         ),
@@ -169,7 +189,7 @@ void main() {
           events.add('drain');
           throw timeout;
         },
-        replaceNativeContext: (headers, origin, token) async => events.add('replace'),
+        replaceNativeContext: (headers, origin, token, sessionEpoch) async => events.add('replace'),
         failClosedNativeContext: () async => events.add('failClosed'),
       ),
       throwsA(same(timeout)),

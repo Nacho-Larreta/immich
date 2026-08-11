@@ -242,6 +242,7 @@ struct ClientCertPrompt: Hashable {
 struct NetworkRequestContextSnapshot: Hashable {
   var clientPointer: Int64
   var canonicalOrigin: String? = nil
+  var sessionEpoch: Int64
   var generation: Int64
   var confirmed: Bool
 
@@ -250,12 +251,14 @@ struct NetworkRequestContextSnapshot: Hashable {
   static func fromList(_ pigeonVar_list: [Any?]) -> NetworkRequestContextSnapshot? {
     let clientPointer = pigeonVar_list[0] as! Int64
     let canonicalOrigin: String? = nilOrValue(pigeonVar_list[1])
-    let generation = pigeonVar_list[2] as! Int64
-    let confirmed = pigeonVar_list[3] as! Bool
+    let sessionEpoch = pigeonVar_list[2] as! Int64
+    let generation = pigeonVar_list[3] as! Int64
+    let confirmed = pigeonVar_list[4] as! Bool
 
     return NetworkRequestContextSnapshot(
       clientPointer: clientPointer,
       canonicalOrigin: canonicalOrigin,
+      sessionEpoch: sessionEpoch,
       generation: generation,
       confirmed: confirmed
     )
@@ -264,6 +267,7 @@ struct NetworkRequestContextSnapshot: Hashable {
     return [
       clientPointer,
       canonicalOrigin,
+      sessionEpoch,
       generation,
       confirmed,
     ]
@@ -272,13 +276,14 @@ struct NetworkRequestContextSnapshot: Hashable {
     if Swift.type(of: lhs) != Swift.type(of: rhs) {
       return false
     }
-    return deepEqualsNetwork(lhs.clientPointer, rhs.clientPointer) && deepEqualsNetwork(lhs.canonicalOrigin, rhs.canonicalOrigin) && deepEqualsNetwork(lhs.generation, rhs.generation) && deepEqualsNetwork(lhs.confirmed, rhs.confirmed)
+    return deepEqualsNetwork(lhs.clientPointer, rhs.clientPointer) && deepEqualsNetwork(lhs.canonicalOrigin, rhs.canonicalOrigin) && deepEqualsNetwork(lhs.sessionEpoch, rhs.sessionEpoch) && deepEqualsNetwork(lhs.generation, rhs.generation) && deepEqualsNetwork(lhs.confirmed, rhs.confirmed)
   }
 
   func hash(into hasher: inout Hasher) {
     hasher.combine("NetworkRequestContextSnapshot")
     deepHashNetwork(value: clientPointer, hasher: &hasher)
     deepHashNetwork(value: canonicalOrigin, hasher: &hasher)
+    deepHashNetwork(value: sessionEpoch, hasher: &hasher)
     deepHashNetwork(value: generation, hasher: &hasher)
     deepHashNetwork(value: confirmed, hasher: &hasher)
   }
@@ -340,7 +345,7 @@ protocol NetworkApi {
   func getClientPointer() throws -> Int64
   func getRequestContextSnapshot() throws -> NetworkRequestContextSnapshot
   func setRequestHeaders(headers: [String: String], serverUrls: [String], token: String?) throws
-  func replaceRequestContext(headers: [String: String], canonicalOrigin: String?, token: String?) throws
+  func replaceRequestContext(headers: [String: String], canonicalOrigin: String?, token: String?, sessionEpoch: Int64) throws
   func failClosedRequestContext() throws
 }
 
@@ -462,8 +467,9 @@ class NetworkApiSetup {
         let headersArg = args[0] as! [String: String]
         let canonicalOriginArg: String? = nilOrValue(args[1])
         let tokenArg: String? = nilOrValue(args[2])
+        let sessionEpochArg = args[3] as! Int64
         do {
-          try api.replaceRequestContext(headers: headersArg, canonicalOrigin: canonicalOriginArg, token: tokenArg)
+          try api.replaceRequestContext(headers: headersArg, canonicalOrigin: canonicalOriginArg, token: tokenArg, sessionEpoch: sessionEpochArg)
           reply(wrapResult(nil))
         } catch {
           reply(wrapError(error))

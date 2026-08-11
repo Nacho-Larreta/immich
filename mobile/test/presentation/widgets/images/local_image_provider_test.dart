@@ -106,7 +106,11 @@ void main() {
     preloader.preload(1, const Size(320, 180));
     remoteImages = RemoteImageProviderFactory(
       media: remotePort,
-      access: const RemoteMediaAccessSnapshot(policy: RemoteMediaPolicy.cacheThenNetwork, sessionEpoch: 5),
+      access: const RemoteMediaAccessSnapshot(
+        policy: RemoteMediaPolicy.cacheThenNetwork,
+        sessionEpoch: 5,
+        expectedContextGeneration: 5,
+      ),
       endpoint: _endpoint,
     );
     await pumpEventQueue(times: 20);
@@ -114,10 +118,26 @@ void main() {
     await pumpEventQueue(times: 20);
 
     expect(snapshots, [
-      const RemoteMediaAccessSnapshot(policy: RemoteMediaPolicy.cacheThenNetwork, sessionEpoch: 5),
-      const RemoteMediaAccessSnapshot(policy: RemoteMediaPolicy.cacheThenNetwork, sessionEpoch: 5),
-      const RemoteMediaAccessSnapshot(policy: RemoteMediaPolicy.cacheThenNetwork, sessionEpoch: 5),
-      const RemoteMediaAccessSnapshot(policy: RemoteMediaPolicy.cacheThenNetwork, sessionEpoch: 5),
+      const RemoteMediaAccessSnapshot(
+        policy: RemoteMediaPolicy.cacheThenNetwork,
+        sessionEpoch: 5,
+        expectedContextGeneration: 5,
+      ),
+      const RemoteMediaAccessSnapshot(
+        policy: RemoteMediaPolicy.cacheThenNetwork,
+        sessionEpoch: 5,
+        expectedContextGeneration: 5,
+      ),
+      const RemoteMediaAccessSnapshot(
+        policy: RemoteMediaPolicy.cacheThenNetwork,
+        sessionEpoch: 5,
+        expectedContextGeneration: 5,
+      ),
+      const RemoteMediaAccessSnapshot(
+        policy: RemoteMediaPolicy.cacheThenNetwork,
+        sessionEpoch: 5,
+        expectedContextGeneration: 5,
+      ),
     ]);
     preloader.dispose();
     await timeline.dispose();
@@ -133,7 +153,11 @@ void main() {
     final snapshots = <RemoteMediaAccessSnapshot>[];
     var remoteImages = RemoteImageProviderFactory(
       media: _RemotePort(),
-      access: const RemoteMediaAccessSnapshot(policy: RemoteMediaPolicy.cacheThenNetwork, sessionEpoch: 8),
+      access: const RemoteMediaAccessSnapshot(
+        policy: RemoteMediaPolicy.cacheThenNetwork,
+        sessionEpoch: 8,
+        expectedContextGeneration: 8,
+      ),
       endpoint: _endpoint,
     );
     final preloader = AssetPreloader(
@@ -164,6 +188,107 @@ void main() {
     );
     preloader.dispose();
     await timeline.dispose();
+  });
+
+  testWidgets('asset preloader consumes cache miss and retries after media access advances', (tester) async {
+    final media = _RetryRemotePort();
+    final timeline = _PreloadTimelineService(previous: LocalAssetStub.image1, next: LocalAssetStub.image2);
+    var remoteImages = RemoteImageProviderFactory(
+      media: media,
+      access: const RemoteMediaAccessSnapshot(policy: RemoteMediaPolicy.cacheOnly, sessionEpoch: 1),
+      endpoint: _endpoint,
+    );
+    final preloader = AssetPreloader(
+      timelineService: timeline,
+      mounted: () => true,
+      localMedia: _RecordingPort(),
+      delay: Duration.zero,
+      readRemoteImages: () => remoteImages,
+      imageProviderFactory: (_, _, factory) => factory.image(
+        url: 'https://photos.test/api/assets/asset-1/thumbnail',
+        edited: false,
+        kind: MediaRequestKind.thumbnail,
+      ),
+    );
+
+    preloader.preload(1, const Size(320, 180));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(media.requests.map((request) => request.policy), [RemoteMediaPolicy.cacheOnly]);
+
+    const online = RemoteMediaAccessSnapshot(
+      policy: RemoteMediaPolicy.cacheThenNetwork,
+      sessionEpoch: 1,
+      expectedContextGeneration: 7,
+    );
+    remoteImages = RemoteImageProviderFactory(media: media, access: online, endpoint: _endpoint);
+    preloader.remoteAccessChanged(online);
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(media.requests.skip(1).map((request) => request.policy), [RemoteMediaPolicy.cacheThenNetwork]);
+    expect(media.requests.skip(1).every((request) => request.expectedContextGeneration == 7), isTrue);
+    preloader.dispose();
+    await timeline.dispose();
+  });
+
+  test('asset preloader reports timeline and factory failures exactly once', () async {
+    for (final failureSource in ['timeline', 'factory']) {
+      final errors = <FlutterErrorDetails>[];
+      final timeline = _FailingPreloadTimelineService(
+        lookupError: failureSource == 'timeline' ? StateError('lookup failed') : null,
+      );
+      final preloader = AssetPreloader(
+        timelineService: timeline,
+        mounted: () => true,
+        localMedia: _RecordingPort(),
+        delay: Duration.zero,
+        readRemoteImages: () => RemoteImageProviderFactory(
+          media: _RemotePort(),
+          access: const RemoteMediaAccessSnapshot(policy: RemoteMediaPolicy.cacheOnly, sessionEpoch: 0),
+          endpoint: _endpoint,
+        ),
+        imageProviderFactory: (_, _, _) => throw StateError('factory failed'),
+        reportError: errors.add,
+      );
+
+      preloader.preload(1, const Size(320, 180));
+      await pumpEventQueue(times: 20);
+
+      expect(errors, hasLength(1), reason: failureSource);
+      preloader.dispose();
+    }
+  });
+
+  test('asset preloader cancels a stale lookup pipeline without reporting late factory work', () async {
+    final gate = Completer<void>();
+    final errors = <FlutterErrorDetails>[];
+    final timeline = _PreloadTimelineService(
+      previous: LocalAssetStub.image1,
+      next: LocalAssetStub.image2,
+      lookupGate: gate,
+    );
+    final preloader = AssetPreloader(
+      timelineService: timeline,
+      mounted: () => true,
+      localMedia: _RecordingPort(),
+      delay: Duration.zero,
+      readRemoteImages: () => RemoteImageProviderFactory(
+        media: _RemotePort(),
+        access: const RemoteMediaAccessSnapshot(policy: RemoteMediaPolicy.cacheOnly, sessionEpoch: 0),
+        endpoint: _endpoint,
+      ),
+      imageProviderFactory: (_, _, _) => throw StateError('stale factory must not run'),
+      reportError: errors.add,
+    );
+
+    preloader.preload(1, const Size(320, 180));
+    await pumpEventQueue(times: 5);
+    preloader.dispose();
+    gate.complete();
+    await pumpEventQueue(times: 20);
+
+    expect(errors, isEmpty);
   });
 
   test('last listener removal cancels the active local media handle', () async {
@@ -209,6 +334,62 @@ final class _RemotePort implements RemoteMediaPort<OwnedRemoteMediaPayload> {
 
   @override
   Future<void> cancelAll() async {}
+}
+
+final class _RetryRemotePort implements RemoteMediaPort<OwnedRemoteMediaPayload> {
+  final requests = <RemoteMediaRequest>[];
+
+  @override
+  CancellableMediaRequest<OwnedRemoteMediaPayload> request(RemoteMediaRequest request) {
+    requests.add(request);
+    if (request.policy == RemoteMediaPolicy.cacheOnly) {
+      return _RemoteOperation(const OfflineResult.failure(OfflineErrorCode.cacheMiss));
+    }
+    return _RemoteOperation(
+      OfflineResult.success(
+        OwnedRgbaRemoteMediaPayload(
+          lease: _RemoteBytesLease(Uint8List.fromList([0, 0, 0, 255])),
+          widthPx: 1,
+          heightPx: 1,
+          rowBytes: 4,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<void> cancelAll() async {}
+}
+
+final class _RemoteOperation implements CancellableMediaRequest<OwnedRemoteMediaPayload> {
+  _RemoteOperation(this.value);
+
+  final OfflineResult<OwnedRemoteMediaPayload> value;
+
+  @override
+  Future<OfflineResult<OwnedRemoteMediaPayload>> get result => Future.value(value);
+
+  @override
+  Stream<MediaRequestProgress> get progress => const Stream.empty();
+
+  @override
+  Future<void> cancel() async {}
+}
+
+final class _RemoteBytesLease implements RemoteMediaPayloadLease {
+  _RemoteBytesLease(this._bytes);
+
+  final Uint8List _bytes;
+  bool _released = false;
+
+  @override
+  Uint8List get bytes => _bytes;
+
+  @override
+  bool get isReleased => _released;
+
+  @override
+  void release() => _released = true;
 }
 
 final class _RecordingPort implements LocalMediaPort<OwnedLocalMediaPayload> {
@@ -299,6 +480,34 @@ final class _PreloadTimelineService extends TimelineService {
     return switch (index) {
       0 => previous,
       2 => next,
+      _ => null,
+    };
+  }
+
+  @override
+  Future<void> dispose() async {}
+}
+
+final class _FailingPreloadTimelineService extends TimelineService {
+  _FailingPreloadTimelineService({this.lookupError})
+    : super((
+        assetSource: (_, _) async => const <BaseAsset>[],
+        bucketSource: () => const Stream.empty(),
+        origin: TimelineOrigin.main,
+      ));
+
+  final Object? lookupError;
+
+  @override
+  Future<void> preloadAssets(int index) async {}
+
+  @override
+  Future<BaseAsset?> getAssetAsync(int index) async {
+    final error = lookupError;
+    if (error != null) throw error;
+    return switch (index) {
+      0 => LocalAssetStub.image1,
+      2 => LocalAssetStub.image2,
       _ => null,
     };
   }

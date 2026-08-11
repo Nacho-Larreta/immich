@@ -42,12 +42,15 @@ abstract interface class EndpointApiGraphPort {
 
 final class NativeRequestContext {
   NativeRequestContext({
+    required this.apiEndpoint,
     required this.canonicalOrigin,
     required this.accessToken,
     required this.schemePolicy,
+    this.sessionEpoch = 0,
     required Map<String, String> customHeaders,
   }) : customHeaders = Map.unmodifiable(customHeaders) {
     final Uri? origin = canonicalOrigin;
+    final Uri? endpoint = apiEndpoint;
     final String? token = accessToken;
     if (origin != null) {
       validateHttpOrigin(origin, 'canonicalOrigin');
@@ -56,6 +59,16 @@ final class NativeRequestContext {
         throw ArgumentError('A canonical origin requires an endpoint scheme policy');
       }
       validateEndpointSchemePolicy(origin, policy);
+      if (endpoint == null) {
+        throw ArgumentError('A canonical origin requires an API endpoint');
+      }
+      validateHttpEndpoint(endpoint, 'apiEndpoint');
+      if (endpoint.origin != origin.origin) {
+        throw ArgumentError('The API endpoint must belong to the canonical origin');
+      }
+    }
+    if (origin == null && endpoint != null) {
+      throw ArgumentError('An API endpoint requires a canonical origin');
     }
     if (origin == null && schemePolicy != null) {
       throw ArgumentError('An endpoint scheme policy requires a canonical origin');
@@ -63,11 +76,16 @@ final class NativeRequestContext {
     if (token != null && (token.isEmpty || origin == null)) {
       throw ArgumentError('An access token requires a non-empty canonical origin');
     }
+    if (sessionEpoch < 0) {
+      throw ArgumentError.value(sessionEpoch, 'sessionEpoch', 'Session epoch must not be negative');
+    }
   }
 
+  final Uri? apiEndpoint;
   final Uri? canonicalOrigin;
   final String? accessToken;
   final EndpointSchemePolicy? schemePolicy;
+  final int sessionEpoch;
   final Map<String, String> customHeaders;
 }
 

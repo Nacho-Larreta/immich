@@ -39,11 +39,19 @@ final class RemoteMediaRequest {
     required this.policy,
     required this.kind,
     required this.preferEncoded,
+    this.expectedContextGeneration,
   }) : origin = resource.originUri {
     if (requestId < 0) {
       throw ArgumentError.value(requestId, 'requestId', 'Must not be negative');
     }
     validateHttpResource(resource, 'resource');
+    final generation = expectedContextGeneration;
+    if (policy == RemoteMediaPolicy.cacheThenNetwork && generation == null) {
+      throw ArgumentError('expectedContextGeneration is required for network-capable requests');
+    }
+    if (generation != null && generation < 0) {
+      throw ArgumentError.value(generation, 'expectedContextGeneration', 'Must not be negative');
+    }
   }
 
   final int requestId;
@@ -52,6 +60,7 @@ final class RemoteMediaRequest {
   final RemoteMediaPolicy policy;
   final MediaRequestKind kind;
   final bool preferEncoded;
+  final int? expectedContextGeneration;
 }
 
 final class LocalMediaRequest {

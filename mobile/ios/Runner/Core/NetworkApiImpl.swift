@@ -66,6 +66,7 @@ class NetworkApiImpl: NetworkApi {
     return NetworkRequestContextSnapshot(
       clientPointer: Int64(Int(bitPattern: snapshot.clientPointer)),
       canonicalOrigin: snapshot.canonicalOrigin,
+      sessionEpoch: snapshot.sessionEpoch,
       generation: Int64(bitPattern: snapshot.generation),
       confirmed: snapshot.confirmed
     )
@@ -75,10 +76,20 @@ class NetworkApiImpl: NetworkApi {
     try URLSessionManager.replaceLegacyRequestContext(headers: headers, serverUrls: serverUrls, token: token)
   }
 
-  func replaceRequestContext(headers: [String: String], canonicalOrigin: String?, token: String?)
+  func replaceRequestContext(
+    headers: [String: String],
+    canonicalOrigin: String?,
+    token: String?,
+    sessionEpoch: Int64
+  )
     throws
   {
-    try URLSessionManager.replaceRequestContext(headers: headers, canonicalOrigin: canonicalOrigin, token: token)
+    try URLSessionManager.replaceRequestContext(
+      headers: headers,
+      canonicalOrigin: canonicalOrigin,
+      token: token,
+      sessionEpoch: sessionEpoch
+    )
   }
 
   func failClosedRequestContext() throws {

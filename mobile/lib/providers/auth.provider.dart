@@ -50,7 +50,7 @@ final authProvider = StateNotifierProvider<AuthNotifier, AuthState>((ref) {
     userService,
     ref.watch(secureStorageServiceProvider),
     ref.watch(widgetServiceProvider),
-    const NetworkAuthRequestContextAdapter(),
+    NetworkAuthRequestContextAdapter(() => ref.read(sessionEpochControllerProvider).current.sessionEpoch),
     apiGraph,
     sessionMutationMutex,
     ref,
@@ -608,6 +608,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
       await _persistAccessToken(accessToken);
       _ensureAuthenticationMutationIsCurrent(generation);
       await _requestContext.install(
+        apiEndpoint: endpoint,
         canonicalOrigin: canonicalOrigin,
         accessToken: accessToken,
         schemePolicy: schemePolicy,

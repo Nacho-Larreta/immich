@@ -1,12 +1,27 @@
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:immich_mobile/domain/models/background_task.model.dart';
 import 'package:immich_mobile/domain/utils/background_sync.dart';
+import 'package:immich_mobile/infrastructure/adapters/background_sync/isolate_background_task_runner.dart';
 import 'package:immich_mobile/providers/backup/drift_backup.provider.dart';
 import 'package:immich_mobile/providers/sync_status.provider.dart';
+import 'package:immich_mobile/providers/server_reachability.provider.dart';
 
 final backgroundSyncProvider = Provider<BackgroundSyncManager>((ref) {
   final syncStatusNotifier = ref.read(syncStatusProvider.notifier);
 
   final manager = BackgroundSyncManager(
+    taskRunner: const IsolateBackgroundTaskRunner(),
+    remoteTaskContext: () {
+      final state = ref.read(serverReachabilityStateProvider);
+      final proof = state.serverAccess;
+      if (proof == null || !proof.isCurrent) {
+        throw const BackgroundTaskContextChanged();
+      }
+      return BackgroundTaskContextBinding(
+        sessionEpoch: state.sessionEpoch,
+        nativeContextGeneration: proof.nativeContextGeneration,
+      );
+    },
     onRemoteSyncStart: () {
       syncStatusNotifier.startRemoteSync();
       final backupProvider = ref.read(driftBackupProvider.notifier);

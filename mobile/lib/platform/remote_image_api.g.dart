@@ -109,6 +109,7 @@ class RemoteImageRequest {
     required this.preferEncoded,
     required this.policy,
     required this.kind,
+    this.expectedContextGeneration,
   });
 
   String url;
@@ -123,8 +124,10 @@ class RemoteImageRequest {
 
   RemoteImageRequestKind kind;
 
+  int? expectedContextGeneration;
+
   List<Object?> _toList() {
-    return <Object?>[url, origin, requestId, preferEncoded, policy, kind];
+    return <Object?>[url, origin, requestId, preferEncoded, policy, kind, expectedContextGeneration];
   }
 
   Object encode() {
@@ -140,6 +143,7 @@ class RemoteImageRequest {
       preferEncoded: result[3]! as bool,
       policy: result[4]! as RemoteImagePolicy,
       kind: result[5]! as RemoteImageRequestKind,
+      expectedContextGeneration: result[6] as int?,
     );
   }
 
@@ -157,7 +161,8 @@ class RemoteImageRequest {
         _deepEquals(requestId, other.requestId) &&
         _deepEquals(preferEncoded, other.preferEncoded) &&
         _deepEquals(policy, other.policy) &&
-        _deepEquals(kind, other.kind);
+        _deepEquals(kind, other.kind) &&
+        _deepEquals(expectedContextGeneration, other.expectedContextGeneration);
   }
 
   @override
