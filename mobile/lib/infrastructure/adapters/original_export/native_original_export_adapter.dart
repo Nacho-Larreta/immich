@@ -175,9 +175,19 @@ final class NativeOriginalExportAdapter implements pigeon.OriginalExportFlutterA
         ),
       );
       operation.finishNativeAttempt(requestId);
-      await _handleResult(operation, result);
+      final mappedError = result.error == null ? null : _mapError(result.error!);
+      if (mappedError != null) {
+        _report(phase: domain.OriginalExportFailurePhase.native, error: mappedError, attempt: 1, initiating: null);
+      }
+      await _handleResult(operation, result, attempt: 1, initiating: null);
     } on Object {
       operation.finishNativeAttempt(requestId);
+      _report(
+        phase: domain.OriginalExportFailurePhase.native,
+        error: domain.OriginalExportError.storageUnavailable,
+        attempt: 1,
+        initiating: null,
+      );
       _completeFailure(operation, domain.OriginalExportError.storageUnavailable);
     }
   }
@@ -243,6 +253,8 @@ final class NativeOriginalExportAdapter implements pigeon.OriginalExportFlutterA
       await _handleResult(
         operation,
         result,
+        attempt: attempt,
+        initiating: initiating,
         presentationClaim: domain.OriginalExportPresentationClaim(
           () => _claimPresentation(binding, request.resource, attempt),
         ),
@@ -361,6 +373,8 @@ final class NativeOriginalExportAdapter implements pigeon.OriginalExportFlutterA
   Future<void> _handleResult(
     _OriginalExportOperation operation,
     pigeon.OriginalExportResult result, {
+    required int attempt,
+    required domain.OriginalExportContextBinding? initiating,
     domain.OriginalExportPresentationClaim? presentationClaim,
   }) async {
     final path = result.path;
@@ -372,6 +386,12 @@ final class NativeOriginalExportAdapter implements pigeon.OriginalExportFlutterA
     if (!isFailure && !isSuccess) {
       await _releaseReturnedToken(leaseToken);
       if (_removeIfCurrent(operation)) {
+        _report(
+          phase: domain.OriginalExportFailurePhase.adoption,
+          error: domain.OriginalExportError.writeFailed,
+          attempt: attempt,
+          initiating: initiating,
+        );
         operation.complete(const domain.OriginalExportResult.failure(domain.OriginalExportError.writeFailed));
       }
       return;
@@ -389,6 +409,12 @@ final class NativeOriginalExportAdapter implements pigeon.OriginalExportFlutterA
     } on Object {
       await _releaseReturnedToken(leaseToken);
       if (_removeIfCurrent(operation)) {
+        _report(
+          phase: domain.OriginalExportFailurePhase.adoption,
+          error: domain.OriginalExportError.storageUnavailable,
+          attempt: attempt,
+          initiating: initiating,
+        );
         operation.complete(const domain.OriginalExportResult.failure(domain.OriginalExportError.storageUnavailable));
       }
       return;

@@ -20,6 +20,7 @@ import 'package:immich_mobile/theme/color_scheme.dart';
 import 'package:immich_mobile/theme/theme_data.dart';
 import 'package:immich_mobile/widgets/common/immich_logo.dart';
 import 'package:immich_mobile/widgets/common/immich_title_text.dart';
+import 'package:logging/logging.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart' show launchUrl, LaunchMode;
@@ -280,6 +281,8 @@ class SplashScreenPage extends StatefulHookConsumerWidget {
 }
 
 class SplashScreenPageState extends ConsumerState<SplashScreenPage> {
+  static final _log = Logger('SplashScreenPage');
+
   @override
   void initState() {
     super.initState();
@@ -290,18 +293,27 @@ class SplashScreenPageState extends ConsumerState<SplashScreenPage> {
     final auth = ref.read(authProvider.notifier);
     await SplashSessionBootstrap(
       hydrateCachedSession: auth.hydrateCachedSession,
-      navigate: (destination) async {
+      navigate: (destination) {
         if (!mounted) {
           return;
         }
         switch (destination) {
           case SplashDestination.timeline:
-            await context.replaceRoute(const TabShellRoute());
+            unawaited(
+              context
+                  .replaceRoute(const TabShellRoute())
+                  .then<void>(
+                    (_) {},
+                    onError: (Object _, StackTrace __) {
+                      _log.warning('Splash navigation failed');
+                    },
+                  ),
+            );
             return;
         }
       },
-      triggerPostNavigationWork: ({required hasRemoteAuthentication}) async {
-        final cachedEndpoint = Uri.tryParse(Store.tryGet(StoreKey.serverEndpoint) ?? '');
+      triggerPostNavigationWork: ({required hasRemoteAuthentication}) {
+        final cachedEndpoint = _restorableCachedEndpoint(Store.tryGet(StoreKey.serverEndpoint));
         ref
             .read(sessionWorkProvider)
             .activate(
@@ -329,3 +341,11 @@ class SplashScreenPageState extends ConsumerState<SplashScreenPage> {
 @visibleForTesting
 bool shouldRunFullLocalSync({required bool hasRemoteAuthentication, required bool isAndroid}) =>
     !hasRemoteAuthentication || isAndroid;
+
+@visibleForTesting
+Uri? restorableCachedEndpoint(String? value) => _restorableCachedEndpoint(value);
+
+Uri? _restorableCachedEndpoint(String? value) {
+  final endpoint = Uri.tryParse(value ?? '');
+  return endpoint?.hasAuthority == true && endpoint?.scheme == 'https' ? endpoint : null;
+}

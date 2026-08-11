@@ -50,11 +50,16 @@ void main() {
       );
     }
 
-    final failing = SharePlusSheetAdapter(invoker: (_, _) async => throw StateError('platform unavailable'));
+    final reported = <ShareSheetError>[];
+    final failing = SharePlusSheetAdapter(
+      invoker: (_, _) async => throw StateError('platform unavailable'),
+      reportFailure: reported.add,
+    );
     expect(
       await failing.share(ShareSheetRequest(paths: const ['/tmp/photo.jpg'])).result,
       const ShareResult.failure(ShareSheetFailure(error: ShareSheetError.presentationFailed)),
     );
+    expect(reported, [ShareSheetError.presentationFailed]);
   });
 
   test('cancel does not falsely complete after the platform owns the files', () async {

@@ -22,7 +22,7 @@ enum OriginalExportError {
   platformUnsupported,
 }
 
-enum OriginalExportFailurePhase { admission, native, retry, presentation }
+enum OriginalExportFailurePhase { admission, native, retry, adoption, presentation }
 
 enum OriginalExportSessionRelation { current, generationAdvanced, sessionChanged, endpointChanged, unavailable }
 

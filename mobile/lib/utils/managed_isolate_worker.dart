@@ -8,7 +8,19 @@ enum WorkerDisposal { terminated, quarantined }
 
 enum WorkerTerminationSafety { safe, unsafe }
 
-final class ManagedIsolateWorker {
+abstract interface class IsolateWorker {
+  bool get initialized;
+  bool get initializing;
+  bool get isTerminated;
+  bool get isReusable;
+  String? get taskId;
+  Future<void> initialize();
+  Future<R> work<R>(Task<R> task);
+  void requestGentleCancellation();
+  Future<WorkerDisposal> dispose({Duration drainTimeout = const Duration(seconds: 5)});
+}
+
+final class ManagedIsolateWorker implements IsolateWorker {
   Isolate? _isolate;
   RawReceivePort? _receivePort;
   SendPort? _sendPort;
@@ -23,18 +35,24 @@ final class ManagedIsolateWorker {
   var _quarantined = false;
   var _terminationSafety = WorkerTerminationSafety.safe;
 
+  @override
   bool get initialized => _ready?.isCompleted ?? false;
+  @override
   bool get initializing => _initialization != null && !initialized;
+  @override
   bool get isTerminated => _terminated.isCompleted;
+  @override
   bool get isReusable =>
       initialized &&
       _acceptingWork &&
       !_quarantined &&
       _terminationSafety == WorkerTerminationSafety.safe &&
       _taskId == null;
+  @override
   String? get taskId => _taskId;
   Future<void> get terminated => _terminated.future;
 
+  @override
   Future<void> initialize() {
     if (isTerminated || _quarantined) {
       throw StateError('A disposed isolate worker cannot be initialized again');
@@ -56,6 +74,7 @@ final class ManagedIsolateWorker {
     await Future.any([ready.future, terminated]);
   }
 
+  @override
   Future<R> work<R>(Task<R> task) async {
     if (!isReusable) {
       throw StateError('Worker is not available for new work');
@@ -70,12 +89,14 @@ final class ManagedIsolateWorker {
     return await _result!.future as R;
   }
 
+  @override
   void requestGentleCancellation() {
     if (_taskId != null && !isTerminated) {
       _sendPort?.send(const _GentleCancelRequest());
     }
   }
 
+  @override
   Future<WorkerDisposal> dispose({Duration drainTimeout = const Duration(seconds: 5)}) async {
     if (isTerminated) return WorkerDisposal.terminated;
     _acceptingWork = false;

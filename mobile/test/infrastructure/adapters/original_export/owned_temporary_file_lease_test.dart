@@ -16,8 +16,15 @@ void main() {
     }
   });
 
+  test('Dart and Swift share the same dedicated export subroot contract', () {
+    final swift = File('ios/Runner/Share/OriginalExportSupport.swift').readAsStringSync();
+
+    expect(swift, contains('static let ownedRootName = "$originalExportCacheDirectoryName"'));
+  });
+
   test('adopts a canonical immediate share file and releases its native token exactly once', () async {
-    final directory = await Directory('${temporaryRoot.path}/immich-share-first').create();
+    final exportRoot = await Directory('${temporaryRoot.path}/immich-original-exports').create();
+    final directory = await Directory('${exportRoot.path}/immich-share-550e8400-e29b-41d4-a716-446655440000').create();
     final file = await File('${directory.path}/same.jpg').writeAsString('first');
     final releasedTokens = <String>[];
     final lease = await OwnedTemporaryFileLease.adopt(
@@ -55,7 +62,8 @@ void main() {
       throwsA(isA<FileSystemException>()),
     );
 
-    final directory = await Directory('${temporaryRoot.path}/immich-share-link').create();
+    final exportRoot = await Directory('${temporaryRoot.path}/immich-original-exports').create();
+    final directory = await Directory('${exportRoot.path}/immich-share-550e8400-e29b-41d4-a716-446655440001').create();
     final nested = await Directory('${directory.path}/nested').create();
     final nestedFile = await File('${nested.path}/photo.jpg').writeAsString('nested');
     await expectLater(
@@ -75,6 +83,66 @@ void main() {
       OwnedTemporaryFileLease.adopt(
         path: link.path,
         leaseToken: 'link',
+        temporaryRoot: temporaryRoot.path,
+        releaseNativeLease: (_) async {},
+      ),
+      throwsA(isA<FileSystemException>()),
+    );
+
+    final legacyDirectory = await Directory('${temporaryRoot.path}/immich-share-legacy').create();
+    final legacyFile = await File('${legacyDirectory.path}/photo.jpg').writeAsString('legacy');
+    await expectLater(
+      OwnedTemporaryFileLease.adopt(
+        path: legacyFile.path,
+        leaseToken: 'legacy',
+        temporaryRoot: temporaryRoot.path,
+        releaseNativeLease: (_) async {},
+      ),
+      throwsA(isA<FileSystemException>()),
+    );
+
+    final siblingDirectory = await Directory('${temporaryRoot.path}/immich-original-exports-sibling').create();
+    final siblingShare = await Directory(
+      '${siblingDirectory.path}/immich-share-550e8400-e29b-41d4-a716-446655440002',
+    ).create();
+    final siblingFile = await File('${siblingShare.path}/photo.jpg').writeAsString('sibling');
+    await expectLater(
+      OwnedTemporaryFileLease.adopt(
+        path: siblingFile.path,
+        leaseToken: 'sibling',
+        temporaryRoot: temporaryRoot.path,
+        releaseNativeLease: (_) async {},
+      ),
+      throwsA(isA<FileSystemException>()),
+    );
+  });
+
+  test('rejects symlinked export root and share directory without traversing them', () async {
+    final outside = await Directory.systemTemp.createTemp('immich-lease-outside-');
+    addTearDown(() async {
+      if (await outside.exists()) await outside.delete(recursive: true);
+    });
+    final outsideFile = await File('${outside.path}/photo.jpg').writeAsString('outside');
+    final rootLink = Link('${temporaryRoot.path}/immich-original-exports');
+    await rootLink.create(outside.path);
+    await expectLater(
+      OwnedTemporaryFileLease.adopt(
+        path: '${rootLink.path}/immich-share-550e8400-e29b-41d4-a716-446655440003/photo.jpg',
+        leaseToken: 'root-link',
+        temporaryRoot: temporaryRoot.path,
+        releaseNativeLease: (_) async {},
+      ),
+      throwsA(isA<FileSystemException>()),
+    );
+    await rootLink.delete();
+
+    final exportRoot = await Directory('${temporaryRoot.path}/immich-original-exports').create();
+    final shareLink = Link('${exportRoot.path}/immich-share-550e8400-e29b-41d4-a716-446655440004');
+    await shareLink.create(outside.path);
+    await expectLater(
+      OwnedTemporaryFileLease.adopt(
+        path: '${shareLink.path}/${outsideFile.uri.pathSegments.last}',
+        leaseToken: 'share-link',
         temporaryRoot: temporaryRoot.path,
         releaseNativeLease: (_) async {},
       ),

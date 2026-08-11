@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import OSLog
 
@@ -114,32 +115,43 @@ extension FileHandle: OriginalExportFileWriting {}
 
 final class TemporaryOriginalExportFileStore: OriginalExportFileStoring {
   static let staleLeaseAge: TimeInterval = 24 * 60 * 60
+  static let ownedRootName = "immich-original-exports"
 
   init(
     fileManager: FileManager = .default,
-    temporaryDirectory: URL = FileManager.default.temporaryDirectory,
+    temporaryDirectory: URL? = nil,
+    makeUUID: @escaping () -> UUID = UUID.init,
     performanceRecorder: any PerformanceRecording = PerformanceTelemetry.shared
   ) {
     self.fileManager = fileManager
     self.temporaryDirectory = temporaryDirectory
+    self.makeUUID = makeUUID
     self.performanceRecorder = performanceRecorder
   }
 
   private let fileManager: FileManager
-  private let temporaryDirectory: URL
+  private let temporaryDirectory: URL?
+  private let makeUUID: () -> UUID
   private let performanceRecorder: any PerformanceRecording
 
   func cleanupExpiredOwnedDirectories(olderThan cutoff: Date) throws {
-    let properties: Set<URLResourceKey> = [.contentModificationDateKey, .isDirectoryKey]
+    let root = try prepareOwnedRoot()
+    let properties: Set<URLResourceKey> = [
+      .contentModificationDateKey,
+      .isDirectoryKey,
+      .isSymbolicLinkKey,
+    ]
     let candidates = try fileManager.contentsOfDirectory(
-      at: temporaryDirectory,
+      at: root,
       includingPropertiesForKeys: Array(properties),
       options: [.skipsHiddenFiles]
     )
-    for candidate in candidates where candidate.lastPathComponent.hasPrefix("immich-share-") {
+    for candidate in candidates where Self.isOwnedDirectoryName(candidate.lastPathComponent) {
       let values = try candidate.resourceValues(forKeys: properties)
       guard
         values.isDirectory == true,
+        values.isSymbolicLink != true,
+        candidate.deletingLastPathComponent().standardizedFileURL == root.standardizedFileURL,
         let modificationDate = values.contentModificationDate,
         modificationDate < cutoff
       else { continue }
@@ -150,12 +162,26 @@ final class TemporaryOriginalExportFileStore: OriginalExportFileStoring {
   }
 
   func createDestination(suggestedName: String) throws -> OriginalExportDestination {
-    let directory = temporaryDirectory.appendingPathComponent(
-      "immich-share-\(UUID().uuidString)",
+    let root: URL
+    do {
+      root = try prepareOwnedRoot()
+    } catch {
+      throw OriginalExportFailure.storageUnavailable
+    }
+    let directory = root.appendingPathComponent(
+      "immich-share-\(makeUUID().uuidString)",
       isDirectory: true
     )
     do {
-      try fileManager.createDirectory(at: directory, withIntermediateDirectories: false)
+      try fileManager.createDirectory(
+        at: directory,
+        withIntermediateDirectories: false,
+        attributes: [
+          .posixPermissions: 0o700,
+          .protectionKey: FileProtectionType.complete,
+        ]
+      )
+      try verifyDirectory(directory)
     } catch {
       throw OriginalExportFailure.storageUnavailable
     }
@@ -171,17 +197,38 @@ final class TemporaryOriginalExportFileStore: OriginalExportFileStoring {
   func openPart(
     at destination: OriginalExportDestination
   ) throws -> any OriginalExportFileWriting {
-    guard fileManager.createFile(atPath: destination.part.path, contents: nil) else {
+    guard isOwnedDestination(destination) else {
+      throw OriginalExportFailure.storageUnavailable
+    }
+    let descriptor = Darwin.open(
+      destination.part.path,
+      O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,
+      S_IRUSR | S_IWUSR
+    )
+    guard descriptor >= 0 else {
       throw OriginalExportFailure.storageUnavailable
     }
     do {
-      return try FileHandle(forWritingTo: destination.part)
+      try fileManager.setAttributes(
+        [.protectionKey: FileProtectionType.complete],
+        ofItemAtPath: destination.part.path
+      )
+      return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
     } catch {
+      Darwin.close(descriptor)
+      try? fileManager.removeItem(at: destination.part)
       throw OriginalExportFailure.storageUnavailable
     }
   }
 
   func commit(_ destination: OriginalExportDestination) throws -> URL {
+    guard
+      isOwnedDestination(destination),
+      isRegularFile(destination.part),
+      !fileManager.fileExists(atPath: destination.committed.path)
+    else {
+      throw OriginalExportFailure.writeFailed
+    }
     do {
       try fileManager.moveItem(at: destination.part, to: destination.committed)
       return destination.committed
@@ -193,6 +240,9 @@ final class TemporaryOriginalExportFileStore: OriginalExportFileStoring {
   func remove(_ destination: OriginalExportDestination) throws {
     guard fileManager.fileExists(atPath: destination.directory.path) else { return }
     do {
+      guard isOwnedDestination(destination) else {
+        throw OriginalExportFailure.cleanupFailed
+      }
       try fileManager.removeItem(at: destination.directory)
     } catch {
       throw OriginalExportFailure.cleanupFailed
@@ -205,6 +255,87 @@ final class TemporaryOriginalExportFileStore: OriginalExportFileStoring {
     let scalars = leaf.unicodeScalars.map { forbidden.contains($0) ? "_" : String($0) }
     let sanitized = scalars.joined().trimmingCharacters(in: .whitespacesAndNewlines)
     return sanitized.isEmpty || sanitized == "." || sanitized == ".." ? "original" : sanitized
+  }
+
+  private func prepareOwnedRoot() throws -> URL {
+    let cacheDirectory: URL
+    do {
+      cacheDirectory = try temporaryDirectory ?? fileManager.url(
+        for: .cachesDirectory,
+        in: .userDomainMask,
+        appropriateFor: nil,
+        create: true
+      )
+    } catch {
+      throw OriginalExportFailure.storageUnavailable
+    }
+    let cacheValues = try cacheDirectory.resourceValues(
+      forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+    )
+    guard cacheValues.isDirectory == true, cacheValues.isSymbolicLink != true else {
+      throw OriginalExportFailure.storageUnavailable
+    }
+    let ownedRoot = cacheDirectory.appendingPathComponent(Self.ownedRootName, isDirectory: true)
+    try fileManager.createDirectory(
+      at: ownedRoot,
+      withIntermediateDirectories: true,
+      attributes: [
+        .posixPermissions: 0o700,
+        .protectionKey: FileProtectionType.complete,
+      ]
+    )
+    try verifyDirectory(ownedRoot)
+    var resourceValues = URLResourceValues()
+    resourceValues.isExcludedFromBackup = true
+    var root = ownedRoot
+    try root.setResourceValues(resourceValues)
+    try fileManager.setAttributes(
+      [
+        .posixPermissions: 0o700,
+        .protectionKey: FileProtectionType.complete,
+      ],
+      ofItemAtPath: root.path
+    )
+    return root.standardizedFileURL
+  }
+
+  private func verifyDirectory(_ directory: URL) throws {
+    let values = try directory.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+    guard values.isDirectory == true, values.isSymbolicLink != true else {
+      throw OriginalExportFailure.storageUnavailable
+    }
+  }
+
+  private func isOwnedDestination(_ destination: OriginalExportDestination) -> Bool {
+    guard let root = try? prepareOwnedRoot().standardizedFileURL else { return false }
+    let directory = destination.directory.standardizedFileURL
+    guard
+      directory.deletingLastPathComponent() == root,
+      Self.isOwnedDirectoryName(directory.lastPathComponent),
+      destination.part.deletingLastPathComponent().standardizedFileURL == directory,
+      destination.committed.deletingLastPathComponent().standardizedFileURL == directory
+    else { return false }
+    let rootValues = try? root.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+    let directoryValues = try? directory.resourceValues(
+      forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+    )
+    return rootValues?.isDirectory == true &&
+      rootValues?.isSymbolicLink != true &&
+      directoryValues?.isDirectory == true &&
+      directoryValues?.isSymbolicLink != true
+  }
+
+  private func isRegularFile(_ file: URL) -> Bool {
+    let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+    return values?.isRegularFile == true && values?.isSymbolicLink != true
+  }
+
+  private static func isOwnedDirectoryName(_ name: String) -> Bool {
+    let prefix = "immich-share-"
+    guard name.hasPrefix(prefix) else { return false }
+    let suffix = String(name.dropFirst(prefix.count))
+    guard suffix.count == 36, let uuid = UUID(uuidString: suffix) else { return false }
+    return uuid.uuidString == suffix.uppercased()
   }
 }
 
@@ -225,9 +356,7 @@ enum OriginalExportLeaseJanitor {
           olderThan: now.addingTimeInterval(-TemporaryOriginalExportFileStore.staleLeaseAge)
         )
       } catch {
-        logger.error(
-          "Failed to clean expired original-export leases: \(error.localizedDescription)"
-        )
+        logger.error("Original-export janitor failed errorCode=cleanupFailed")
       }
     }
   }

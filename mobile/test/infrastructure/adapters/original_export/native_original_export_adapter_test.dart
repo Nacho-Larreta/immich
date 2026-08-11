@@ -266,6 +266,9 @@ void main() {
 
     expect(result, const domain.OriginalExportResult.failure(domain.OriginalExportError.storageUnavailable));
     expect(harness.host.releasedLeaseTokens, ['outside-token']);
+    expect(harness.failures, hasLength(1));
+    expect(harness.failures.single.phase, domain.OriginalExportFailurePhase.adoption);
+    expect(harness.failures.single.errorCode, domain.OriginalExportError.storageUnavailable);
   });
 
   test('cancelAll waits for its native barrier and every active terminal result', () async {

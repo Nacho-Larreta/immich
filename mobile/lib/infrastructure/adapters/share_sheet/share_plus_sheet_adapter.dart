@@ -7,25 +7,36 @@ import 'package:immich_mobile/domain/models/share.model.dart' as domain;
 import 'package:share_plus/share_plus.dart' as plugin;
 
 typedef SharePlusInvoker = Future<plugin.ShareResult> Function(List<plugin.XFile> files, Rect? anchor);
+typedef ShareSheetFailureReporter = void Function(domain.ShareSheetError error);
 
 final class SharePlusSheetAdapter implements ShareSheetPort {
-  const SharePlusSheetAdapter({SharePlusInvoker invoker = _invoke}) : _invoker = invoker;
+  const SharePlusSheetAdapter({
+    SharePlusInvoker invoker = _invoke,
+    ShareSheetFailureReporter reportFailure = _ignoreFailure,
+  }) : _invoker = invoker,
+       _reportFailure = reportFailure;
 
   final SharePlusInvoker _invoker;
+  final ShareSheetFailureReporter _reportFailure;
 
   @override
   CancellableRequest<domain.ShareResult> share(domain.ShareSheetRequest request) {
-    return _SharePlusOperation(request, _invoker);
+    return _SharePlusOperation(request, _invoker, _reportFailure);
   }
 
   static Future<plugin.ShareResult> _invoke(List<plugin.XFile> files, Rect? anchor) {
     return plugin.Share.shareXFiles(files, sharePositionOrigin: anchor);
   }
+
+  static void _ignoreFailure(domain.ShareSheetError _) {}
 }
 
 final class _SharePlusOperation implements CancellableRequest<domain.ShareResult> {
-  _SharePlusOperation(domain.ShareSheetRequest request, SharePlusInvoker invoker)
-    : _result = _present(request, invoker);
+  _SharePlusOperation(
+    domain.ShareSheetRequest request,
+    SharePlusInvoker invoker,
+    ShareSheetFailureReporter reportFailure,
+  ) : _result = _present(request, invoker, reportFailure);
 
   final Future<domain.ShareResult> _result;
 
@@ -37,7 +48,11 @@ final class _SharePlusOperation implements CancellableRequest<domain.ShareResult
     // A platform share sheet cannot be recalled after ownership is transferred.
   }
 
-  static Future<domain.ShareResult> _present(domain.ShareSheetRequest request, SharePlusInvoker invoker) async {
+  static Future<domain.ShareResult> _present(
+    domain.ShareSheetRequest request,
+    SharePlusInvoker invoker,
+    ShareSheetFailureReporter reportFailure,
+  ) async {
     try {
       final result = await invoker(
         request.paths.map(plugin.XFile.new).toList(growable: false),
@@ -53,6 +68,7 @@ final class _SharePlusOperation implements CancellableRequest<domain.ShareResult
       };
       return domain.ShareResult.success(actualCount: request.paths.length, disposition: disposition);
     } on Object {
+      reportFailure(domain.ShareSheetError.presentationFailed);
       return const domain.ShareResult.failure(
         domain.ShareSheetFailure(error: domain.ShareSheetError.presentationFailed),
       );

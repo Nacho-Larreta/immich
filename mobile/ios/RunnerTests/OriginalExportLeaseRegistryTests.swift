@@ -8,10 +8,22 @@ final class OriginalExportLeaseRegistryTests: XCTestCase {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
     defer { try? FileManager.default.removeItem(at: root) }
-    let expiredOwned = root.appendingPathComponent("immich-share-expired", isDirectory: true)
-    let recentOwned = root.appendingPathComponent("immich-share-recent", isDirectory: true)
+    let exportRoot = root.appendingPathComponent(
+      TemporaryOriginalExportFileStore.ownedRootName,
+      isDirectory: true
+    )
+    try FileManager.default.createDirectory(at: exportRoot, withIntermediateDirectories: false)
+    let expiredOwned = exportRoot.appendingPathComponent(
+      "immich-share-550E8400-E29B-41D4-A716-446655440000",
+      isDirectory: true
+    )
+    let recentOwned = exportRoot.appendingPathComponent(
+      "immich-share-550E8400-E29B-41D4-A716-446655440001",
+      isDirectory: true
+    )
+    let invalidOwned = exportRoot.appendingPathComponent("immich-share-not-a-uuid", isDirectory: true)
     let unrelated = root.appendingPathComponent("other-expired", isDirectory: true)
-    for directory in [expiredOwned, recentOwned, unrelated] {
+    for directory in [expiredOwned, recentOwned, invalidOwned, unrelated] {
       try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
     }
     let oldDate = Date(
@@ -25,6 +37,15 @@ final class OriginalExportLeaseRegistryTests: XCTestCase {
       [.modificationDate: oldDate],
       ofItemAtPath: unrelated.path
     )
+    try FileManager.default.setAttributes(
+      [.modificationDate: oldDate],
+      ofItemAtPath: invalidOwned.path
+    )
+    let ownedSymlink = exportRoot.appendingPathComponent(
+      "immich-share-550E8400-E29B-41D4-A716-446655440002",
+      isDirectory: true
+    )
+    try FileManager.default.createSymbolicLink(at: ownedSymlink, withDestinationURL: unrelated)
     let performance = RecordingPerformanceRecorder()
     let store = TemporaryOriginalExportFileStore(
       temporaryDirectory: root,
@@ -44,9 +65,84 @@ final class OriginalExportLeaseRegistryTests: XCTestCase {
 
     XCTAssertFalse(FileManager.default.fileExists(atPath: expiredOwned.path))
     XCTAssertTrue(FileManager.default.fileExists(atPath: recentOwned.path))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: invalidOwned.path))
+    XCTAssertNoThrow(try FileManager.default.destinationOfSymbolicLink(atPath: ownedSymlink.path))
     XCTAssertTrue(FileManager.default.fileExists(atPath: unrelated.path))
     XCTAssertEqual(performance.startedCount(.temporary), 1)
     XCTAssertEqual(performance.finishedCount(.temporary), 1)
+  }
+
+  func testDestinationUsesDedicatedCacheRootAndExclusivePartCreation() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = TemporaryOriginalExportFileStore(temporaryDirectory: root)
+
+    let destination = try store.createDestination(suggestedName: "photo.jpg")
+
+    XCTAssertEqual(
+      destination.directory.deletingLastPathComponent().lastPathComponent,
+      TemporaryOriginalExportFileStore.ownedRootName
+    )
+    let first = try store.openPart(at: destination)
+    XCTAssertThrowsError(try store.openPart(at: destination))
+    try first.close()
+    try store.remove(destination)
+  }
+
+  func testStoreRejectsSymlinkedOwnedRoot() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let outside = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: false)
+    defer {
+      try? FileManager.default.removeItem(at: root)
+      try? FileManager.default.removeItem(at: outside)
+    }
+    try FileManager.default.createSymbolicLink(
+      at: root.appendingPathComponent(TemporaryOriginalExportFileStore.ownedRootName),
+      withDestinationURL: outside
+    )
+    let store = TemporaryOriginalExportFileStore(temporaryDirectory: root)
+
+    XCTAssertThrowsError(try store.createDestination(suggestedName: "photo.jpg"))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: outside.path))
+  }
+
+  func testDestinationCollisionNeverReusesOrOverwritesOwnedDirectory() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let fixedUUID = try XCTUnwrap(
+      UUID(uuidString: "550E8400-E29B-41D4-A716-446655440005")
+    )
+    let store = TemporaryOriginalExportFileStore(
+      temporaryDirectory: root,
+      makeUUID: { fixedUUID }
+    )
+
+    let first = try store.createDestination(suggestedName: "photo.jpg")
+    try Data("must-survive".utf8).write(to: first.committed)
+
+    XCTAssertThrowsError(try store.createDestination(suggestedName: "replacement.jpg"))
+    XCTAssertEqual(try Data(contentsOf: first.committed), Data("must-survive".utf8))
+  }
+
+  func testPartCreationRejectsPreplantedSymlinkWithoutTouchingTarget() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = TemporaryOriginalExportFileStore(temporaryDirectory: root)
+    let destination = try store.createDestination(suggestedName: "photo.jpg")
+    let target = root.appendingPathComponent("must-survive.txt")
+    try Data("must-survive".utf8).write(to: target)
+    try FileManager.default.createSymbolicLink(
+      at: destination.part,
+      withDestinationURL: target
+    )
+
+    XCTAssertThrowsError(try store.openPart(at: destination))
+    XCTAssertEqual(try Data(contentsOf: target), Data("must-survive".utf8))
   }
 
   func testReleaseDeletesRegisteredLeaseOnceAndRejectsUnknownTokensWithoutUsingThemAsPaths()

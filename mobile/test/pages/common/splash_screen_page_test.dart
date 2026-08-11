@@ -6,7 +6,8 @@ import 'package:immich_mobile/pages/common/splash_session.dart';
 
 void main() {
   group('SplashSessionBootstrap', () {
-    test('navigates from cache without waiting for pending remote work', () async {
+    test('starts session work without waiting for a pending navigation future', () async {
+      final navigation = Completer<void>();
       final remoteWork = Completer<void>();
       final navigations = <SplashDestination>[];
       var hydrationCalls = 0;
@@ -16,20 +17,28 @@ void main() {
           hydrationCalls++;
           return true;
         },
-        navigate: (destination) async => navigations.add(destination),
+        navigate: (destination) {
+          navigations.add(destination);
+          unawaited(navigation.future);
+        },
         triggerPostNavigationWork: ({required hasRemoteAuthentication}) {
           expect(hasRemoteAuthentication, isTrue);
           remoteTriggers++;
-          return remoteWork.future;
+          unawaited(remoteWork.future);
         },
       );
 
-      await bootstrap.run();
+      await bootstrap.run().timeout(const Duration(milliseconds: 100));
 
       expect(navigations, [SplashDestination.timeline]);
       expect(hydrationCalls, 1);
       expect(remoteTriggers, 1);
+      expect(navigation.isCompleted, isFalse);
       expect(remoteWork.isCompleted, isFalse);
+
+      await bootstrap.run();
+      expect(hydrationCalls, 1);
+      expect(remoteTriggers, 1);
     });
 
     test('opens the local timeline and starts local work when no remote session is cached', () async {
@@ -63,6 +72,14 @@ void main() {
     test('Android startup always requests a full local sync', () {
       expect(shouldRunFullLocalSync(hasRemoteAuthentication: true, isAndroid: true), isTrue);
       expect(shouldRunFullLocalSync(hasRemoteAuthentication: false, isAndroid: true), isTrue);
+    });
+  });
+
+  group('cached endpoint restoration', () {
+    test('restores only HTTPS endpoints and forces local HTTP through fresh proof', () {
+      expect(restorableCachedEndpoint('https://photos.test/api'), Uri.parse('https://photos.test/api'));
+      expect(restorableCachedEndpoint('http://photos.test:2283/api'), isNull);
+      expect(restorableCachedEndpoint('not-an-endpoint'), isNull);
     });
   });
 }
