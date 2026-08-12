@@ -17,7 +17,7 @@ module InstalledSigningIdentity
     end
   end
 
-  VerificationResult = Struct.new(:keychain_name, :certificate_sha256, keyword_init: true) do
+  VerificationResult = Struct.new(:keychain_name, :certificate_sha1, :certificate_sha256, keyword_init: true) do
     def initialize(**values)
       super(**values.transform_values { |value| value.dup.freeze })
       freeze
@@ -118,6 +118,7 @@ module InstalledSigningIdentity
 
       VerificationResult.new(
         keychain_name: validated_keychain,
+        certificate_sha1: matching_certificates.first.sha1,
         certificate_sha256: validated_sha256
       )
     end

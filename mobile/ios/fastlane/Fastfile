@@ -436,7 +436,7 @@ platform :ios do
     tracked_configuration_before = tracked_build_configuration_digest
 
     begin
-      verify_installed_signing_identity!(plan)
+      installed_identity = verify_installed_signing_identity!(plan)
       profile_uuids = verified_profile_uuids!(plan)
       contract = production_artifact_contract(
         version: plan.version,
@@ -445,29 +445,30 @@ platform :ios do
         signing_certificate_sha256: plan.signing_certificate_sha256,
         provisioning_profile_uuids: profile_uuids
       )
-      xcargs = exact_release_runtime.xcode_arguments(
+      exact_release_runtime.with_verified_archive_signing_configuration(
         plan: plan,
-        code_sign_identity: CODE_SIGN_IDENTITY
-      )
-
-      build_app(
-        workspace: "Runner.xcworkspace",
-        scheme: "Runner",
-        configuration: "Release",
-        clean: true,
-        archive_path: plan.archive_path,
-        output_directory: File.dirname(plan.ipa_path),
-        output_name: File.basename(plan.ipa_path),
-        export_method: "app-store",
-        xcargs: xcargs,
-        export_options: {
-          method: "app-store",
-          signingStyle: "manual",
-          signingCertificate: CODE_SIGN_IDENTITY,
-          teamID: plan.developer_portal_team_id,
-          provisioningProfiles: profile_uuids
-        }
-      )
+        profile_uuids: profile_uuids,
+        installed_identity: installed_identity
+      ) do |xcargs|
+        build_app(
+          workspace: "Runner.xcworkspace",
+          scheme: "Runner",
+          configuration: "Release",
+          clean: true,
+          archive_path: plan.archive_path,
+          output_directory: File.dirname(plan.ipa_path),
+          output_name: File.basename(plan.ipa_path),
+          export_method: "app-store",
+          xcargs: xcargs,
+          export_options: {
+            method: "app-store",
+            signingStyle: "manual",
+            signingCertificate: installed_identity.certificate_sha1,
+            teamID: plan.developer_portal_team_id,
+            provisioningProfiles: profile_uuids
+          }
+        )
+      end
 
       secure_private_ipa!(plan.ipa_path)
       validate_exact_ipa!(plan.ipa_path, contract)

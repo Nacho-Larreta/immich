@@ -33,11 +33,17 @@ class FastfileReleaseContractTest < Minitest::Test
     assert_includes lane, "archive_path: plan.archive_path"
     assert_includes lane, "output_directory: File.dirname(plan.ipa_path)"
     assert_includes lane, "output_name: File.basename(plan.ipa_path)"
-    assert_includes RUNTIME, '"MARKETING_VERSION=#{plan.version}"'
-    assert_includes RUNTIME, '"CURRENT_PROJECT_VERSION=#{plan.build_number}"'
+    assert_includes RUNTIME, '"MARKETING_VERSION = #{@version}"'
+    assert_includes RUNTIME, '"CURRENT_PROJECT_VERSION = #{@build_number}"'
     assert_includes lane, "provisioningProfiles: profile_uuids"
     assert_includes lane, 'signingStyle: "manual"'
     assert_includes lane, "teamID: plan.developer_portal_team_id"
+    assert_includes lane, "signingCertificate: installed_identity.certificate_sha1"
+    assert_includes lane, "with_verified_archive_signing_configuration("
+    assert_includes lane, "xcargs: xcargs"
+    refute_includes lane, "CODE_SIGN_IDENTITY"
+    refute_includes lane, "allowProvisioningUpdates"
+    refute_includes lane, "signingStyle: \"automatic\""
   end
 
   def test_exact_build_verifies_local_signing_profiles_artifact_and_tracked_configuration_in_order
@@ -46,14 +52,19 @@ class FastfileReleaseContractTest < Minitest::Test
     assert_ordered(
       lane,
       "tracked_configuration_before = tracked_build_configuration_digest",
-      "verify_installed_signing_identity!(plan)",
+      "installed_identity = verify_installed_signing_identity!(plan)",
       "profile_uuids = verified_profile_uuids!(plan)",
+      "with_verified_archive_signing_configuration(",
       "build_app(",
       "secure_private_ipa!(plan.ipa_path)",
       "validate_exact_ipa!(plan.ipa_path, contract)"
     )
     assert_includes lane, "verify_tracked_build_configuration_unchanged!(tracked_configuration_before)"
     assert_match(/ensure.*verify_tracked_build_configuration_unchanged!/m, lane)
+    assert_match(/with_verified_archive_signing_configuration\(.*build_app\(/m, lane)
+    assert_includes RUNTIME, '"PROVISIONING_PROFILE_SPECIFIER = $(IMMICH_PROFILE_UUID_$(TARGET_NAME))"'
+    assert_includes RUNTIME, '"-showBuildSettings"'
+    assert_includes RUNTIME, "xcconfig.cleanup!"
   end
 
   def test_exact_build_has_no_remote_signing_version_mutation_or_upload_actions

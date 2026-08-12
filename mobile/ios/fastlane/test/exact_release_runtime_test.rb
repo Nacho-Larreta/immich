@@ -15,9 +15,33 @@ class ExactReleaseRuntimeTest < Minitest::Test
     "#{BUNDLE_ID}.WidgetExtension" => "33333333-3333-4333-8333-333333333333"
   }.freeze
 
-  Plan = Struct.new(:developer_portal_team_id, :keychain_name, :version, :build_number, keyword_init: true)
-  Profile = Struct.new(:bundle_id, :path, keyword_init: true)
+  Plan = Struct.new(
+    :developer_portal_team_id,
+    :keychain_name,
+    :version,
+    :build_number,
+    :signing_certificate_sha256,
+    :profiles,
+    keyword_init: true
+  )
+  Profile = Struct.new(:target, :bundle_id, :path, keyword_init: true)
   ProfilePlan = Struct.new(:profiles, :signing_certificate_sha256, keyword_init: true)
+  SigningIdentity = Struct.new(:keychain_name, :certificate_sha1, :certificate_sha256, keyword_init: true)
+
+  class BuildSettingsRunner
+    attr_reader :calls
+
+    def initialize(stdout:, exit_status: 0)
+      @stdout = stdout
+      @exit_status = exit_status
+      @calls = []
+    end
+
+    def call(argv)
+      @calls << argv
+      ExactReleaseRuntime::CommandResult.new(stdout: @stdout, stderr: "private stderr", exit_status: @exit_status)
+    end
+  end
 
   class FakeArtifactRunner
     attr_reader :calls, :certificate_paths
@@ -137,28 +161,227 @@ class ExactReleaseRuntimeTest < Minitest::Test
     end
   end
 
-  def test_xcode_arguments_are_shell_escaped_exact_release_values
-    plan = Plan.new(
-      developer_portal_team_id: TEAM_ID,
-      keychain_name: "private.keychain-db",
-      version: "1.142.0",
-      build_number: "42"
-    )
+  def test_private_runtime_xcconfig_binds_each_target_and_is_removed_after_success
+    runner = BuildSettingsRunner.new(stdout: exact_build_settings)
+    runtime = service(argv_runner: runner)
+    captured_path = nil
 
-    arguments = service(argv_runner: Object.new).xcode_arguments(
-      plan: plan,
-      code_sign_identity: "Apple Distribution"
-    )
+    result = runtime.with_verified_archive_signing_configuration(
+      plan: archive_plan,
+      profile_uuids: PROFILE_UUIDS,
+      installed_identity: exact_identity
+    ) do |arguments|
+      values = Shellwords.split(arguments)
+      assert_equal "-xcconfig", values.fetch(0)
+      captured_path = values.fetch(1)
+      file_stat = File.lstat(captured_path)
+      directory_stat = File.lstat(File.dirname(captured_path))
+      assert file_stat.file?
+      refute file_stat.symlink?
+      assert_equal 1, file_stat.nlink
+      assert_equal Process.euid, file_stat.uid
+      assert_equal 0o600, file_stat.mode & 0o777
+      assert directory_stat.directory?
+      refute directory_stat.symlink?
+      assert_equal Process.euid, directory_stat.uid
+      assert_equal 0o700, directory_stat.mode & 0o777
+      config = File.read(captured_path)
+      assert_includes config, "CODE_SIGN_STYLE = Manual"
+      assert_includes config, "CODE_SIGN_IDENTITY = #{'a' * 40}"
+      assert_includes config, "PROVISIONING_PROFILE_SPECIFIER = $(IMMICH_PROFILE_UUID_$(TARGET_NAME))"
+      PROFILE_UUIDS.each_value { |uuid| assert_includes config, uuid }
+      refute_includes config, "Apple Distribution"
+      :archived
+    end
 
-    assert_equal [
-      "-skipMacroValidation",
-      "CODE_SIGN_STYLE=Manual",
-      "CODE_SIGN_IDENTITY=Apple Distribution",
-      "DEVELOPMENT_TEAM=#{TEAM_ID}",
-      "OTHER_CODE_SIGN_FLAGS=--keychain private.keychain-db",
-      "MARKETING_VERSION=1.142.0",
-      "CURRENT_PROJECT_VERSION=42"
-    ], Shellwords.split(arguments)
+    assert_equal :archived, result
+    refute_path_exists captured_path
+    refute_path_exists File.dirname(captured_path)
+    probe = runner.calls.fetch(0)
+    assert_equal "/usr/bin/xcodebuild", probe.fetch(0)
+    assert_equal ["-workspace", File.join(ExactReleaseRuntime::IOS_PROJECT_ROOT, "Runner.xcworkspace")], probe[1, 2]
+    assert_equal ["-destination", "generic/platform=iOS"], probe[7, 2]
+    assert_equal "-showBuildSettings", probe.fetch(9)
+    assert_equal ["-xcconfig", captured_path], probe.last(2)
+    assert probe.frozen?
+    assert probe.all?(&:frozen?)
+  end
+
+  def test_runtime_xcconfig_is_removed_when_probe_or_archive_fails
+    failed_probe = BuildSettingsRunner.new(stdout: "", exit_status: 1)
+    runtime = service(argv_runner: failed_probe)
+    assert_raises(ExactReleaseRuntime::Error) do
+      runtime.with_verified_archive_signing_configuration(
+        plan: archive_plan,
+        profile_uuids: PROFILE_UUIDS,
+        installed_identity: exact_identity
+      ) { flunk "archive must not start" }
+    end
+    probe_path = failed_probe.calls.fetch(0).last
+    refute_path_exists probe_path
+    refute_path_exists File.dirname(probe_path)
+
+    runner = BuildSettingsRunner.new(stdout: exact_build_settings)
+    archive_path = nil
+    assert_raises(RuntimeError) do
+      service(argv_runner: runner).with_verified_archive_signing_configuration(
+        plan: archive_plan,
+        profile_uuids: PROFILE_UUIDS,
+        installed_identity: exact_identity
+      ) do |arguments|
+        archive_path = Shellwords.split(arguments).last
+        raise "archive failed"
+      end
+    end
+    refute_path_exists archive_path
+    refute_path_exists File.dirname(archive_path)
+  end
+
+  def test_runtime_configuration_preserves_the_tracked_configuration_digest
+    Dir.mktmpdir do |root|
+      tracked_path = File.join(root, "project.pbxproj")
+      File.binwrite(tracked_path, "tracked configuration")
+      runner = BuildSettingsRunner.new(stdout: exact_build_settings)
+      runtime = service(
+        argv_runner: runner,
+        tracked_paths: ["project.pbxproj"],
+        tracked_root: root
+      )
+      before = runtime.tracked_configuration_digest
+
+      runtime.with_verified_archive_signing_configuration(
+        plan: archive_plan,
+        profile_uuids: PROFILE_UUIDS,
+        installed_identity: exact_identity
+      ) { |_arguments| true }
+
+      assert runtime.verify_tracked_configuration_unchanged!(before)
+      assert_equal "tracked configuration", File.binread(tracked_path)
+    end
+  end
+
+  def test_archive_signing_mapping_fails_closed_before_xcodebuild
+    invalid_mappings = [
+      PROFILE_UUIDS.except(BUNDLE_ID),
+      PROFILE_UUIDS.merge("unexpected" => "44444444-4444-4444-8444-444444444444"),
+      PROFILE_UUIDS.merge(BUNDLE_ID => PROFILE_UUIDS.fetch("#{BUNDLE_ID}.ShareExtension")),
+      PROFILE_UUIDS.merge(BUNDLE_ID => "malformed")
+    ]
+
+    invalid_mappings.each do |mapping|
+      runner = BuildSettingsRunner.new(stdout: exact_build_settings)
+      assert_raises(ExactReleaseRuntime::Error) do
+        service(argv_runner: runner).with_verified_archive_signing_configuration(
+          plan: archive_plan,
+          profile_uuids: mapping,
+          installed_identity: exact_identity
+        ) { flunk "archive must not start" }
+      end
+      assert_empty runner.calls
+    end
+  end
+
+  def test_archive_signing_rejects_an_identity_proof_for_another_plan
+    wrong_identities = [
+      SigningIdentity.new(
+        keychain_name: "other.keychain-db",
+        certificate_sha1: "a" * 40,
+        certificate_sha256: CERTIFICATE_SHA256
+      ),
+      SigningIdentity.new(
+        keychain_name: "private.keychain-db",
+        certificate_sha1: "a" * 40,
+        certificate_sha256: "f" * 64
+      ),
+      SigningIdentity.new(
+        keychain_name: "private.keychain-db",
+        certificate_sha1: "malformed",
+        certificate_sha256: CERTIFICATE_SHA256
+      )
+    ]
+
+    wrong_identities.each do |identity|
+      runner = BuildSettingsRunner.new(stdout: exact_build_settings)
+      assert_raises(ExactReleaseRuntime::Error) do
+        service(argv_runner: runner).with_verified_archive_signing_configuration(
+          plan: archive_plan,
+          profile_uuids: PROFILE_UUIDS,
+          installed_identity: identity
+        ) { flunk "archive must not start" }
+      end
+      assert_empty runner.calls
+    end
+  end
+
+  def test_prearchive_probe_rejects_wrong_or_unresolved_exact_settings
+    replacements = [
+      ["CODE_SIGN_STYLE = Manual", "CODE_SIGN_STYLE = Automatic"],
+      ["DEVELOPMENT_TEAM = #{TEAM_ID}", "DEVELOPMENT_TEAM = WRONGTEAM1"],
+      ["CODE_SIGN_IDENTITY = #{'a' * 40}", "CODE_SIGN_IDENTITY = #{'b' * 40}"],
+      [
+        "PROVISIONING_PROFILE_SPECIFIER = #{PROFILE_UUIDS.fetch(BUNDLE_ID)}",
+        "PROVISIONING_PROFILE_SPECIFIER = stale tracked profile name"
+      ],
+      [
+        "PROVISIONING_PROFILE_SPECIFIER = #{PROFILE_UUIDS.fetch(BUNDLE_ID)}",
+        "PROVISIONING_PROFILE_SPECIFIER = 44444444-4444-4444-8444-444444444444"
+      ],
+      [
+        "PROVISIONING_PROFILE_SPECIFIER = #{PROFILE_UUIDS.fetch(BUNDLE_ID)}",
+        "PROVISIONING_PROFILE_SPECIFIER = $(IMMICH_PROFILE_UUID_$(TARGET_NAME))"
+      ]
+    ]
+
+    replacements.each do |from, to|
+      runner = BuildSettingsRunner.new(stdout: exact_build_settings.sub(from, to))
+      assert_raises(ExactReleaseRuntime::Error) do
+        service(argv_runner: runner).with_verified_archive_signing_configuration(
+          plan: archive_plan,
+          profile_uuids: PROFILE_UUIDS,
+          installed_identity: exact_identity
+        ) { flunk "archive must not start" }
+      end
+    end
+  end
+
+  def test_prearchive_probe_rejects_duplicate_and_malformed_target_output
+    malformed_outputs = [
+      exact_build_settings + exact_build_settings.lines.first(5).join,
+      exact_build_settings.sub(
+        "    CODE_SIGN_STYLE = Manual\n",
+        "    CODE_SIGN_STYLE = Manual\n    CODE_SIGN_STYLE = Manual\n"
+      ),
+      exact_build_settings.sub("Build settings for action build and target Runner:", "malformed target header")
+    ]
+
+    malformed_outputs.each do |stdout|
+      assert_raises(ExactReleaseRuntime::Error) do
+        service(argv_runner: BuildSettingsRunner.new(stdout: stdout)).with_verified_archive_signing_configuration(
+          plan: archive_plan,
+          profile_uuids: PROFILE_UUIDS,
+          installed_identity: exact_identity
+        ) { flunk "archive must not start" }
+      end
+    end
+  end
+
+  def test_runtime_configuration_detects_archive_mutation_and_still_cleans_up
+    runner = BuildSettingsRunner.new(stdout: exact_build_settings)
+    path = nil
+
+    assert_raises(ExactReleaseRuntime::Error) do
+      service(argv_runner: runner).with_verified_archive_signing_configuration(
+        plan: archive_plan,
+        profile_uuids: PROFILE_UUIDS,
+        installed_identity: exact_identity
+      ) do |arguments|
+        path = Shellwords.split(arguments).last
+        File.binwrite(path, "changed")
+      end
+    end
+
+    refute_path_exists path
+    refute_path_exists File.dirname(path)
   end
 
   def test_signing_certificate_uses_single_codesign_option_and_removes_extracted_output
@@ -374,6 +597,41 @@ class ExactReleaseRuntimeTest < Minitest::Test
   end
 
   private
+
+  def archive_plan
+    Plan.new(
+      developer_portal_team_id: TEAM_ID,
+      keychain_name: "private.keychain-db",
+      version: "1.142.0",
+      build_number: "42",
+      signing_certificate_sha256: CERTIFICATE_SHA256,
+      profiles: [
+        Profile.new(target: "Runner", bundle_id: BUNDLE_ID),
+        Profile.new(target: "ShareExtension", bundle_id: "#{BUNDLE_ID}.ShareExtension"),
+        Profile.new(target: "WidgetExtension", bundle_id: "#{BUNDLE_ID}.WidgetExtension")
+      ]
+    )
+  end
+
+  def exact_identity
+    SigningIdentity.new(
+      keychain_name: "private.keychain-db",
+      certificate_sha1: "a" * 40,
+      certificate_sha256: CERTIFICATE_SHA256
+    )
+  end
+
+  def exact_build_settings
+    archive_plan.profiles.map do |profile|
+      <<~SETTINGS
+        Build settings for action build and target #{profile.target}:
+            CODE_SIGN_IDENTITY = #{'a' * 40}
+            CODE_SIGN_STYLE = Manual
+            DEVELOPMENT_TEAM = #{TEAM_ID}
+            PROVISIONING_PROFILE_SPECIFIER = #{PROFILE_UUIDS.fetch(profile.bundle_id)}
+      SETTINGS
+    end.join
+  end
 
   def contract
     TestFlightReleaseArtifact::Contract.new(

@@ -43,12 +43,15 @@ class InstalledSigningIdentityTest < Minitest::Test
     )
 
     assert_equal @fingerprint, result.certificate_sha256
+    assert_equal @sha1, result.certificate_sha1
     assert_equal @keychain_name, result.keychain_name
     assert result.frozen?
     assert result.keychain_name.frozen?
     assert result.certificate_sha256.frozen?
+    assert result.certificate_sha1.frozen?
     refute_includes result.inspect, @keychain_name
     refute_includes result.inspect, @fingerprint
+    refute_includes result.inspect, @sha1
     assert_equal(
       [
         ["/usr/bin/security", "find-certificate", "-a", "-p", @keychain_name],

@@ -35,6 +35,294 @@ module ExactReleaseRuntime
     end
   end
 
+  class ArchiveSigningBinding
+    TARGETS = %w[Runner ShareExtension WidgetExtension].map(&:freeze).freeze
+    SHA1 = /\A[0-9a-f]{40}\z/
+    SHA256 = /\A[0-9a-f]{64}\z/
+    TEAM_ID = /\A[A-Z0-9]{10}\z/
+    PROFILE_UUID = TestFlightReleaseArtifact::Contract::PROFILE_UUID
+    VERSION = /\A(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\z/
+    BUILD_NUMBER = /\A[1-9][0-9]*\z/
+    KEYCHAIN_NAME = /\A[A-Za-z0-9][A-Za-z0-9._-]{0,254}\z/
+
+    attr_reader :certificate_sha1, :profile_uuid_by_target
+
+    def initialize(plan:, profile_uuids:, installed_identity:)
+      @team_id = validated_string(plan, :developer_portal_team_id, pattern: TEAM_ID)
+      @keychain_name = validated_string(plan, :keychain_name, pattern: KEYCHAIN_NAME)
+      @version = validated_string(plan, :version, pattern: VERSION)
+      @build_number = validated_string(plan, :build_number, pattern: BUILD_NUMBER)
+      certificate_sha256 = validated_string(plan, :signing_certificate_sha256, pattern: SHA256)
+      @certificate_sha1 = validated_string(installed_identity, :certificate_sha1, pattern: SHA1)
+      verified_keychain = validated_string(installed_identity, :keychain_name, pattern: KEYCHAIN_NAME)
+      verified_sha256 = validated_string(installed_identity, :certificate_sha256, pattern: SHA256)
+      unless verified_keychain == @keychain_name && verified_sha256 == certificate_sha256
+        raise Error, "Installed signing identity does not match the archive plan"
+      end
+      @profile_uuid_by_target = validated_profile_mapping(plan, profile_uuids)
+      freeze
+    rescue Error
+      raise
+    rescue StandardError
+      raise Error, "Archive signing inputs are invalid"
+    end
+
+    def content
+      lines = [
+        "CODE_SIGN_STYLE = Manual",
+        "DEVELOPMENT_TEAM = #{@team_id}",
+        "CODE_SIGN_IDENTITY = #{@certificate_sha1}",
+        "OTHER_CODE_SIGN_FLAGS = --keychain #{@keychain_name}",
+        "MARKETING_VERSION = #{@version}",
+        "CURRENT_PROJECT_VERSION = #{@build_number}"
+      ]
+      TARGETS.each do |target|
+        lines << "IMMICH_PROFILE_UUID_#{target} = #{@profile_uuid_by_target.fetch(target)}"
+      end
+      lines << "PROVISIONING_PROFILE_SPECIFIER = $(IMMICH_PROFILE_UUID_$(TARGET_NAME))"
+      "#{lines.join("\n")}\n".freeze
+    end
+
+    def expected_settings(target)
+      {
+        "CODE_SIGN_STYLE" => "Manual",
+        "DEVELOPMENT_TEAM" => @team_id,
+        "CODE_SIGN_IDENTITY" => @certificate_sha1,
+        "PROVISIONING_PROFILE_SPECIFIER" => @profile_uuid_by_target.fetch(target)
+      }.transform_values { |value| value.dup.freeze }.freeze
+    rescue KeyError
+      raise Error, "Archive build settings contain an unexpected target"
+    end
+
+    private
+
+    def validated_string(source, attribute, pattern: nil)
+      value = source.public_send(attribute)
+      valid = value.is_a?(String) && !value.empty? && value == value.strip
+      valid &&= value.match?(pattern) if pattern
+      raise Error, "Archive signing inputs are invalid" unless valid
+
+      value.dup.freeze
+    end
+
+    def validated_profile_mapping(plan, profile_uuids)
+      profiles = plan.profiles
+      unless profiles.is_a?(Array) && profiles.length == TARGETS.length && profile_uuids.is_a?(Hash)
+        raise Error, "Archive profile mapping must contain exactly three targets"
+      end
+
+      targets = profiles.map(&:target)
+      bundle_ids = profiles.map(&:bundle_id)
+      unless targets.sort == TARGETS.sort && targets.uniq.length == TARGETS.length &&
+             profile_uuids.keys.sort == bundle_ids.sort
+        raise Error, "Archive profile mapping must contain exactly three targets"
+      end
+
+      mapping = profiles.to_h do |profile|
+        uuid = profile_uuids.fetch(profile.bundle_id)
+        unless uuid.is_a?(String) && uuid.match?(PROFILE_UUID)
+          raise Error, "Archive profile mapping contains an invalid UUID"
+        end
+
+        [profile.target.dup.freeze, uuid.dup.freeze]
+      end
+      unless mapping.values.uniq.length == TARGETS.length
+        raise Error, "Archive profile mapping must use three distinct UUIDs"
+      end
+
+      mapping.freeze
+    end
+  end
+
+  class PrivateRuntimeXcconfig
+    FILE_NAME = "ExactRelease.xcconfig"
+
+    attr_reader :path
+
+    def initialize(content)
+      @directory = Dir.mktmpdir("immich-exact-signing-")
+      File.chmod(0o700, @directory)
+      @directory_stat = secure_directory_stat!
+      @path = File.join(@directory, FILE_NAME).freeze
+      write_once!(content)
+      @file_stat = secure_file_stat!
+      @digest = Digest::SHA256.file(@path).hexdigest.freeze
+    rescue Error
+      cleanup_after_initialization_failure
+      raise
+    rescue StandardError
+      cleanup_after_initialization_failure
+      raise Error, "Private archive signing configuration could not be created"
+    end
+
+    def xcode_arguments
+      Shellwords.join(["-xcconfig", @path])
+    end
+
+    def verify_unchanged!
+      current = secure_file_stat!
+      unchanged = current.dev == @file_stat.dev && current.ino == @file_stat.ino &&
+                  current.size == @file_stat.size && Digest::SHA256.file(@path).hexdigest == @digest
+      raise Error, "Private archive signing configuration changed during the build" unless unchanged
+
+      true
+    rescue Error
+      raise
+    rescue StandardError
+      raise Error, "Private archive signing configuration is unavailable"
+    end
+
+    def cleanup!
+      return true unless @directory
+
+      current = File.lstat(@directory)
+      unless current.directory? && !current.symlink? && current.dev == @directory_stat.dev &&
+             current.ino == @directory_stat.ino && current.uid == Process.euid
+        raise Error, "Private archive signing directory changed before cleanup"
+      end
+
+      FileUtils.remove_entry_secure(@directory)
+      raise Error, "Private archive signing directory cleanup failed" if File.exist?(@directory) || File.symlink?(@directory)
+
+      @directory = nil
+      true
+    rescue Error
+      raise
+    rescue StandardError
+      raise Error, "Private archive signing directory cleanup failed"
+    end
+
+    private
+
+    def write_once!(content)
+      unless content.is_a?(String) && !content.empty? && content.valid_encoding?
+        raise Error, "Private archive signing configuration is invalid"
+      end
+
+      flags = File::WRONLY | File::CREAT | File::EXCL
+      flags |= File::NOFOLLOW if defined?(File::NOFOLLOW)
+      File.open(@path, flags, 0o600) do |file|
+        file.write(content)
+        file.flush
+        file.fsync
+      end
+      File.chmod(0o600, @path)
+    end
+
+    def secure_directory_stat!
+      stat = File.lstat(@directory)
+      valid = stat.directory? && !stat.symlink? && stat.uid == Process.euid && stat.mode & 0o777 == 0o700
+      raise Error, "Private archive signing directory is invalid" unless valid
+
+      stat
+    end
+
+    def secure_file_stat!
+      stat = File.lstat(@path)
+      valid = stat.file? && !stat.symlink? && stat.nlink == 1 && stat.uid == Process.euid &&
+              stat.mode & 0o777 == 0o600 && stat.size.positive?
+      raise Error, "Private archive signing configuration is invalid" unless valid
+
+      stat
+    end
+
+    def cleanup_after_initialization_failure
+      return unless @directory && File.directory?(@directory) && !File.symlink?(@directory)
+
+      FileUtils.remove_entry_secure(@directory)
+    rescue StandardError
+      nil
+    end
+  end
+
+  class BuildSettingsProbe
+    XCODEBUILD = "/usr/bin/xcodebuild"
+    MAX_OUTPUT_BYTES = 16 * 1024 * 1024
+    TARGET_HEADER = /\ABuild settings for action build and target (.+):\z/
+    SETTING = /\A\s+([A-Z0-9_]+) = (.*)\z/
+    REQUIRED_KEYS = %w[
+      CODE_SIGN_IDENTITY
+      CODE_SIGN_STYLE
+      DEVELOPMENT_TEAM
+      PROVISIONING_PROFILE_SPECIFIER
+    ].map(&:freeze).freeze
+
+    def initialize(argv_runner:, project_root:)
+      @argv_runner = argv_runner
+      @project_root = project_root
+    end
+
+    def verify!(xcconfig:, binding:)
+      result = @argv_runner.call(command(xcconfig.path))
+      unless valid_result?(result)
+        raise Error, "Archive build settings probe failed"
+      end
+
+      settings = parse(result.stdout)
+      ArchiveSigningBinding::TARGETS.each do |target|
+        expected = binding.expected_settings(target)
+        actual = settings.fetch(target) do
+          raise Error, "Archive build settings are missing a required target"
+        end
+        unless actual == expected && actual.values.none? { |value| value.include?("$(") }
+          raise Error, "Archive build settings do not match the exact signing contract"
+        end
+      end
+      true
+    rescue Error
+      raise
+    rescue StandardError
+      raise Error, "Archive build settings probe failed"
+    end
+
+    private
+
+    def command(path)
+      [
+        XCODEBUILD,
+        "-workspace", File.join(@project_root, "Runner.xcworkspace"),
+        "-scheme", "Runner",
+        "-configuration", "Release",
+        "-destination", "generic/platform=iOS",
+        "-showBuildSettings",
+        "-xcconfig", path
+      ].map { |argument| argument.dup.freeze }.freeze
+    end
+
+    def valid_result?(result)
+      result.respond_to?(:stdout) && result.respond_to?(:stderr) && result.respond_to?(:exit_status) &&
+        result.stdout.is_a?(String) && result.stdout.valid_encoding? &&
+        result.stdout.bytesize <= MAX_OUTPUT_BYTES && result.stderr.is_a?(String) && result.exit_status == 0
+    end
+
+    def parse(output)
+      target = nil
+      settings = {}
+      output.each_line do |line|
+        stripped = line.strip
+        if (header = TARGET_HEADER.match(stripped))
+          target = header[1]
+          if ArchiveSigningBinding::TARGETS.include?(target)
+            raise Error, "Archive build settings contain a duplicate target" if settings.key?(target)
+
+            settings[target] = {}
+          end
+          next
+        end
+        next unless target && settings.key?(target)
+
+        match = SETTING.match(line.chomp)
+        next unless match && REQUIRED_KEYS.include?(match[1])
+
+        raise Error, "Archive build settings contain a duplicate value" if settings[target].key?(match[1])
+
+        settings[target][match[1]] = match[2].dup.freeze
+      end
+      settings.each_value(&:freeze)
+      settings.freeze
+    end
+  end
+
   class ArgvRunner
     def call(argv)
       unless argv.is_a?(Array) && !argv.empty? && argv.all? { |argument| argument.is_a?(String) }
@@ -403,18 +691,25 @@ module ExactReleaseRuntime
       end
     end
 
-    def xcode_arguments(plan:, code_sign_identity:)
-      Shellwords.join(
-        [
-          "-skipMacroValidation",
-          "CODE_SIGN_STYLE=Manual",
-          "CODE_SIGN_IDENTITY=#{code_sign_identity}",
-          "DEVELOPMENT_TEAM=#{plan.developer_portal_team_id}",
-          "OTHER_CODE_SIGN_FLAGS=--keychain #{plan.keychain_name}",
-          "MARKETING_VERSION=#{plan.version}",
-          "CURRENT_PROJECT_VERSION=#{plan.build_number}"
-        ]
+    def with_verified_archive_signing_configuration(plan:, profile_uuids:, installed_identity:)
+      binding = ArchiveSigningBinding.new(
+        plan: plan,
+        profile_uuids: profile_uuids,
+        installed_identity: installed_identity
       )
+      xcconfig = PrivateRuntimeXcconfig.new(binding.content)
+      begin
+        BuildSettingsProbe.new(
+          argv_runner: @argv_runner,
+          project_root: IOS_PROJECT_ROOT
+        ).verify!(xcconfig: xcconfig, binding: binding)
+        xcconfig.verify_unchanged!
+        result = yield xcconfig.xcode_arguments
+        xcconfig.verify_unchanged!
+        result
+      ensure
+        xcconfig.cleanup!
+      end
     end
 
     private
