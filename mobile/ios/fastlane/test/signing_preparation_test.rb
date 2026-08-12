@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "cfpropertylist"
 require "stringio"
 require "tmpdir"
 require_relative "../signing_preparation"
@@ -176,6 +177,36 @@ class SigningPreparationTest < Minitest::Test
           certificate_sha256: Digest::SHA256.hexdigest(certificate.to_der)
         )
         assert_equal original_position, certificate_stream.pos
+      end
+    end
+  end
+
+  def test_profile_verifier_reads_cfpropertylist_blob_certificate
+    certificate, = self_signed_identity("cfpropertylist-profile")
+
+    assert SigningPreparation::ProfileVerifier.verify!(
+      profile_data: profile_with_certificate(CFPropertyList::Blob.new(certificate.to_der)),
+      expected_bundle_id: "com.example.app",
+      certificate_sha256: Digest::SHA256.hexdigest(certificate.to_der)
+    )
+  end
+
+  def test_profile_verifier_rejects_invalid_cfpropertylist_blob_certificates
+    certificate, = self_signed_identity("invalid-cfpropertylist-profile")
+    expected_fingerprint = Digest::SHA256.hexdigest(certificate.to_der)
+    invalid_certificates = [
+      CFPropertyList::Blob.new(""),
+      CFPropertyList::Blob.new("not-a-certificate"),
+      CFPropertyList::Blob.new("a" * (SigningPreparation::ProfileVerifier::MAX_CERTIFICATE_DER_BYTES + 1))
+    ]
+
+    invalid_certificates.each do |profile_certificate|
+      assert_raises(SigningPreparation::InvalidPlan) do
+        SigningPreparation::ProfileVerifier.verify!(
+          profile_data: profile_with_certificate(profile_certificate),
+          expected_bundle_id: "com.example.app",
+          certificate_sha256: expected_fingerprint
+        )
       end
     end
   end

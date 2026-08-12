@@ -3,6 +3,7 @@
 require "digest"
 require "openssl"
 require "base64"
+require "cfpropertylist"
 require "pathname"
 require "stringio"
 require "tempfile"
@@ -443,13 +444,17 @@ module SigningPreparation
     end
 
     def certificate_fingerprint!(certificate)
-      der = case certificate
-            when OpenSSL::X509::Certificate
-              certificate.to_der
-            when StringIO, IO
-              read_certificate_stream!(certificate)
+      der = if certificate.instance_of?(CFPropertyList::Blob)
+              String.new(certificate)
             else
-              raise InvalidPlan, "Provisioning profile contains an invalid signing certificate"
+              case certificate
+              when OpenSSL::X509::Certificate
+                certificate.to_der
+              when StringIO, IO
+                read_certificate_stream!(certificate)
+              else
+                raise InvalidPlan, "Provisioning profile contains an invalid signing certificate"
+              end
             end
       unless der.is_a?(String) && !der.empty? && der.bytesize <= MAX_CERTIFICATE_DER_BYTES
         raise InvalidPlan, "Provisioning profile contains an invalid signing certificate"
