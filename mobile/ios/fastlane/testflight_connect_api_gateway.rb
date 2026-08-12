@@ -175,7 +175,10 @@ module TestFlightConnectApiGateway
     def value(raw, key)
       return raw.public_send(key) if !raw.is_a?(Hash) && raw.respond_to?(key)
 
-      raw[key] || raw[key.to_s]
+      return raw[key] if raw.key?(key)
+
+      string_key = key.to_s
+      raw[string_key] if raw.key?(string_key)
     end
 
     def attributes(raw)

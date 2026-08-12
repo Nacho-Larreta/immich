@@ -103,6 +103,43 @@ class TestFlightConnectApiGatewayTest < Minitest::Test
     assert_equal ["group-1"], tester.group_ids
   end
 
+  def test_build_mapping_preserves_false_boolean_attributes_for_symbol_and_string_keys
+    expiration = "2026-11-09T10:43:23Z"
+    [
+      {
+        id: "symbol-build",
+        attributes: {
+          version: "2.7.5",
+          build_number: "242",
+          expired: false,
+          expiration_date: expiration,
+          uses_non_exempt_encryption: false
+        }
+      },
+      {
+        "id" => "string-build",
+        "attributes" => {
+          "version" => "2.7.5",
+          "build_number" => "242",
+          "expired" => false,
+          "expiration_date" => expiration,
+          "uses_non_exempt_encryption" => false
+        }
+      }
+    ].each do |raw_build|
+      pages = {
+        nil => TestFlightConnectApiGateway::Page.new(items: [raw_build], next_cursor: nil)
+      }
+      build = gateway_with(FakeTransport.new(pages: pages))
+        .builds(app_id: "app-1", version: "2.7.5")
+        .fetch(0)
+
+      assert_equal false, build.expired
+      assert_equal false, build.uses_non_exempt_encryption
+      assert_equal Time.iso8601(expiration), build.expiration_date
+    end
+  end
+
   def test_renews_an_expired_token_once_and_retries_the_same_page
     transport = FakeTransport.new(
       pages: { nil => TestFlightConnectApiGateway::Page.new(items: [], next_cursor: nil) },
