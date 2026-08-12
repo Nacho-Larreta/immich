@@ -36,6 +36,7 @@ class FastfileReleaseContractTest < Minitest::Test
     assert_includes RUNTIME, '"MARKETING_VERSION = #{@version}"'
     assert_includes RUNTIME, '"CURRENT_PROJECT_VERSION = #{@build_number}"'
     assert_includes lane, "provisioningProfiles: profile_uuids"
+    assert_includes lane, "skip_profile_detection: true"
     assert_includes lane, 'signingStyle: "manual"'
     assert_includes lane, "teamID: plan.developer_portal_team_id"
     assert_includes lane, "signingCertificate: installed_identity.certificate_sha1"
@@ -44,6 +45,17 @@ class FastfileReleaseContractTest < Minitest::Test
     refute_includes lane, "CODE_SIGN_IDENTITY"
     refute_includes lane, "allowProvisioningUpdates"
     refute_includes lane, "signingStyle: \"automatic\""
+  end
+
+  def test_exact_build_keeps_verified_uuid_mapping_authoritative_during_export
+    lane = lane_source("nacho_build_exact_prod")
+
+    assert_match(
+      /profile_uuids = verified_profile_uuids!\(plan\).*build_app\(.*skip_profile_detection: true.*provisioningProfiles: profile_uuids/m,
+      lane
+    )
+    assert_equal 1, lane.scan("skip_profile_detection: true").length
+    refute_includes lane, "skip_profile_detection: false"
   end
 
   def test_exact_build_verifies_local_signing_profiles_artifact_and_tracked_configuration_in_order

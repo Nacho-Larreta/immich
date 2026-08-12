@@ -459,6 +459,7 @@ platform :ios do
           output_directory: File.dirname(plan.ipa_path),
           output_name: File.basename(plan.ipa_path),
           export_method: "app-store",
+          skip_profile_detection: true,
           xcargs: xcargs,
           export_options: {
             method: "app-store",
