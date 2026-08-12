@@ -16,7 +16,13 @@ final class BackupAdmission {
   bool get admitted => disposition == BackupAdmissionDisposition.acquired;
 }
 
-final class BackupExecutionArbiter {
+abstract interface class BackgroundBackupAdmissionPort {
+  Future<BackupAdmission> acquireBackground({required String bindingDigest});
+
+  Future<void> releaseCurrentWhenQuiescent({required String runToken, required String bindingDigest});
+}
+
+final class BackupExecutionArbiter implements BackgroundBackupAdmissionPort {
   BackupExecutionArbiter({
     required BackupExecutionLeasePort leases,
     required BackupTaskRegistryPort tasks,
@@ -45,6 +51,7 @@ final class BackupExecutionArbiter {
     return _acquire(mode: BackupExecutionMode.foreground, bindingDigest: bindingDigest);
   }
 
+  @override
   Future<BackupAdmission> acquireBackground({required String bindingDigest}) async {
     return _acquire(mode: BackupExecutionMode.background, bindingDigest: bindingDigest);
   }
@@ -139,6 +146,7 @@ final class BackupExecutionArbiter {
     return _leases.releaseExact(expected);
   }
 
+  @override
   Future<bool> releaseCurrentWhenQuiescent({required String runToken, required String bindingDigest}) async {
     final lease = await _leases.read();
     if (lease == null || lease.runToken != runToken || lease.bindingDigest != bindingDigest) return false;

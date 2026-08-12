@@ -4,6 +4,7 @@ import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:immich_mobile/domain/models/backup_execution_lease.model.dart';
+import 'package:immich_mobile/domain/models/backup_enablement.model.dart';
 import 'package:immich_mobile/domain/models/backup_candidate_key.model.dart';
 import 'package:immich_mobile/domain/models/backup_reconciliation_quarantine.model.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
@@ -22,6 +23,7 @@ void main() {
     final file = File('${directory.path}/shared.sqlite');
     firstDb = Drift(DatabaseConnection(NativeDatabase(file), closeStreamsSynchronously: true));
     await firstDb.customSelect('SELECT 1').get();
+    await _setBackupEnabled(firstDb, true);
     secondDb = Drift(DatabaseConnection(NativeDatabase(file), closeStreamsSynchronously: true));
     await secondDb.customSelect('SELECT 1').get();
     first = DriftBackupExecutionLeaseRepository(firstDb);
@@ -42,6 +44,59 @@ void main() {
 
     expect(results.where((result) => result), hasLength(1));
     expect((await first.read())?.runToken, anyOf('first', 'second'));
+  });
+
+  test('lease acquisition fails closed when backup setting is absent or disabled', () async {
+    final now = DateTime.utc(2026, 8, 11, 12);
+    await firstDb.customUpdate(
+      'DELETE FROM store_entity WHERE id IN (?1, ?2)',
+      variables: [Variable.withInt(StoreKey.enableBackup.id), Variable.withInt(StoreKey.backupEnablementState.id)],
+    );
+
+    expect(await first.acquire(_lease('missing-setting', now), now), isFalse);
+    expect(await first.read(), isNull);
+
+    await _setBackupEnabled(firstDb, false);
+    expect(await first.acquire(_lease('disabled-setting', now), now), isFalse);
+    expect(await first.read(), isNull);
+  });
+
+  test('stale worker cannot acquire after backup is atomically disabled', () async {
+    final now = DateTime.utc(2026, 8, 11, 12);
+    const staleCachedSetting = true;
+    expect(staleCachedSetting, isTrue);
+    await _setBackupEnabled(secondDb, false);
+
+    expect(await first.acquire(_lease('stale-worker', now), now), isFalse);
+    expect(await second.read(), isNull);
+  });
+
+  test('existing owner cannot reserve new work after backup is disabled', () async {
+    final now = DateTime.utc(2026, 8, 11, 12);
+    final lease = _lease('existing-owner', now);
+    expect(await first.acquire(lease, now), isTrue);
+    await _setBackupEnabled(secondDb, false);
+
+    expect(
+      await first.beginEnqueueForTask(
+        runToken: lease.runToken,
+        bindingDigest: lease.bindingDigest,
+        claim: const BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'denied-after-off'),
+      ),
+      isNull,
+    );
+    expect(
+      await second.beginForegroundActivityForOwner(
+        runToken: lease.runToken,
+        bindingDigest: lease.bindingDigest,
+        claim: ForegroundTransportClaim(
+          activityId: 'denied-foreground',
+          bindingDigest: lease.bindingDigest,
+          nativeGeneration: 1,
+        ),
+      ),
+      isNull,
+    );
   });
 
   test('expired lease admits exactly one replacement', () async {
@@ -447,6 +502,33 @@ void main() {
     final replacement = _lease('schema-recovered', now);
     expect(await first.acquire(replacement, now), isTrue);
     expect(await second.read(), replacement);
+  });
+}
+
+Future<void> _setBackupEnabled(Drift db, bool enabled) async {
+  await db.transaction(() async {
+    await db.customUpdate(
+      '''
+      INSERT INTO store_entity (id, string_value, int_value)
+      VALUES (?1, NULL, ?2)
+      ON CONFLICT(id) DO UPDATE SET string_value = NULL, int_value = excluded.int_value
+      ''',
+      variables: [Variable.withInt(StoreKey.enableBackup.id), Variable.withInt(enabled ? 1 : 0)],
+      updates: {db.storeEntity},
+    );
+    final state = DurableBackupEnablementState(
+      phase: enabled ? DurableBackupEnablementPhase.enabled : DurableBackupEnablementPhase.disabling,
+      generation: 1,
+    );
+    await db.customUpdate(
+      '''
+      INSERT INTO store_entity (id, string_value, int_value)
+      VALUES (?1, ?2, NULL)
+      ON CONFLICT(id) DO UPDATE SET string_value = excluded.string_value, int_value = NULL
+      ''',
+      variables: [Variable.withInt(StoreKey.backupEnablementState.id), Variable.withString(state.toJson())],
+      updates: {db.storeEntity},
+    );
   });
 }
 

@@ -8,7 +8,6 @@ import 'package:immich_mobile/domain/models/eager_backup.model.dart';
 import 'package:immich_mobile/domain/models/server_reachability.model.dart';
 import 'package:immich_mobile/domain/services/eager_backup_coordinator.dart';
 import 'package:immich_mobile/domain/services/eager_backup_workload_subscription.dart';
-import 'package:immich_mobile/domain/services/backup_disable_barrier.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/infrastructure/adapters/backup/eager_backup_operations_adapter.dart';
 import 'package:immich_mobile/infrastructure/adapters/backup/drift_eager_backup_workload_monitor_adapter.dart';
@@ -18,6 +17,7 @@ import 'package:immich_mobile/infrastructure/repositories/backup.repository.dart
 import 'package:immich_mobile/providers/app_settings.provider.dart';
 import 'package:immich_mobile/providers/background_sync.provider.dart';
 import 'package:immich_mobile/providers/backup/backup_execution.provider.dart';
+import 'package:immich_mobile/providers/backup/backup_enablement.provider.dart';
 import 'package:immich_mobile/providers/backup/backup_run_binding.provider.dart';
 import 'package:immich_mobile/providers/backup/eager_backup_signal.provider.dart';
 import 'package:immich_mobile/providers/server_reachability.provider.dart';
@@ -69,10 +69,6 @@ final eagerBackupEnabledChangesProvider = Provider<Stream<bool?>>(
   (_) => Store.watch<bool>(AppSettingsEnum.enableBackup.storeKey),
 );
 
-final backupDisableBarrierProvider = Provider<BackupDisableBarrier>((ref) {
-  return BackupDisableBarrier(() async => await ref.read(backgroundUploadServiceProvider).cancel() == 0);
-});
-
 final eagerBackupStateProvider = StreamProvider<EagerBackupState>((ref) async* {
   final coordinator = ref.watch(eagerBackupCoordinatorProvider);
   yield coordinator.state;
@@ -81,6 +77,7 @@ final eagerBackupStateProvider = StreamProvider<EagerBackupState>((ref) async* {
 
 final eagerBackupStartupProvider = Provider<void>((ref) {
   ref.read(eagerBackupCoordinatorProvider);
+  ref.read(backupEnablementControllerProvider);
 });
 
 final eagerBackupCoordinatorProvider = Provider<EagerBackupCoordinator>((ref) {
@@ -142,7 +139,6 @@ final eagerBackupCoordinatorProvider = Provider<EagerBackupCoordinator>((ref) {
       .asyncMap((enabled) async {
         final isEnabled = enabled ?? false;
         coordinator.setEnabled(isEnabled);
-        if (!isEnabled && !await ref.read(backupDisableBarrierProvider).disable()) coordinator.reportDrainFailed();
       })
       .listen((_) {}, onError: (_, _) => coordinator.reportDrainFailed());
   ref.listen(eagerBackupUserIdProvider, (_, next) => unawaited(watchWorkload(next)));

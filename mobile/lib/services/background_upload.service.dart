@@ -20,6 +20,7 @@ import 'package:immich_mobile/domain/services/backup_execution_arbiter.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/extensions/platform_extensions.dart';
 import 'package:immich_mobile/infrastructure/repositories/backup.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/backup_enablement.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_asset.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/network.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/storage.repository.dart';
@@ -32,6 +33,7 @@ import 'package:immich_mobile/domain/models/eager_backup.model.dart';
 import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/domain/models/server_reachability.model.dart';
 import 'package:immich_mobile/providers/infrastructure/asset.provider.dart';
+import 'package:immich_mobile/providers/infrastructure/db.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/storage.provider.dart';
 import 'package:immich_mobile/providers/server_reachability.provider.dart';
 import 'package:immich_mobile/providers/user.provider.dart';
@@ -46,6 +48,7 @@ import 'package:path/path.dart' as p;
 final Provider<BackgroundUploadService> backgroundUploadServiceProvider = Provider<BackgroundUploadService>((ref) {
   final connectivity = ref.read(nativeConnectivityMonitorProvider) as ConnectivitySnapshotMonitorPort;
   Future<bool> canContinueOwnedUpload(BackupRunBinding binding) async {
+    if (!await DriftBackupEnablementRepository(ref.read(driftProvider)).admitsBackupWork()) return false;
     await connectivity.initialSnapshot;
     final snapshot = await connectivity.readCurrentSnapshot();
     publishBackupTransportCursor(
@@ -738,7 +741,14 @@ class BackgroundUploadService {
     await _storageRepository.clearCache();
     final lease = await _leasePort?.read();
     if (lease == null) {
-      return await _uploadRepository.cancelAndDrain(BackupExecutionArbiter.groups) ? 0 : 1;
+      if (!await _uploadRepository.cancelAndDrain(BackupExecutionArbiter.groups)) return 1;
+      final appearedLease = await _leasePort?.read();
+      if (appearedLease == null) return 0;
+      final appearedLeaseDrained = await _arbiter?.disableAndDrain(
+        runToken: appearedLease.runToken,
+        bindingDigest: appearedLease.bindingDigest,
+      );
+      return appearedLeaseDrained == true ? 0 : 1;
     }
     final drained = await _arbiter?.disableAndDrain(runToken: lease.runToken, bindingDigest: lease.bindingDigest);
     return drained == true ? 0 : 1;

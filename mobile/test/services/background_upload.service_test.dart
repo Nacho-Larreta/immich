@@ -23,6 +23,7 @@ import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/infrastructure/repositories/db.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/network.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/store.repository.dart';
+import 'package:immich_mobile/repositories/upload.repository.dart';
 import 'package:immich_mobile/services/app_settings.service.dart';
 import 'package:immich_mobile/services/background_upload.service.dart';
 import 'package:mocktail/mocktail.dart';
@@ -1080,6 +1081,31 @@ void main() {
       expect(leases.releaseCalls, 0);
     });
 
+    test('lease appearing after native drain is closed and drained before cancellation succeeds', () async {
+      final appearedLease = _lease().copyWith(callbacksInFlight: 0);
+      final leases = _LeasePort(readSequence: [null, appearedLease]);
+      when(() => mockStorageRepository.clearCache()).thenAnswer((_) async {});
+      when(() => mockUploadRepository.ready).thenAnswer((_) async {});
+      when(() => mockUploadRepository.cancelAndDrain(BackupExecutionArbiter.groups)).thenAnswer((_) async => true);
+      final registry = _DelegatingRegistry(mockUploadRepository);
+      final arbiter = BackupExecutionArbiter(leases: leases, tasks: registry);
+      final ownedService = BackgroundUploadService(
+        mockUploadRepository,
+        mockStorageRepository,
+        mockLocalAssetRepository,
+        mockBackupRepository,
+        mockAppSettingsService,
+        mockAssetMediaRepository,
+        leasePort: leases,
+        arbiter: arbiter,
+      );
+      addTearDown(ownedService.dispose);
+
+      expect(await ownedService.cancel(), 0);
+      expect(leases.beginClosingCalls, 1);
+      expect(leases.releaseCalls, 1);
+    });
+
     test('stale binding after admission still releases the exact quiescent lease', () async {
       final leases = _LeasePort();
       final arbiter = BackupExecutionArbiter(leases: leases, tasks: const _EmptyRegistry());
@@ -1180,7 +1206,13 @@ BackupRunBinding _binding() => BackupRunBinding(
 );
 
 final class _LeasePort implements BackupExecutionLeasePort {
-  _LeasePort({this.claimCallbacks = true, this.begin, this.existing, this.quarantinedCandidateKeys = const {}});
+  _LeasePort({
+    this.claimCallbacks = true,
+    this.begin,
+    this.existing,
+    this.quarantinedCandidateKeys = const {},
+    List<BackupExecutionLease?> readSequence = const [],
+  }) : _readSequence = List.of(readSequence);
 
   final bool claimCallbacks;
   final Future<BackupExecutionLease?>? begin;
@@ -1188,8 +1220,10 @@ final class _LeasePort implements BackupExecutionLeasePort {
   final Set<String> quarantinedCandidateKeys;
   final List<String> events = [];
   int releaseCalls = 0;
+  int beginClosingCalls = 0;
   bool released = false;
   final Set<BackupTaskClaim> terminalClaims = {};
+  final List<BackupExecutionLease?> _readSequence;
 
   @override
   Future<BackupExecutionLease?> beginCallbackForTask({
@@ -1331,7 +1365,7 @@ final class _LeasePort implements BackupExecutionLeasePort {
     required String runToken,
     required String bindingDigest,
     required Set<BackupTaskClaim> activeClaims,
-  }) async => _lease().copyWith(outstandingClaims: activeClaims, activityRevision: 4);
+  }) async => existing = (existing ?? _lease()).copyWith(outstandingClaims: activeClaims, activityRevision: 4);
 
   @override
   Future<BackupExecutionLease?> recoverOrphanClaimsForOwner({
@@ -1341,8 +1375,10 @@ final class _LeasePort implements BackupExecutionLeasePort {
   }) async => _lease().copyWith(outstandingClaims: activeClaims, activityRevision: 4);
 
   @override
-  Future<BackupExecutionLease?> beginClosingForOwner({required String runToken, required String bindingDigest}) async =>
-      _lease().copyWith(state: BackupExecutionState.closing);
+  Future<BackupExecutionLease?> beginClosingForOwner({required String runToken, required String bindingDigest}) async {
+    beginClosingCalls++;
+    return existing = (existing ?? _lease()).copyWith(state: BackupExecutionState.closing);
+  }
 
   @override
   Future<BackupExecutionLease?> beginForegroundActivityForOwner({
@@ -1378,8 +1414,13 @@ final class _LeasePort implements BackupExecutionLeasePort {
   Future<BackupExecutionLease?> markEnqueued(BackupExecutionLease expected) => throw UnimplementedError();
 
   @override
-  Future<BackupExecutionLease?> read() async =>
-      released ? null : existing ?? _lease().copyWith(callbacksInFlight: 0, activityRevision: 2);
+  Future<BackupExecutionLease?> read() async {
+    if (_readSequence.isNotEmpty) {
+      existing = _readSequence.removeAt(0);
+      return existing;
+    }
+    return released ? null : existing ?? _lease().copyWith(callbacksInFlight: 0, activityRevision: 2);
+  }
 
   @override
   Future<bool> releaseExact(BackupExecutionLease expected) async {
@@ -1392,6 +1433,21 @@ final class _LeasePort implements BackupExecutionLeasePort {
   @override
   Future<bool> replaceExact({required BackupExecutionLease expected, required BackupExecutionLease replacement}) =>
       throw UnimplementedError();
+}
+
+final class _DelegatingRegistry implements BackupTaskRegistryPort {
+  const _DelegatingRegistry(this.repository);
+
+  final UploadRepository repository;
+
+  @override
+  Future<void> get ready => repository.ready;
+
+  @override
+  Future<List<BackupTaskSnapshot>> snapshot(Set<BackupTaskGroup> groups) async => const [];
+
+  @override
+  Future<bool> cancelAndDrain(Set<BackupTaskGroup> groups) => repository.cancelAndDrain(groups);
 }
 
 final class _EmptyRegistry implements BackupTaskRegistryPort {

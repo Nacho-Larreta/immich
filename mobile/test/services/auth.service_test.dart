@@ -9,7 +9,6 @@ import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/infrastructure/repositories/db.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/store.repository.dart';
 import 'package:immich_mobile/models/auth/auxilary_endpoint.model.dart';
-import 'package:immich_mobile/services/app_settings.service.dart';
 import 'package:immich_mobile/services/auth.service.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:openapi/api.dart';
@@ -25,7 +24,6 @@ void main() {
   late MockApiService apiService;
   late MockNetworkService networkService;
   late MockBackgroundSyncManager backgroundSyncManager;
-  late MockAppSettingService appSettingsService;
   late Drift db;
 
   setUp(() async {
@@ -34,16 +32,7 @@ void main() {
     apiService = MockApiService();
     networkService = MockNetworkService();
     backgroundSyncManager = MockBackgroundSyncManager();
-    appSettingsService = MockAppSettingService();
-
-    sut = AuthService(
-      authApiRepository,
-      authRepository,
-      apiService,
-      networkService,
-      backgroundSyncManager,
-      appSettingsService,
-    );
+    sut = AuthService(authApiRepository, authRepository, apiService, networkService, backgroundSyncManager);
 
     registerFallbackValue(Uri());
   });
@@ -69,8 +58,6 @@ void main() {
       await pumpEventQueue();
       when(() => backgroundSyncManager.cancel()).thenAnswer((_) async {});
       when(() => authRepository.clearLocalData()).thenAnswer((_) async {});
-      when(() => appSettingsService.setSetting(AppSettingsEnum.enableBackup, false)).thenAnswer((_) async {});
-
       await sut.forgetServer();
 
       expect(Store.tryGet(StoreKey.serverUrl), isNull);
@@ -82,7 +69,6 @@ void main() {
       expect(Store.tryGet(StoreKey.currentUser), isNull);
       verify(() => backgroundSyncManager.cancel()).called(1);
       verify(() => authRepository.clearLocalData()).called(1);
-      verify(() => appSettingsService.setSetting(AppSettingsEnum.enableBackup, false)).called(1);
     });
 
     test('clears the local token even when remote logout fails', () async {
@@ -94,7 +80,6 @@ void main() {
       when(() => authApiRepository.logout()).thenThrow(Exception('Server error'));
       when(() => backgroundSyncManager.cancel()).thenAnswer((_) async {});
       when(() => authRepository.clearLocalData()).thenAnswer((_) async {});
-      when(() => appSettingsService.setSetting(AppSettingsEnum.enableBackup, false)).thenAnswer((_) async {});
 
       await sut.invalidateRemoteSession();
       await sut.clearRemoteAuthentication();
@@ -115,12 +100,10 @@ void main() {
           apiService,
           networkService,
           backgroundSyncManager,
-          appSettingsService,
           authenticationPersistence: persistence,
         );
         when(() => backgroundSyncManager.cancel()).thenAnswer((_) async {});
         when(() => authRepository.clearLocalData()).thenAnswer((_) async {});
-        when(() => appSettingsService.setSetting(AppSettingsEnum.enableBackup, false)).thenAnswer((_) async {});
 
         if (cleanup == 'clearRemoteAuthentication') {
           await service.clearRemoteAuthentication();
@@ -141,7 +124,6 @@ void main() {
             apiService,
             networkService,
             backgroundSyncManager,
-            appSettingsService,
             authenticationPersistence: persistence,
           );
           when(() => backgroundSyncManager.cancel()).thenAnswer((_) async {});
@@ -155,7 +137,6 @@ void main() {
           expect(persistence.writes.first, 'put:authenticatedSessionReady:false');
           expect(persistence.writes, hasLength(failingWrite));
           verifyNever(() => authRepository.clearLocalData());
-          verifyNever(() => appSettingsService.setSetting(AppSettingsEnum.enableBackup, false));
         });
       }
     }
@@ -170,7 +151,6 @@ void main() {
           apiService,
           networkService,
           backgroundSyncManager,
-          appSettingsService,
           authenticationPersistence: persistence,
         );
 

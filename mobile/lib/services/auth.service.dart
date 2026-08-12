@@ -8,12 +8,10 @@ import 'package:immich_mobile/infrastructure/repositories/network.repository.dar
 import 'package:immich_mobile/models/auth/auxilary_endpoint.model.dart';
 import 'package:immich_mobile/models/auth/login_response.model.dart';
 import 'package:immich_mobile/providers/api.provider.dart';
-import 'package:immich_mobile/providers/app_settings.provider.dart';
 import 'package:immich_mobile/providers/background_sync.provider.dart';
 import 'package:immich_mobile/repositories/auth.repository.dart';
 import 'package:immich_mobile/repositories/auth_api.repository.dart';
 import 'package:immich_mobile/services/api.service.dart';
-import 'package:immich_mobile/services/app_settings.service.dart';
 import 'package:immich_mobile/services/network.service.dart';
 import 'package:logging/logging.dart';
 import 'package:openapi/api.dart';
@@ -25,7 +23,6 @@ final authServiceProvider = Provider(
     ref.watch(apiServiceProvider),
     ref.watch(networkServiceProvider),
     ref.watch(backgroundSyncProvider),
-    ref.watch(appSettingsServiceProvider),
   ),
 );
 
@@ -35,7 +32,6 @@ class AuthService {
   final ApiService _apiService;
   final NetworkService _networkService;
   final BackgroundSyncManager _backgroundSyncManager;
-  final AppSettingsService _appSettingsService;
   final AuthenticationPersistence _authenticationPersistence;
   final _log = Logger("AuthService");
 
@@ -44,8 +40,7 @@ class AuthService {
     this._authRepository,
     this._apiService,
     this._networkService,
-    this._backgroundSyncManager,
-    this._appSettingsService, {
+    this._backgroundSyncManager, {
     AuthenticationPersistence authenticationPersistence = const StoreAuthenticationPersistence(),
   }) : _authenticationPersistence = authenticationPersistence;
 
@@ -104,10 +99,7 @@ class AuthService {
     ]) {
       await _authenticationPersistence.delete(key);
     }
-    await Future.wait([
-      _authRepository.clearLocalData(),
-      _appSettingsService.setSetting(AppSettingsEnum.enableBackup, false),
-    ]);
+    await _authRepository.clearLocalData();
   }
 
   Future<void> _persistSessionTombstone() async {

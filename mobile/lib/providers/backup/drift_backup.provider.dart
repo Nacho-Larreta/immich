@@ -7,9 +7,12 @@ import 'package:logging/logging.dart';
 import 'package:immich_mobile/domain/models/album/local_album.model.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/backup_sync.model.dart';
+import 'package:immich_mobile/domain/models/backup_enablement.model.dart';
 import 'package:immich_mobile/domain/interfaces/backup_run_binding.interface.dart';
+import 'package:immich_mobile/domain/interfaces/backup_enablement.interface.dart';
 import 'package:immich_mobile/domain/services/backup_execution_arbiter.dart';
 import 'package:immich_mobile/providers/backup/backup_execution.provider.dart';
+import 'package:immich_mobile/providers/backup/backup_enablement.provider.dart';
 import 'package:immich_mobile/providers/backup/backup_sync_error.provider.dart';
 import 'package:immich_mobile/providers/backup/backup_run_binding.provider.dart';
 import 'package:immich_mobile/utils/upload_speed_calculator.dart';
@@ -192,6 +195,7 @@ final StateNotifierProvider<DriftBackupNotifier, DriftBackupState> driftBackupPr
         UploadSpeedManager(),
         ref.watch(backupExecutionArbiterProvider),
         ref.watch(backupRunBindingSourceProvider),
+        ref.watch(backupEnablementAuthorityProvider),
       );
       ref.listen(backupSyncErrorProvider, (_, next) => notifier.updateError(next));
       return notifier;
@@ -204,6 +208,7 @@ class DriftBackupNotifier extends StateNotifier<DriftBackupState> {
     this._uploadSpeedManager,
     this._arbiter,
     this._bindings,
+    this._enablementAuthority,
   ) : super(
         const DriftBackupState(
           totalCount: 0,
@@ -219,8 +224,9 @@ class DriftBackupNotifier extends StateNotifier<DriftBackupState> {
   final ForegroundUploadService _foregroundUploadService;
   final BackgroundUploadService _backgroundUploadService;
   final UploadSpeedManager _uploadSpeedManager;
-  final BackupExecutionArbiter _arbiter;
+  final BackgroundBackupAdmissionPort _arbiter;
   final BackupRunBindingSourcePort _bindings;
+  final BackupEnablementAuthorityPort _enablementAuthority;
   Completer<void>? _cancelToken;
 
   final _logger = Logger("DriftBackupNotifier");
@@ -405,6 +411,8 @@ class DriftBackupNotifier extends StateNotifier<DriftBackupState> {
       _logger.info('background_backup_binding_unavailable');
       return;
     }
+    final authority = await _enablementAuthority.readAuthority();
+    if (authority?.phase != DurableBackupEnablementPhase.enabled) return;
     _logger.info("Start background backup sequence");
     state = state.copyWith(error: BackupError.none);
     final admission = await _arbiter.acquireBackground(bindingDigest: binding.digest);
@@ -415,6 +423,8 @@ class DriftBackupNotifier extends StateNotifier<DriftBackupState> {
         _logger.warning("Skip handleBackupResume (post-call): notifier disposed");
         return;
       }
+      final currentAuthority = await _enablementAuthority.readAuthority();
+      if (currentAuthority != authority || currentAuthority?.phase != DurableBackupEnablementPhase.enabled) return;
       if (admission.disposition == BackupAdmissionDisposition.adoptedBackground) {
         ownershipTransferred = true;
         return _backgroundUploadService.resume();

@@ -101,7 +101,8 @@ enum StoreKey<T> {
   serverEndpointSchemePolicy<String>._(1014),
   authenticatedSessionReady<bool>._(1015),
   backupExecutionLease<String>._(1016),
-  backupReconciliationQuarantine<String>._(1017);
+  backupReconciliationQuarantine<String>._(1017),
+  backupEnablementState<String>._(1018);
 
   const StoreKey._(this.id);
   final int id;

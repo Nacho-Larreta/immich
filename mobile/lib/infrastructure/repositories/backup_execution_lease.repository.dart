@@ -1,6 +1,7 @@
 import 'package:drift/drift.dart';
 import 'package:immich_mobile/domain/interfaces/backup_execution.interface.dart';
 import 'package:immich_mobile/domain/models/backup_candidate_key.model.dart';
+import 'package:immich_mobile/domain/models/backup_enablement.model.dart';
 import 'package:immich_mobile/domain/models/backup_execution_lease.model.dart';
 import 'package:immich_mobile/domain/models/backup_reconciliation_quarantine.model.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
@@ -23,20 +24,36 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
     final affected = await _db.customUpdate(
       '''
       INSERT INTO store_entity (id, string_value, int_value)
-      VALUES (?1, ?2, NULL)
+      SELECT ?1, ?2, NULL
+      WHERE EXISTS (
+        SELECT 1 FROM store_entity AS enablement
+        WHERE enablement.id = ?5
+          AND json_valid(enablement.string_value)
+          AND CAST(json_extract(enablement.string_value, '\$.schemaVersion') AS INTEGER) = 1
+          AND json_extract(enablement.string_value, '\$.phase') = 'enabled'
+      )
       ON CONFLICT(id) DO UPDATE SET string_value = excluded.string_value, int_value = NULL
-      WHERE NOT json_valid(store_entity.string_value)
-        OR COALESCE(CAST(json_extract(store_entity.string_value, '\$.schemaVersion') AS INTEGER), -1) != ?4
-        OR (
-          CAST(json_extract(store_entity.string_value, '\$.expiryEpochMs') AS INTEGER) <= ?3
-          AND json_extract(store_entity.string_value, '\$.state') = 'accepting'
-          AND COALESCE(CAST(json_extract(store_entity.string_value, '\$.callbacksInFlight') AS INTEGER), 0) = 0
-          AND COALESCE(json_array_length(json_extract(store_entity.string_value, '\$.outstandingClaims')), 0) = 0
-          AND COALESCE(json_array_length(json_extract(store_entity.string_value, '\$.enqueueClaims')), 0) = 0
-          AND COALESCE(json_array_length(json_extract(store_entity.string_value, '\$.terminalTombstones')), 0) = 0
-          AND COALESCE(json_array_length(json_extract(store_entity.string_value, '\$.callbackClaims')), 0) = 0
-          AND COALESCE(json_array_length(json_extract(store_entity.string_value, '\$.reconciliationClaims')), 0) = 0
-          AND COALESCE(json_array_length(json_extract(store_entity.string_value, '\$.foregroundActivityClaims')), 0) = 0
+      WHERE EXISTS (
+          SELECT 1 FROM store_entity AS enablement
+          WHERE enablement.id = ?5
+            AND json_valid(enablement.string_value)
+            AND CAST(json_extract(enablement.string_value, '\$.schemaVersion') AS INTEGER) = 1
+            AND json_extract(enablement.string_value, '\$.phase') = 'enabled'
+        )
+        AND (
+          NOT json_valid(store_entity.string_value)
+          OR COALESCE(CAST(json_extract(store_entity.string_value, '\$.schemaVersion') AS INTEGER), -1) != ?4
+          OR (
+            CAST(json_extract(store_entity.string_value, '\$.expiryEpochMs') AS INTEGER) <= ?3
+            AND json_extract(store_entity.string_value, '\$.state') = 'accepting'
+            AND COALESCE(CAST(json_extract(store_entity.string_value, '\$.callbacksInFlight') AS INTEGER), 0) = 0
+            AND COALESCE(json_array_length(json_extract(store_entity.string_value, '\$.outstandingClaims')), 0) = 0
+            AND COALESCE(json_array_length(json_extract(store_entity.string_value, '\$.enqueueClaims')), 0) = 0
+            AND COALESCE(json_array_length(json_extract(store_entity.string_value, '\$.terminalTombstones')), 0) = 0
+            AND COALESCE(json_array_length(json_extract(store_entity.string_value, '\$.callbackClaims')), 0) = 0
+            AND COALESCE(json_array_length(json_extract(store_entity.string_value, '\$.reconciliationClaims')), 0) = 0
+            AND COALESCE(json_array_length(json_extract(store_entity.string_value, '\$.foregroundActivityClaims')), 0) = 0
+          )
         )
       ''',
       variables: [
@@ -44,6 +61,7 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
         Variable.withString(candidate.toJson()),
         Variable.withInt(now.toUtc().millisecondsSinceEpoch),
         Variable.withInt(BackupExecutionLease.schemaVersion),
+        Variable.withInt(StoreKey.backupEnablementState.id),
       ],
       updates: {_db.storeEntity},
     );
@@ -144,6 +162,7 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
   }) => _transitionForTask(
     runToken: runToken,
     bindingDigest: bindingDigest,
+    requireBackupEnabled: true,
     replacement: (lease) {
       if (lease.state == BackupExecutionState.closing) return null;
       if (lease.terminalTombstones.contains(claim)) return null;
@@ -180,7 +199,7 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
         candidateKeys: {...expected.candidateKeys, claim: key},
         activityRevision: expected.activityRevision + 1,
       );
-      return await replaceExact(expected: expected, replacement: replacement) ? replacement : null;
+      return await _replaceExactWhenBackupEnabled(expected, replacement) ? replacement : null;
     });
   }
 
@@ -196,6 +215,7 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
       if (quarantine == null || quarantine.entries.any((entry) => entry.candidateKey == key)) return false;
       final lease = await read();
       return lease != null &&
+          await _backupEnabled() &&
           lease.runToken == runToken &&
           lease.bindingDigest == bindingDigest &&
           lease.state == BackupExecutionState.accepting &&
@@ -445,6 +465,7 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
   }) => _transitionForTask(
     runToken: runToken,
     bindingDigest: bindingDigest,
+    requireBackupEnabled: true,
     replacement: (lease) {
       if (claim.bindingDigest != bindingDigest || lease.state == BackupExecutionState.closing) return null;
       if (lease.foregroundActivityClaims.contains(claim)) return lease;
@@ -499,6 +520,7 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
     required String runToken,
     required String bindingDigest,
     required BackupExecutionLease? Function(BackupExecutionLease lease) replacement,
+    bool requireBackupEnabled = false,
   }) async {
     var contentionDelay = const Duration(milliseconds: 1);
     while (true) {
@@ -506,8 +528,12 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
       if (expected == null || expected.runToken != runToken || expected.bindingDigest != bindingDigest) return null;
       final next = replacement(expected);
       if (next == null) return null;
-      if (next == expected) return expected;
-      if (await replaceExact(expected: expected, replacement: next)) return next;
+      if (next == expected) return requireBackupEnabled && !await _backupEnabled() ? null : expected;
+      final replaced = requireBackupEnabled
+          ? await _replaceExactWhenBackupEnabled(expected, next)
+          : await replaceExact(expected: expected, replacement: next);
+      if (replaced) return next;
+      if (requireBackupEnabled && !await _backupEnabled()) return null;
       await Future<void>.delayed(contentionDelay);
       if (contentionDelay < const Duration(milliseconds: 16)) contentionDelay *= 2;
     }
@@ -526,5 +552,42 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
       updates: {_db.storeEntity},
     );
     return affected == 1;
+  }
+
+  Future<bool> _replaceExactWhenBackupEnabled(BackupExecutionLease expected, BackupExecutionLease replacement) async {
+    final affected = await _db.customUpdate(
+      '''
+      UPDATE store_entity
+      SET string_value = ?1, int_value = NULL
+      WHERE id = ?2
+        AND string_value = ?3
+        AND EXISTS (
+          SELECT 1 FROM store_entity AS enablement
+          WHERE enablement.id = ?4
+            AND json_valid(enablement.string_value)
+            AND CAST(json_extract(enablement.string_value, '\$.schemaVersion') AS INTEGER) = 1
+            AND json_extract(enablement.string_value, '\$.phase') = 'enabled'
+        )
+      ''',
+      variables: [
+        Variable.withString(replacement.toJson()),
+        Variable.withInt(StoreKey.backupExecutionLease.id),
+        Variable.withString(expected.toJson()),
+        Variable.withInt(StoreKey.backupEnablementState.id),
+      ],
+      updates: {_db.storeEntity},
+    );
+    return affected == 1;
+  }
+
+  Future<bool> _backupEnabled() async {
+    final setting = await _db
+        .customSelect(
+          'SELECT string_value FROM store_entity WHERE id = ?1',
+          variables: [Variable.withInt(StoreKey.backupEnablementState.id)],
+        )
+        .getSingleOrNull();
+    return DurableBackupEnablementState.tryParse(setting?.read<String?>('string_value'))?.phase ==
+        DurableBackupEnablementPhase.enabled;
   }
 }

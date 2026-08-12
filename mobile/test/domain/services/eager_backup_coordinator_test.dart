@@ -8,7 +8,6 @@ import 'package:immich_mobile/domain/models/backup_run_binding.model.dart';
 import 'package:immich_mobile/domain/models/eager_backup.model.dart';
 import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/domain/services/eager_backup_coordinator.dart';
-import 'package:immich_mobile/domain/services/backup_disable_barrier.dart';
 import 'package:immich_mobile/providers/backup/eager_backup.provider.dart';
 
 void main() {
@@ -118,22 +117,6 @@ void main() {
     subscription.close();
     await coordinator.dispose().timeout(const Duration(seconds: 2));
     container.dispose();
-  });
-
-  test('disable barrier shares one awaited result across concurrent callers', () async {
-    final result = Completer<bool>();
-    var calls = 0;
-    final barrier = BackupDisableBarrier(() {
-      calls++;
-      return result.future;
-    });
-
-    final first = barrier.disable();
-    final second = barrier.disable();
-    result.complete(true);
-
-    expect(await Future.wait([first, second]), [isTrue, isTrue]);
-    expect(calls, 1);
   });
 
   test('processing workload is synchronized, hashed, then uploaded immediately', () async {

@@ -7,6 +7,7 @@ import 'package:immich_mobile/domain/interfaces/anonymous_server_discovery.inter
 import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/models/logout_outcome.model.dart';
+import 'package:immich_mobile/domain/models/backup_enablement.model.dart';
 import 'package:immich_mobile/domain/interfaces/auth_request_context.interface.dart';
 import 'package:immich_mobile/domain/interfaces/resolved_server_endpoint_installer.interface.dart';
 import 'package:immich_mobile/domain/services/session_mutation_mutex.dart';
@@ -27,7 +28,7 @@ import 'package:immich_mobile/providers/remote_authentication.provider.dart';
 import 'package:immich_mobile/providers/server_reachability.provider.dart';
 import 'package:immich_mobile/providers/session_mutation.provider.dart';
 import 'package:immich_mobile/providers/backup/drift_backup.provider.dart';
-import 'package:immich_mobile/providers/backup/eager_backup.provider.dart';
+import 'package:immich_mobile/providers/backup/backup_enablement.provider.dart';
 import 'package:immich_mobile/providers/websocket.provider.dart';
 import 'package:immich_mobile/repositories/asset_media.repository.dart';
 import 'package:immich_mobile/services/api.service.dart';
@@ -74,10 +75,11 @@ final authProvider = StateNotifierProvider<AuthNotifier, AuthState>((ref) {
     cancelShares: ref.read(assetMediaRepositoryProvider).cancelAll,
     activateShares: ref.read(assetMediaRepositoryProvider).activateRemoteShares,
     stopBackup: () async {
-      ref.read(eagerBackupCoordinatorProvider).setEnabled(false);
       ref.read(driftBackupProvider.notifier).stopForegroundBackup();
-      final remaining = await ref.read(backgroundUploadServiceProvider).cancel();
-      if (remaining != 0) throw StateError('background_backup_drain_failed');
+      final result = await ref.read(backupEnablementControllerProvider).disable();
+      if (result != BackupEnablementResult.applied && result != BackupEnablementResult.alreadyApplied) {
+        throw StateError('background_backup_drain_failed');
+      }
     },
     disconnectWebsocket: ref.read(websocketProvider.notifier).disconnect,
   );

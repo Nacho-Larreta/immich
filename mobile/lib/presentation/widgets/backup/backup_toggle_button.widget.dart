@@ -2,12 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
-import 'package:immich_mobile/providers/app_settings.provider.dart';
 import 'package:immich_mobile/providers/backup/drift_backup.provider.dart';
-import 'package:immich_mobile/providers/backup/eager_backup_signal.provider.dart';
-import 'package:immich_mobile/providers/backup/eager_backup.provider.dart';
-import 'package:immich_mobile/domain/models/eager_backup.model.dart';
-import 'package:immich_mobile/services/app_settings.service.dart';
+import 'package:immich_mobile/domain/services/backup_enablement_controller.dart';
+import 'package:immich_mobile/providers/backup/backup_enablement.provider.dart';
 
 class BackupToggleButton extends ConsumerStatefulWidget {
   const BackupToggleButton({super.key});
@@ -19,7 +16,6 @@ class BackupToggleButton extends ConsumerStatefulWidget {
 class BackupToggleButtonState extends ConsumerState<BackupToggleButton> with SingleTickerProviderStateMixin {
   late AnimationController _animationController;
   late Animation<double> _gradientAnimation;
-  bool _isEnabled = false;
 
   @override
   void initState() {
@@ -30,8 +26,6 @@ class BackupToggleButtonState extends ConsumerState<BackupToggleButton> with Sin
       begin: 0,
       end: 1,
     ).animate(CurvedAnimation(parent: _animationController, curve: Curves.easeInOut));
-
-    _isEnabled = ref.read(appSettingsServiceProvider).getSetting(AppSettingsEnum.enableBackup);
   }
 
   @override
@@ -41,16 +35,15 @@ class BackupToggleButtonState extends ConsumerState<BackupToggleButton> with Sin
   }
 
   Future<void> _onToggle(bool value) async {
-    await ref.read(appSettingsServiceProvider).setSetting(AppSettingsEnum.enableBackup, value);
-    if (!value) {
-      if (!await ref.read(backupDisableBarrierProvider).disable()) throw StateError('background_backup_drain_failed');
-    }
+    await ref.read(backupEnablementControllerProvider).setEnabled(value);
+  }
 
-    setState(() {
-      _isEnabled = value;
-    });
+  Future<void> _retryDrain() async {
+    await ref.read(backupEnablementControllerProvider).retryDrain();
+  }
 
-    ref.read(eagerBackupSignalProvider).signal(EagerBackupTrigger.settingChanged);
+  Future<void> _retryDisable() async {
+    await ref.read(backupEnablementControllerProvider).disable();
   }
 
   @override
@@ -62,8 +55,11 @@ class BackupToggleButtonState extends ConsumerState<BackupToggleButton> with Sin
     final iCloudProgress = ref.watch(driftBackupProvider.select((state) => state.iCloudDownloadProgress));
 
     final errorCount = ref.watch(driftBackupProvider.select((state) => state.errorCount));
+    final controller = ref.watch(backupEnablementControllerProvider);
+    final enablement = ref.watch(backupEnablementStateProvider).valueOrNull ?? controller.state;
 
     final isProcessing = uploadTasks.isNotEmpty || isSyncing || iCloudProgress.isNotEmpty;
+    final controlsEnabled = !enablement.isBusy && enablement.status != BackupEnablementStatus.drainFailed;
 
     return AnimatedBuilder(
       animation: _animationController,
@@ -111,7 +107,7 @@ class BackupToggleButtonState extends ConsumerState<BackupToggleButton> with Sin
               borderRadius: const BorderRadius.all(Radius.circular(20.5)),
               child: InkWell(
                 borderRadius: const BorderRadius.all(Radius.circular(20.5)),
-                onTap: () => _onToggle(!_isEnabled),
+                onTap: controlsEnabled ? () async => _onToggle(!enablement.isEnabled) : null,
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
                   child: Row(
@@ -158,10 +154,58 @@ class BackupToggleButtonState extends ConsumerState<BackupToggleButton> with Sin
                                   style: context.textTheme.labelMedium?.copyWith(color: context.colorScheme.error),
                                 ),
                               ),
+                            if (enablement.status == BackupEnablementStatus.drainFailed)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        "backup_error_sync_failed".t(context: context),
+                                        key: const ValueKey('backup-drain-error'),
+                                        style: context.textTheme.labelMedium?.copyWith(
+                                          color: context.colorScheme.error,
+                                        ),
+                                      ),
+                                    ),
+                                    TextButton(
+                                      key: const ValueKey('backup-drain-retry'),
+                                      onPressed: enablement.canRetryDrain ? _retryDrain : null,
+                                      child: Text("server_access_retry".t(context: context)),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            if (enablement.status == BackupEnablementStatus.disableFailedBeforeFence)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        "backup_error_sync_failed".t(context: context),
+                                        key: const ValueKey('backup-disable-error'),
+                                        style: context.textTheme.labelMedium?.copyWith(
+                                          color: context.colorScheme.error,
+                                        ),
+                                      ),
+                                    ),
+                                    TextButton(
+                                      key: const ValueKey('backup-disable-retry'),
+                                      onPressed: enablement.canRetryDisable ? _retryDisable : null,
+                                      child: Text("server_access_retry".t(context: context)),
+                                    ),
+                                  ],
+                                ),
+                              ),
                           ],
                         ),
                       ),
-                      Switch.adaptive(value: _isEnabled, onChanged: (value) => _onToggle(value)),
+                      Switch.adaptive(
+                        key: const ValueKey('backup-enablement-switch'),
+                        value: enablement.isEnabled,
+                        onChanged: controlsEnabled ? _onToggle : null,
+                      ),
                     ],
                   ),
                 ),

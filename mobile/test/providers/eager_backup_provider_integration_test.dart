@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/interfaces/connectivity_monitor.interface.dart';
+import 'package:immich_mobile/domain/interfaces/backup_enablement.interface.dart';
 import 'package:immich_mobile/domain/interfaces/eager_backup.interface.dart';
 import 'package:immich_mobile/domain/interfaces/eager_backup_diagnostics.interface.dart';
 import 'package:immich_mobile/domain/models/backup_run_binding.model.dart';
@@ -11,6 +12,8 @@ import 'package:immich_mobile/domain/models/eager_backup.model.dart';
 import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/domain/models/server_reachability.model.dart';
 import 'package:immich_mobile/providers/backup/eager_backup.provider.dart';
+import 'package:immich_mobile/domain/services/backup_enablement_controller.dart';
+import 'package:immich_mobile/providers/backup/backup_enablement.provider.dart';
 import 'package:immich_mobile/providers/server_reachability.provider.dart';
 
 void main() {
@@ -62,7 +65,8 @@ final class _Harness {
       workloads = _Workloads(),
       operations = _Operations(userPresent: userId != null),
       diagnostics = _Diagnostics(),
-      photoObserver = _PhotoObserver() {
+      photoObserver = _PhotoObserver(),
+      enablement = BackupEnablementController(_EnablementPort(), initiallyEnabled: true) {
     container = ProviderContainer(
       overrides: [
         eagerBackupUserIdProvider.overrideWithValue(userId),
@@ -74,6 +78,7 @@ final class _Harness {
         eagerBackupPhotoObserverFactoryProvider.overrideWithValue((_) => photoObserver),
         eagerBackupResumeReconciliationsProvider.overrideWithValue(() async {}),
         nativeConnectivityMonitorProvider.overrideWithValue(connectivity),
+        backupEnablementControllerProvider.overrideWithValue(enablement),
       ],
     );
   }
@@ -83,6 +88,7 @@ final class _Harness {
   final _Operations operations;
   final _Diagnostics diagnostics;
   final _PhotoObserver photoObserver;
+  final BackupEnablementController enablement;
   late final ProviderContainer container;
 
   void start() => container.read(eagerBackupStartupProvider);
@@ -99,6 +105,7 @@ final class _Harness {
       eagerBackupPhotoObserverFactoryProvider.overrideWithValue((_) => photoObserver),
       eagerBackupResumeReconciliationsProvider.overrideWithValue(() async {}),
       nativeConnectivityMonitorProvider.overrideWithValue(connectivity),
+      backupEnablementControllerProvider.overrideWithValue(enablement),
     ]);
   }
 
@@ -122,9 +129,44 @@ final class _Harness {
 
   Future<void> dispose() async {
     container.dispose();
+    await enablement.dispose();
     await pumpEventQueue();
     await workloads.dispose();
   }
+}
+
+final class _EnablementPort implements BackupEnablementPort {
+  @override
+  Future<bool> admitsBackupWork() async => true;
+
+  @override
+  Future<DurableBackupEnablementState> beginDisable() async =>
+      const DurableBackupEnablementState(phase: DurableBackupEnablementPhase.disabling, generation: 1);
+
+  @override
+  Future<bool> completeDrain(DurableBackupEnablementState disabling) async => true;
+
+  @override
+  Future<bool> drain() async => true;
+
+  @override
+  Future<bool> enableFromDrained(DurableBackupEnablementState disabledDrained) async => true;
+
+  @override
+  Future<bool> failDrain(DurableBackupEnablementState disabling) async => true;
+
+  @override
+  Future<DurableBackupEnablementState> initialize(bool legacyEnabled) async =>
+      const DurableBackupEnablementState(phase: DurableBackupEnablementPhase.enabled, generation: 0);
+
+  @override
+  void reportDrainFailed() {}
+
+  @override
+  void signalSettingChanged() {}
+
+  @override
+  void stopEager() {}
 }
 
 final class _Connectivity implements ConnectivityMonitorPort, ConnectivitySnapshotMonitorPort {

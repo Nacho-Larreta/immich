@@ -7,8 +7,11 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/constants/constants.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/interfaces/backup_execution.interface.dart';
+import 'package:immich_mobile/domain/interfaces/backup_task_drain.interface.dart';
 import 'package:immich_mobile/domain/models/backup_execution_lease.model.dart';
+import 'package:immich_mobile/domain/services/backup_task_drain.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
+import 'package:immich_mobile/infrastructure/adapters/backup/background_downloader_task_registry_adapter.dart';
 import 'package:immich_mobile/infrastructure/repositories/network.repository.dart';
 import 'package:logging/logging.dart';
 import 'package:http/http.dart';
@@ -16,45 +19,49 @@ import 'package:immich_mobile/utils/debug_print.dart';
 
 final uploadRepositoryProvider = Provider((ref) => UploadRepository());
 
-class UploadRepository implements BackupTaskRegistryPort {
+class UploadRepository implements BackupTaskRegistryPort, BackupTaskDrainPort<BackupTaskGroup> {
   final Logger logger = Logger('UploadRepository');
   void Function(TaskStatusUpdate)? onUploadStatus;
   void Function(TaskProgressUpdate)? onTaskProgress;
 
-  late final Future<void> _trackingReady;
+  late final BackupTaskRegistryGateway _taskRegistry;
 
-  UploadRepository() {
-    FileDownloader().registerCallbacks(
-      group: kBackupGroup,
-      taskStatusCallback: (update) => onUploadStatus?.call(update),
-      taskProgressCallback: (update) => onTaskProgress?.call(update),
-    );
-    FileDownloader().registerCallbacks(
-      group: kBackupLivePhotoGroup,
-      taskStatusCallback: (update) => onUploadStatus?.call(update),
-      taskProgressCallback: (update) => onTaskProgress?.call(update),
-    );
-    FileDownloader().registerCallbacks(
-      group: kManualUploadGroup,
-      taskStatusCallback: (update) => onUploadStatus?.call(update),
-      taskProgressCallback: (update) => onTaskProgress?.call(update),
-    );
-    _trackingReady = FileDownloader().trackTasks(markDownloadedComplete: false).then<void>((_) {});
+  UploadRepository({BackupTaskRegistryGateway? taskRegistry}) {
+    if (taskRegistry == null) {
+      final downloader = FileDownloader();
+      downloader.registerCallbacks(
+        group: kBackupGroup,
+        taskStatusCallback: (update) => onUploadStatus?.call(update),
+        taskProgressCallback: (update) => onTaskProgress?.call(update),
+      );
+      downloader.registerCallbacks(
+        group: kBackupLivePhotoGroup,
+        taskStatusCallback: (update) => onUploadStatus?.call(update),
+        taskProgressCallback: (update) => onTaskProgress?.call(update),
+      );
+      downloader.registerCallbacks(
+        group: kManualUploadGroup,
+        taskStatusCallback: (update) => onUploadStatus?.call(update),
+        taskProgressCallback: (update) => onTaskProgress?.call(update),
+      );
+      _taskRegistry = BackgroundDownloaderTaskRegistryAdapter(downloader);
+    } else {
+      _taskRegistry = taskRegistry;
+    }
   }
 
   @override
-  Future<void> get ready => _trackingReady;
+  Future<void> get ready => _taskRegistry.ready;
 
   @override
   Future<List<BackupTaskSnapshot>> snapshot(Set<BackupTaskGroup> groups) async {
     await ready;
-    final downloader = FileDownloader();
-    final snapshots = BackupTaskSnapshotIndex();
+    final snapshots = <(BackupTaskGroup, String), BackupTaskSnapshot>{};
     for (final group in groups) {
       final groupName = _groupName(group);
-      final nativeTasks = await downloader.allTasks(group: groupName, includeTasksWaitingToRetry: true);
+      final nativeTasks = await _taskRegistry.nativeTasks(groupName);
       for (final task in nativeTasks) {
-        snapshots.add(_snapshot(task, BackupTaskStatus.running, group));
+        snapshots[(group, task.taskId)] = _snapshot(task, BackupTaskStatus.running, group);
       }
       for (final status in const [
         TaskStatus.enqueued,
@@ -62,33 +69,89 @@ class UploadRepository implements BackupTaskRegistryPort {
         TaskStatus.waitingToRetry,
         TaskStatus.paused,
       ]) {
-        final records = await downloader.database.allRecordsWithStatus(status, group: groupName);
+        final records = await _taskRegistry.trackingRecords(status, groupName);
         for (final record in records) {
-          snapshots.add(_snapshot(record.task, _mapStatus(record.status), group));
+          final key = (group, record.task.taskId);
+          final native = snapshots[key];
+          if (native != null) {
+            snapshots[key] = BackupTaskSnapshot(
+              taskId: native.taskId,
+              group: native.group,
+              status: native.status,
+              metadata: BackupTaskMetadata.tryParse(record.task.metaData),
+            );
+          }
         }
       }
     }
-    return snapshots.values;
+    return snapshots.values.toList(growable: false);
   }
 
   @override
-  Future<bool> cancelAndDrain(Set<BackupTaskGroup> groups) async {
+  Future<bool> cancelAndDrain(Set<BackupTaskGroup> groups) => BackupTaskDrain(this).cancelAndDrain(groups);
+
+  @override
+  Future<bool> cancelNative(Set<BackupTaskGroup> groups) async {
     await ready;
-    final downloader = FileDownloader();
-    await Future.wait([
-      for (final group in groups) downloader.cancelAll(group: _groupName(group)),
-      for (final group in groups) downloader.reset(group: _groupName(group)),
-    ]);
-    for (var attempt = 0; attempt < 20; attempt++) {
-      if ((await snapshot(groups)).isEmpty) {
-        for (final group in groups) {
-          await downloader.database.deleteAllRecords(group: _groupName(group));
-        }
-        return true;
-      }
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+    var acknowledged = true;
+    for (final group in groups) {
+      acknowledged = await _taskRegistry.cancelNative(_groupName(group)) && acknowledged;
     }
-    return false;
+    return acknowledged;
+  }
+
+  @override
+  Future<void> resetNative(Set<BackupTaskGroup> groups) async {
+    for (final group in groups) {
+      await _taskRegistry.resetNative(_groupName(group));
+    }
+  }
+
+  @override
+  Future<List<NativeBackupTask>> nativeSnapshot(Set<BackupTaskGroup> groups) async {
+    final tasks = <NativeBackupTask>[];
+    for (final group in groups) {
+      final nativeTasks = await _taskRegistry.nativeTasks(_groupName(group));
+      tasks.addAll(nativeTasks.map((task) => NativeBackupTask(task.taskId)));
+    }
+    return tasks;
+  }
+
+  @override
+  Future<bool> purgeTrackingAbsentFromNative(Set<BackupTaskGroup> groups) async {
+    final groupNames = groups.map(_groupName).toSet();
+    final records = <TaskRecord>[];
+    for (final groupName in groupNames) {
+      records.addAll(await _taskRegistry.allTrackingRecords(groupName));
+    }
+    if ((await _taskRegistry.nativeTasksInGroups(groupNames)).isNotEmpty) return false;
+
+    try {
+      for (final groupName in groupNames) {
+        final groupRecords = records.where((record) => record.task.group == groupName);
+        await _taskRegistry.deleteTrackingRecords(groupRecords.map((record) => record.taskId));
+      }
+      final nativeAfterPurge = await _taskRegistry.nativeTasksInGroups(groupNames);
+      if (nativeAfterPurge.isEmpty) return true;
+      await _repairTracking(nativeAfterPurge, records);
+      return false;
+    } on Object {
+      await _restoreTracking(records);
+      return false;
+    }
+  }
+
+  Future<void> _repairTracking(List<Task> nativeTasks, List<TaskRecord> capturedRecords) async {
+    final capturedById = {for (final record in capturedRecords) record.taskId: record};
+    for (final task in nativeTasks) {
+      await _taskRegistry.repairTracking(capturedById[task.taskId] ?? TaskRecord(task, TaskStatus.running, 0, -1));
+    }
+  }
+
+  Future<void> _restoreTracking(List<TaskRecord> records) async {
+    for (final record in records) {
+      await _taskRegistry.repairTracking(record);
+    }
   }
 
   Future<Task?> completedTask(BackupTaskClaim claim) async {
@@ -111,16 +174,6 @@ class UploadRepository implements BackupTaskRegistryPort {
   static String _groupName(BackupTaskGroup group) => switch (group) {
     BackupTaskGroup.primary => kBackupGroup,
     BackupTaskGroup.livePhoto => kBackupLivePhotoGroup,
-  };
-
-  static BackupTaskStatus _mapStatus(TaskStatus status) => switch (status) {
-    TaskStatus.enqueued => BackupTaskStatus.enqueued,
-    TaskStatus.running => BackupTaskStatus.running,
-    TaskStatus.waitingToRetry => BackupTaskStatus.waitingToRetry,
-    TaskStatus.paused => BackupTaskStatus.paused,
-    TaskStatus.complete => BackupTaskStatus.complete,
-    TaskStatus.failed || TaskStatus.notFound => BackupTaskStatus.failed,
-    TaskStatus.canceled => BackupTaskStatus.cancelled,
   };
 
   Future<void> enqueueBackground(UploadTask task) {
