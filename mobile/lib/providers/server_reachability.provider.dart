@@ -75,7 +75,11 @@ final reachabilityStatePublisherProvider = Provider<ReachabilityStatePublisherPo
 });
 
 final nativeConnectivityMonitorProvider = Provider<ConnectivityMonitorPort>((ref) {
-  return NativeConnectivityMonitorAdapter(api: PigeonConnectivityHostApi(api: ref.read(connectivityApiProvider)));
+  final adapter = NativeConnectivityMonitorAdapter(
+    api: PigeonConnectivityHostApi(api: ref.read(connectivityApiProvider)),
+  );
+  ref.onDispose(() => unawaited(adapter.dispose()));
+  return adapter;
 });
 
 final connectivityMonitorProvider = Provider<ConnectivityMonitorPort>((ref) {

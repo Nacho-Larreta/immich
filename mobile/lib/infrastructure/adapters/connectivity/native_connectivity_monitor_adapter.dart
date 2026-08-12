@@ -11,7 +11,7 @@ typedef ConnectivityFlutterApiRegistration = void Function(ConnectivityFlutterAp
 abstract interface class ConnectivityHostApi {
   Future<void> start();
 
-  Future<ConnectivityTransportSnapshot> getSnapshot();
+  Future<ConnectivityTransportSnapshot> readCurrentSnapshot();
 
   Future<void> stop();
 
@@ -33,7 +33,7 @@ final class PigeonConnectivityHostApi implements ConnectivityHostApi {
   Future<void> start() => _translatePlatformFailure(_api.start());
 
   @override
-  Future<ConnectivityTransportSnapshot> getSnapshot() => _translatePlatformFailure(_api.getSnapshot());
+  Future<ConnectivityTransportSnapshot> readCurrentSnapshot() => _translatePlatformFailure(_api.readCurrentSnapshot());
 
   @override
   Future<void> stop() => _translatePlatformFailure(_api.stop());
@@ -57,7 +57,7 @@ final class NativeConnectivityMonitorAdapter
   Future<BackupTransportSnapshot>? _snapshotInitializationFuture;
   Future<void>? _disposeFuture;
   bool _disposed = false;
-  int _transportRevision = 0;
+  BackupTransportSnapshot _latestSnapshot = const BackupTransportSnapshot(available: false, capabilities: {});
 
   @override
   Future<TransportAvailability> get initialAvailability {
@@ -82,9 +82,50 @@ final class NativeConnectivityMonitorAdapter
     if (_disposed) {
       return;
     }
-    final mapped = _mapSnapshot(snapshot, ++_transportRevision);
+    final mapped = _mapSnapshot(snapshot);
+    if (!mapped.isNewerThan(_latestSnapshot)) return;
+    _latestSnapshot = mapped;
+    _lastAvailability = _mapAvailability(snapshot.availability);
     _events.add(_mapAvailability(snapshot.availability));
     _snapshotEvents.add(mapped);
+  }
+
+  @override
+  Future<BackupTransportSnapshot> readCurrentSnapshot() async {
+    if (_disposed) return const BackupTransportSnapshot(available: false, capabilities: {});
+    try {
+      await _ensureStarted();
+      var mapped = _mapSnapshot(await _api.readCurrentSnapshot());
+      if (mapped.monitorEpoch > 0 && mapped.revision == 0) {
+        await _awaitSettledCallback(mapped.monitorEpoch);
+        mapped = _mapSnapshot(await _api.readCurrentSnapshot());
+      }
+      if (mapped.isNewerThan(_latestSnapshot)) {
+        _latestSnapshot = mapped;
+        return mapped;
+      }
+      return _latestSnapshot;
+    } on ConnectivityHostException {
+      return const BackupTransportSnapshot(available: false, capabilities: {});
+    } on PlatformException {
+      return const BackupTransportSnapshot(available: false, capabilities: {});
+    }
+  }
+
+  Future<void> _awaitSettledCallback(int monitorEpoch) async {
+    if (_latestSnapshot.monitorEpoch == monitorEpoch && _latestSnapshot.revision > 0) return;
+    final completer = Completer<void>();
+    late final StreamSubscription<BackupTransportSnapshot> subscription;
+    subscription = _snapshotEvents.stream.listen((snapshot) {
+      if (snapshot.monitorEpoch == monitorEpoch && snapshot.revision > 0 && !completer.isCompleted) {
+        completer.complete();
+      }
+    });
+    try {
+      await completer.future.timeout(const Duration(seconds: 1), onTimeout: () {});
+    } finally {
+      await subscription.cancel();
+    }
   }
 
   @override
@@ -115,22 +156,35 @@ final class NativeConnectivityMonitorAdapter
 
   Future<BackupTransportSnapshot> _initializeSnapshot() async {
     try {
-      _registerFlutterApi(this);
-      await _api.start();
+      await _ensureStarted();
       if (_disposed) {
         return const BackupTransportSnapshot(available: false, capabilities: {});
       }
-      final snapshot = await _api.getSnapshot();
+      final snapshot = await _api.readCurrentSnapshot();
       if (_disposed) {
         return const BackupTransportSnapshot(available: false, capabilities: {});
       }
       _lastAvailability = _mapAvailability(snapshot.availability);
-      return _mapSnapshot(snapshot, ++_transportRevision);
+      final mapped = _mapSnapshot(snapshot);
+      if (mapped.isNewerThan(_latestSnapshot)) {
+        _latestSnapshot = mapped;
+        return mapped;
+      }
+      return _latestSnapshot;
     } on ConnectivityHostException {
       return const BackupTransportSnapshot(available: false, capabilities: {});
     } on PlatformException {
       return const BackupTransportSnapshot(available: false, capabilities: {});
     }
+  }
+
+  Future<void>? _startFuture;
+
+  Future<void> _ensureStarted() => _startFuture ??= _start();
+
+  Future<void> _start() async {
+    _registerFlutterApi(this);
+    await _api.start();
   }
 
   Future<void> _releaseResources(Object? firstError, StackTrace? firstStackTrace) async {
@@ -168,11 +222,12 @@ final class NativeConnectivityMonitorAdapter
     };
   }
 
-  static BackupTransportSnapshot _mapSnapshot(ConnectivityTransportSnapshot snapshot, int revision) {
+  static BackupTransportSnapshot _mapSnapshot(ConnectivityTransportSnapshot snapshot) {
     return BackupTransportSnapshot(
       available: snapshot.availability == ConnectivityTransportAvailability.available,
       capabilities: snapshot.capabilities.map(_mapCapability).toSet(),
-      revision: revision,
+      monitorEpoch: snapshot.monitorEpoch,
+      revision: snapshot.revision,
     );
   }
 

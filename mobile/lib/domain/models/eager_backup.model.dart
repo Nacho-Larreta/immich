@@ -33,13 +33,22 @@ enum EagerBackupTrigger {
 enum BackupNetworkCapability { wifi, cellular, vpn, unmetered }
 
 final class BackupTransportSnapshot {
-  const BackupTransportSnapshot({required this.available, required this.capabilities, this.revision = 0});
+  const BackupTransportSnapshot({
+    required this.available,
+    required this.capabilities,
+    this.monitorEpoch = 0,
+    this.revision = 0,
+  });
 
   final bool available;
   final Set<BackupNetworkCapability> capabilities;
+  final int monitorEpoch;
   final int revision;
 
   bool get hasWifi => available && capabilities.contains(BackupNetworkCapability.wifi);
+
+  bool isNewerThan(BackupTransportSnapshot other) =>
+      monitorEpoch > other.monitorEpoch || (monitorEpoch == other.monitorEpoch && revision > other.revision);
 }
 
 final class BackupWorkload {

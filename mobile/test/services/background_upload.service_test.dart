@@ -161,6 +161,38 @@ void main() {
     sut.dispose();
   });
 
+  test('owned backup rejects failed connectivity gate before storage and candidate query', () async {
+    final binding = _binding();
+    final service = BackgroundUploadService(
+      mockUploadRepository,
+      mockStorageRepository,
+      mockLocalAssetRepository,
+      mockBackupRepository,
+      mockAppSettingsService,
+      mockAssetMediaRepository,
+      canContinueOwnedUpload: (_) async => false,
+    );
+    addTearDown(service.dispose);
+
+    await service.uploadBackupCandidates(
+      binding.userId,
+      binding: binding,
+      lease: BackupExecutionLease(
+        mode: BackupExecutionMode.background,
+        runToken: 'run-token',
+        bindingDigest: binding.digest,
+        expiresAt: DateTime.utc(2026, 8, 11, 12),
+        activityRevision: 0,
+        callbacksInFlight: 0,
+      ),
+      isBindingCurrent: () => true,
+    );
+
+    verifyNever(() => mockStorageRepository.clearCache());
+    verifyNever(() => mockBackupRepository.getCandidates(any()));
+    verifyNever(() => mockUploadRepository.enqueueBackgroundAll(any()));
+  });
+
   group('getUploadTask', () {
     test('should call getOriginalFilename from AssetMediaRepository for regular photo', () async {
       final asset = LocalAssetStub.image1;
@@ -1142,6 +1174,7 @@ BackupRunBinding _binding() => BackupRunBinding(
   apiEndpoint: Uri.parse('https://photos.example/api'),
   canonicalOrigin: Uri.parse('https://photos.example'),
   schemePolicy: EndpointSchemePolicy.httpsOnly,
+  transportEpoch: 1,
   transportRevision: 3,
   localLeaseRevision: 4,
 );

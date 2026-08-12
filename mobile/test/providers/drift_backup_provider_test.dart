@@ -45,6 +45,7 @@ BackupRunBinding _binding() => BackupRunBinding(
   apiEndpoint: Uri.parse('https://photos.example/api'),
   canonicalOrigin: Uri.parse('https://photos.example'),
   schemePolicy: EndpointSchemePolicy.httpsOnly,
+  transportEpoch: 1,
   transportRevision: 4,
   localLeaseRevision: 5,
 );

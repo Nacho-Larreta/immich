@@ -21,7 +21,7 @@ void main() {
 
         expect(availability, expectation.$2);
         expect(harness.registration.calls, [harness.adapter]);
-        expect(harness.host.operations, ['start', 'getSnapshot']);
+        expect(harness.host.operations, ['start', 'readCurrentSnapshot']);
         await harness.adapter.dispose();
       });
     }
@@ -36,17 +36,77 @@ void main() {
         ConnectivityTransportSnapshot(
           availability: ConnectivityTransportAvailability.available,
           capabilities: const [],
+          monitorEpoch: 1,
+          revision: 2,
         ),
       );
       harness.registration.activeApi!.onTransportChanged(
         ConnectivityTransportSnapshot(
           availability: ConnectivityTransportAvailability.unavailable,
           capabilities: const [],
+          monitorEpoch: 1,
+          revision: 3,
         ),
       );
 
       expect(events, [TransportAvailability.available, TransportAvailability.unavailable]);
       await subscription.cancel();
+      await harness.adapter.dispose();
+    });
+
+    test('ignores callbacks delivered out of native monitor order', () async {
+      final harness = _Harness(snapshotMonitorEpoch: 4, snapshotRevision: 1);
+      await harness.adapter.initialSnapshot;
+      final snapshots = <BackupTransportSnapshot>[];
+      final subscription = harness.adapter.snapshotEvents.listen(snapshots.add);
+
+      harness.registration.activeApi!.onTransportChanged(
+        ConnectivityTransportSnapshot(
+          availability: ConnectivityTransportAvailability.unavailable,
+          capabilities: const [],
+          monitorEpoch: 4,
+          revision: 3,
+        ),
+      );
+      harness.registration.activeApi!.onTransportChanged(
+        ConnectivityTransportSnapshot(
+          availability: ConnectivityTransportAvailability.available,
+          capabilities: const [ConnectivityNetworkCapability.wifi],
+          monitorEpoch: 4,
+          revision: 2,
+        ),
+      );
+      harness.registration.activeApi!.onTransportChanged(
+        ConnectivityTransportSnapshot(
+          availability: ConnectivityTransportAvailability.unknown,
+          capabilities: const [],
+          monitorEpoch: 3,
+          revision: 99,
+        ),
+      );
+
+      expect(snapshots, hasLength(1));
+      expect(snapshots.single.hasWifi, isFalse);
+      await subscription.cancel();
+      await harness.adapter.dispose();
+    });
+
+    test('readCurrentSnapshot always asks native for fresh evidence', () async {
+      final harness = _Harness(
+        snapshotAvailability: ConnectivityTransportAvailability.unavailable,
+        snapshotMonitorEpoch: 7,
+        snapshotRevision: 1,
+      );
+
+      await harness.adapter.readCurrentSnapshot();
+      harness.host
+        ..snapshotAvailability = ConnectivityTransportAvailability.available
+        ..snapshotCapabilities = const [ConnectivityNetworkCapability.wifi]
+        ..snapshotRevision = 2;
+      final refreshed = await harness.adapter.readCurrentSnapshot();
+
+      expect(refreshed.hasWifi, isTrue);
+      expect(harness.host.operations, ['start', 'readCurrentSnapshot', 'readCurrentSnapshot']);
       await harness.adapter.dispose();
     });
 
@@ -81,7 +141,7 @@ void main() {
 
       expect(identical(first, second), isTrue);
       await Future.wait([first, second]);
-      expect(harness.host.operations, ['start', 'getSnapshot']);
+      expect(harness.host.operations, ['start', 'readCurrentSnapshot']);
       expect(harness.registration.calls, [harness.adapter]);
       await harness.adapter.dispose();
     });
@@ -121,7 +181,7 @@ void main() {
       final harness = _Harness(snapshotError: const ConnectivityHostException('snapshot failed'));
 
       expect(await harness.adapter.initialAvailability, TransportAvailability.unknown);
-      expect(harness.host.operations, ['start', 'getSnapshot']);
+      expect(harness.host.operations, ['start', 'readCurrentSnapshot']);
       await harness.adapter.dispose();
       expect(harness.host.disposeCount, 1);
     });
@@ -139,6 +199,8 @@ void main() {
         ConnectivityTransportSnapshot(
           availability: ConnectivityTransportAvailability.available,
           capabilities: const [],
+          monitorEpoch: 1,
+          revision: 2,
         ),
       );
 
@@ -177,6 +239,8 @@ final class _Harness {
   _Harness({
     ConnectivityTransportAvailability snapshotAvailability = ConnectivityTransportAvailability.unknown,
     List<ConnectivityNetworkCapability> snapshotCapabilities = const [],
+    int snapshotMonitorEpoch = 1,
+    int snapshotRevision = 1,
     Future<void>? start,
     Object? startError,
     Object? snapshotError,
@@ -184,6 +248,8 @@ final class _Harness {
   }) : host = _FakeConnectivityHostApi(
          snapshotAvailability: snapshotAvailability,
          snapshotCapabilities: snapshotCapabilities,
+         snapshotMonitorEpoch: snapshotMonitorEpoch,
+         snapshotRevision: snapshotRevision,
          start: start,
          startError: startError,
          snapshotError: snapshotError,
@@ -220,13 +286,17 @@ final class _FakeConnectivityHostApi implements ConnectivityHostApi {
   _FakeConnectivityHostApi({
     required this.snapshotAvailability,
     required this.snapshotCapabilities,
+    required this.snapshotMonitorEpoch,
+    required this.snapshotRevision,
     Future<void>? start,
     this.startError,
     this.snapshotError,
   }) : _start = start ?? Future.value();
 
-  final ConnectivityTransportAvailability snapshotAvailability;
-  final List<ConnectivityNetworkCapability> snapshotCapabilities;
+  ConnectivityTransportAvailability snapshotAvailability;
+  List<ConnectivityNetworkCapability> snapshotCapabilities;
+  final int snapshotMonitorEpoch;
+  int snapshotRevision;
   final Future<void> _start;
   final Object? startError;
   final Object? snapshotError;
@@ -245,13 +315,18 @@ final class _FakeConnectivityHostApi implements ConnectivityHostApi {
   }
 
   @override
-  Future<ConnectivityTransportSnapshot> getSnapshot() async {
-    operations.add('getSnapshot');
+  Future<ConnectivityTransportSnapshot> readCurrentSnapshot() async {
+    operations.add('readCurrentSnapshot');
     final error = snapshotError;
     if (error != null) {
       throw error;
     }
-    return ConnectivityTransportSnapshot(availability: snapshotAvailability, capabilities: snapshotCapabilities);
+    return ConnectivityTransportSnapshot(
+      availability: snapshotAvailability,
+      capabilities: snapshotCapabilities,
+      monitorEpoch: snapshotMonitorEpoch,
+      revision: snapshotRevision,
+    );
   }
 
   @override

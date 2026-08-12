@@ -74,7 +74,10 @@ final eagerBackupCoordinatorProvider = Provider<EagerBackupCoordinator>((ref) {
   }
 
   void publishTransport(BackupTransportSnapshot snapshot) {
-    ref.read(backupTransportRevisionProvider.notifier).state = snapshot.revision;
+    ref.read(backupTransportCursorProvider.notifier).state = (
+      epoch: snapshot.monitorEpoch,
+      revision: snapshot.revision,
+    );
     coordinator.setTransport(snapshot);
     if (snapshot.hasWifi) resumePersistedReconciliations();
   }

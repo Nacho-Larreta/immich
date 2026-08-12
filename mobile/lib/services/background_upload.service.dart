@@ -11,6 +11,7 @@ import 'package:immich_mobile/domain/models/asset/asset_metadata.model.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/interfaces/backup_execution.interface.dart';
+import 'package:immich_mobile/domain/interfaces/connectivity_monitor.interface.dart';
 import 'package:immich_mobile/domain/models/backup_execution_lease.model.dart';
 import 'package:immich_mobile/domain/models/backup_candidate_key.model.dart';
 import 'package:immich_mobile/domain/models/backup_reconciliation_quarantine.model.dart';
@@ -22,16 +23,15 @@ import 'package:immich_mobile/infrastructure/repositories/backup.repository.dart
 import 'package:immich_mobile/infrastructure/repositories/local_asset.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/network.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/storage.repository.dart';
-import 'package:immich_mobile/platform/connectivity_api.g.dart';
 import 'package:immich_mobile/providers/app_settings.provider.dart';
 import 'package:immich_mobile/providers/background_sync.provider.dart';
 import 'package:immich_mobile/providers/backup/backup_execution.provider.dart';
+import 'package:immich_mobile/providers/backup/backup_run_binding.provider.dart';
 import 'package:immich_mobile/providers/backup/eager_backup_signal.provider.dart';
 import 'package:immich_mobile/domain/models/eager_backup.model.dart';
 import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/domain/models/server_reachability.model.dart';
 import 'package:immich_mobile/providers/infrastructure/asset.provider.dart';
-import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/storage.provider.dart';
 import 'package:immich_mobile/providers/server_reachability.provider.dart';
 import 'package:immich_mobile/providers/user.provider.dart';
@@ -44,6 +44,20 @@ import 'package:logging/logging.dart';
 import 'package:path/path.dart' as p;
 
 final Provider<BackgroundUploadService> backgroundUploadServiceProvider = Provider<BackgroundUploadService>((ref) {
+  final connectivity = ref.read(nativeConnectivityMonitorProvider) as ConnectivitySnapshotMonitorPort;
+  Future<bool> canContinueOwnedUpload(BackupRunBinding binding) async {
+    await connectivity.initialSnapshot;
+    final snapshot = await connectivity.readCurrentSnapshot();
+    ref.read(backupTransportCursorProvider.notifier).state = (
+      epoch: snapshot.monitorEpoch,
+      revision: snapshot.revision,
+    );
+    return snapshot.hasWifi &&
+        snapshot.monitorEpoch == binding.transportEpoch &&
+        snapshot.revision == binding.transportRevision &&
+        ref.read(backupRunBindingSourceProvider).isCurrent(binding);
+  }
+
   final service = BackgroundUploadService(
     ref.watch(uploadRepositoryProvider),
     ref.watch(storageRepositoryProvider),
@@ -54,10 +68,7 @@ final Provider<BackgroundUploadService> backgroundUploadServiceProvider = Provid
     leasePort: ref.watch(backupExecutionLeaseProvider),
     arbiter: ref.watch(backupExecutionArbiterProvider),
     resolveBinding: (metadata, task) => _resolveOwnedTaskBinding(ref, metadata, task),
-    canStartOwnedUpload: () async {
-      final snapshot = await ref.read(connectivityApiProvider).getSnapshot();
-      return snapshot.capabilities.contains(ConnectivityNetworkCapability.wifi);
-    },
+    canContinueOwnedUpload: canContinueOwnedUpload,
     onOwnedTerminal: (success) => ref
         .read(eagerBackupSignalProvider)
         .signal(success ? EagerBackupTrigger.uploadTerminal : EagerBackupTrigger.uploadFailed),
@@ -159,6 +170,7 @@ BackupRunBindingResolution resolveOwnedTaskBinding({
     apiEndpoint: endpoint,
     canonicalOrigin: origin,
     schemePolicy: authority.schemePolicy,
+    transportEpoch: authority.transportEpoch,
     transportRevision: authority.transportRevision,
     localLeaseRevision: authority.localLeaseRevision,
   );
@@ -196,6 +208,7 @@ final class UploadBindingAuthority {
     required this.sessionEpoch,
     required this.probeGeneration,
     required this.nativeGeneration,
+    required this.transportEpoch,
     required this.transportRevision,
     required this.localLeaseRevision,
     required this.schemePolicy,
@@ -205,6 +218,7 @@ final class UploadBindingAuthority {
     sessionEpoch: binding.sessionEpoch,
     probeGeneration: binding.probeGeneration,
     nativeGeneration: binding.nativeGeneration,
+    transportEpoch: binding.transportEpoch,
     transportRevision: binding.transportRevision,
     localLeaseRevision: binding.localLeaseRevision,
     schemePolicy: binding.schemePolicy,
@@ -213,6 +227,7 @@ final class UploadBindingAuthority {
   final int sessionEpoch;
   final int probeGeneration;
   final int nativeGeneration;
+  final int transportEpoch;
   final int transportRevision;
   final int localLeaseRevision;
   final EndpointSchemePolicy schemePolicy;
@@ -221,6 +236,7 @@ final class UploadBindingAuthority {
     'sessionEpoch': sessionEpoch,
     'probeGeneration': probeGeneration,
     'nativeGeneration': nativeGeneration,
+    'transportEpoch': transportEpoch,
     'transportRevision': transportRevision,
     'localLeaseRevision': localLeaseRevision,
     'schemePolicy': schemePolicy.name,
@@ -230,6 +246,7 @@ final class UploadBindingAuthority {
     sessionEpoch: value['sessionEpoch'] as int,
     probeGeneration: value['probeGeneration'] as int,
     nativeGeneration: value['nativeGeneration'] as int,
+    transportEpoch: value['transportEpoch'] as int,
     transportRevision: value['transportRevision'] as int,
     localLeaseRevision: value['localLeaseRevision'] as int,
     schemePolicy: EndpointSchemePolicy.values.byName(value['schemePolicy'] as String),
@@ -241,13 +258,21 @@ final class UploadBindingAuthority {
       other.sessionEpoch == sessionEpoch &&
       other.probeGeneration == probeGeneration &&
       other.nativeGeneration == nativeGeneration &&
+      other.transportEpoch == transportEpoch &&
       other.transportRevision == transportRevision &&
       other.localLeaseRevision == localLeaseRevision &&
       other.schemePolicy == schemePolicy;
 
   @override
-  int get hashCode =>
-      Object.hash(sessionEpoch, probeGeneration, nativeGeneration, transportRevision, localLeaseRevision, schemePolicy);
+  int get hashCode => Object.hash(
+    sessionEpoch,
+    probeGeneration,
+    nativeGeneration,
+    transportEpoch,
+    transportRevision,
+    localLeaseRevision,
+    schemePolicy,
+  );
 }
 
 /// Metadata for upload tasks to track live photo handling
@@ -364,7 +389,7 @@ class BackgroundUploadService {
     String Function()? taskIdFactory,
     BackupRunBinding? Function(UploadTaskMetadata metadata, Task task)? validateBinding,
     BackupRunBindingResolution Function(UploadTaskMetadata metadata, Task task)? resolveBinding,
-    Future<bool> Function()? canStartOwnedUpload,
+    Future<bool> Function(BackupRunBinding binding)? canContinueOwnedUpload,
     void Function(bool success)? onOwnedTerminal,
     void Function()? onReconciliationPending,
     void Function()? onReconciliationBlocked,
@@ -382,7 +407,8 @@ class BackgroundUploadService {
                  ? const BackupRunBindingResolution.temporarilyUnavailable()
                  : BackupRunBindingResolution.current(binding);
            }),
-       _canStartOwnedUpload = canStartOwnedUpload ?? (() async => true),
+       _canContinueOwnedUpload = canContinueOwnedUpload ?? ((_) async => true),
+       _requiresConnectivityGate = canContinueOwnedUpload != null,
        _onOwnedTerminal = onOwnedTerminal,
        _onReconciliationPending = onReconciliationPending,
        _onReconciliationBlocked = onReconciliationBlocked,
@@ -403,7 +429,8 @@ class BackgroundUploadService {
   final BackupExecutionArbiter? _arbiter;
   final String Function() _taskIdFactory;
   final BackupRunBindingResolution Function(UploadTaskMetadata metadata, Task task) _resolveBinding;
-  final Future<bool> Function() _canStartOwnedUpload;
+  final Future<bool> Function(BackupRunBinding binding) _canContinueOwnedUpload;
+  final bool _requiresConnectivityGate;
   final void Function(bool success)? _onOwnedTerminal;
   final void Function()? _onReconciliationPending;
   final void Function()? _onReconciliationBlocked;
@@ -567,6 +594,11 @@ class BackgroundUploadService {
         results.add(false);
         continue;
       }
+      final binding = _requiresConnectivityGate ? _resolveBinding(taskMetadata!, task).binding : null;
+      if (_requiresConnectivityGate && (binding == null || !await _canContinueOwnedUpload(binding))) {
+        results.add(false);
+        continue;
+      }
       final taskClaim = _claimForTask(task);
       final reservation = await _leasePort?.beginEnqueueUnlessQuarantined(
         runToken: ownership.runToken,
@@ -579,6 +611,11 @@ class BackgroundUploadService {
         continue;
       }
       try {
+        if (binding != null && !await _canContinueOwnedUpload(binding)) {
+          await _abortEnqueue(ownership, taskClaim);
+          results.add(false);
+          continue;
+        }
         final pluginResult = await _uploadRepository.enqueueBackgroundAll([task]);
         final enqueued = pluginResult.length == 1 && pluginResult.first;
         if (!enqueued) {
@@ -642,11 +679,11 @@ class BackgroundUploadService {
     required bool Function() isBindingCurrent,
   }) async {
     if (!isBindingCurrent()) return;
-    if (!await _canStartOwnedUpload() || !isBindingCurrent()) return;
+    if (!await _canContinueOwnedUpload(binding) || !isBindingCurrent()) return;
     await _storageRepository.clearCache();
     shouldAbortQueuingTasks = false;
 
-    if (!isBindingCurrent()) return;
+    if (!await _canContinueOwnedUpload(binding) || !isBindingCurrent()) return;
     final candidates = await _backupRepository.getCandidates(userId);
     if (!isBindingCurrent()) return;
     if (candidates.isEmpty) {
@@ -661,7 +698,7 @@ class BackgroundUploadService {
     List<UploadTask> tasks = [];
 
     for (final asset in batch) {
-      if (!isBindingCurrent()) return;
+      if (!await _canContinueOwnedUpload(binding) || !isBindingCurrent()) return;
       final task = await getUploadTask(
         asset,
         apiEndpoint: binding.apiEndpoint,
@@ -678,7 +715,7 @@ class BackgroundUploadService {
       }
     }
 
-    if (tasks.isNotEmpty && !shouldAbortQueuingTasks && isBindingCurrent()) {
+    if (tasks.isNotEmpty && !shouldAbortQueuingTasks && await _canContinueOwnedUpload(binding) && isBindingCurrent()) {
       _logger.info('background_upload_enqueue_started');
       await enqueueTasks(
         tasks,

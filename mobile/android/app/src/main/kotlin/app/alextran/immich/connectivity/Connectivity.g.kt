@@ -223,20 +223,26 @@ enum class ConnectivityNetworkCapability(val raw: Int) {
 /** Generated class from Pigeon that represents data sent in messages. */
 data class ConnectivityTransportSnapshot (
   val availability: ConnectivityTransportAvailability,
-  val capabilities: List<ConnectivityNetworkCapability>
+  val capabilities: List<ConnectivityNetworkCapability>,
+  val monitorEpoch: Long,
+  val revision: Long
 )
  {
   companion object {
     fun fromList(pigeonVar_list: List<Any?>): ConnectivityTransportSnapshot {
       val availability = pigeonVar_list[0] as ConnectivityTransportAvailability
       val capabilities = pigeonVar_list[1] as List<ConnectivityNetworkCapability>
-      return ConnectivityTransportSnapshot(availability, capabilities)
+      val monitorEpoch = pigeonVar_list[2] as Long
+      val revision = pigeonVar_list[3] as Long
+      return ConnectivityTransportSnapshot(availability, capabilities, monitorEpoch, revision)
     }
   }
   fun toList(): List<Any?> {
     return listOf(
       availability,
       capabilities,
+      monitorEpoch,
+      revision,
     )
   }
   override fun equals(other: Any?): Boolean {
@@ -247,13 +253,15 @@ data class ConnectivityTransportSnapshot (
       return true
     }
     val other = other as ConnectivityTransportSnapshot
-    return ConnectivityPigeonUtils.deepEquals(this.availability, other.availability) && ConnectivityPigeonUtils.deepEquals(this.capabilities, other.capabilities)
+    return ConnectivityPigeonUtils.deepEquals(this.availability, other.availability) && ConnectivityPigeonUtils.deepEquals(this.capabilities, other.capabilities) && ConnectivityPigeonUtils.deepEquals(this.monitorEpoch, other.monitorEpoch) && ConnectivityPigeonUtils.deepEquals(this.revision, other.revision)
   }
 
   override fun hashCode(): Int {
     var result = javaClass.hashCode()
     result = 31 * result + ConnectivityPigeonUtils.deepHash(this.availability)
     result = 31 * result + ConnectivityPigeonUtils.deepHash(this.capabilities)
+    result = 31 * result + ConnectivityPigeonUtils.deepHash(this.monitorEpoch)
+    result = 31 * result + ConnectivityPigeonUtils.deepHash(this.revision)
     return result
   }
 }
@@ -299,7 +307,7 @@ private open class ConnectivityPigeonCodec : StandardMessageCodec() {
 
 /** Generated interface from Pigeon that represents a handler of messages from Flutter. */
 interface ConnectivityApi {
-  fun getSnapshot(): ConnectivityTransportSnapshot
+  fun readCurrentSnapshot(): ConnectivityTransportSnapshot
   fun start()
   fun stop()
   fun dispose()
@@ -315,11 +323,11 @@ interface ConnectivityApi {
       val separatedMessageChannelSuffix = if (messageChannelSuffix.isNotEmpty()) ".$messageChannelSuffix" else ""
       val taskQueue = binaryMessenger.makeBackgroundTaskQueue()
       run {
-        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.immich_mobile.ConnectivityApi.getSnapshot$separatedMessageChannelSuffix", codec, taskQueue)
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.immich_mobile.ConnectivityApi.readCurrentSnapshot$separatedMessageChannelSuffix", codec, taskQueue)
         if (api != null) {
           channel.setMessageHandler { _, reply ->
             val wrapped: List<Any?> = try {
-              listOf(api.getSnapshot())
+              listOf(api.readCurrentSnapshot())
             } catch (exception: Throwable) {
               ConnectivityPigeonUtils.wrapError(exception)
             }

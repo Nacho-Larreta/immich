@@ -398,6 +398,7 @@ final class _Harness {
 
 final class _Lease implements RequestContextLeasePort {
   RequestContextActivationLease? pending;
+  @override
   var revision = 0;
 
   @override

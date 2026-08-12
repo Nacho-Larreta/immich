@@ -6,6 +6,7 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/models/asset/asset_metadata.model.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/interfaces/backup_execution.interface.dart';
+import 'package:immich_mobile/domain/interfaces/connectivity_monitor.interface.dart';
 import 'package:immich_mobile/domain/models/backup_candidate_key.model.dart';
 import 'package:immich_mobile/domain/models/backup_execution_lease.model.dart';
 import 'package:immich_mobile/domain/models/backup_run_binding.model.dart';
@@ -15,11 +16,10 @@ import 'package:immich_mobile/extensions/platform_extensions.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
 import 'package:immich_mobile/infrastructure/repositories/backup.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/storage.repository.dart';
-import 'package:immich_mobile/platform/connectivity_api.g.dart';
 import 'package:immich_mobile/providers/app_settings.provider.dart';
 import 'package:immich_mobile/providers/backup/backup_execution.provider.dart';
-import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/storage.provider.dart';
+import 'package:immich_mobile/providers/server_reachability.provider.dart';
 import 'package:immich_mobile/repositories/asset_media.repository.dart';
 import 'package:immich_mobile/repositories/upload.repository.dart';
 import 'package:immich_mobile/services/app_settings.service.dart';
@@ -42,7 +42,7 @@ final foregroundUploadServiceProvider = Provider((ref) {
     ref.watch(uploadRepositoryProvider),
     ref.watch(storageRepositoryProvider),
     ref.watch(backupRepositoryProvider),
-    ref.watch(connectivityApiProvider),
+    ref.watch(nativeConnectivityMonitorProvider) as ConnectivitySnapshotMonitorPort,
     ref.watch(appSettingsServiceProvider),
     ref.watch(assetMediaRepositoryProvider),
     candidateGate: ref.watch(backupExecutionLeaseProvider),
@@ -59,7 +59,7 @@ class ForegroundUploadService {
     this._uploadRepository,
     this._storageRepository,
     this._backupRepository,
-    this._connectivityApi,
+    this._connectivity,
     this._appSettingsService,
     this._assetMediaRepository, {
     BackupExecutionLeasePort? candidateGate,
@@ -75,7 +75,7 @@ class ForegroundUploadService {
   final UploadRepository _uploadRepository;
   final StorageRepository _storageRepository;
   final DriftBackupRepository _backupRepository;
-  final ConnectivityApi _connectivityApi;
+  final ConnectivitySnapshotMonitorPort _connectivity;
   final AppSettingsService _appSettingsService;
   final AssetMediaRepository _assetMediaRepository;
   final BackupExecutionLeasePort? _candidateGate;
@@ -103,16 +103,22 @@ class ForegroundUploadService {
     bool Function(BackupRunBinding binding)? isBindingCurrent,
   }) async {
     bool current() => binding == null || isBindingCurrent?.call(binding) == true;
-    if (!current()) return;
+    Future<bool> gate() async {
+      if (!current()) return false;
+      if (binding == null) return true;
+      final wifiCurrent = await _hasCurrentWifi(binding);
+      return wifiCurrent && current();
+    }
+
+    if (!await gate()) return;
     final candidates = await _backupRepository.getCandidates(userId);
-    if (!current()) return;
+    if (!await gate()) return;
     if (candidates.isEmpty) {
       return;
     }
 
-    final transportSnapshot = await _connectivityApi.getSnapshot();
-    final networkCapabilities = transportSnapshot.capabilities;
-    final hasWifi = networkCapabilities.contains(ConnectivityNetworkCapability.wifi);
+    final transportSnapshot = await _connectivity.readCurrentSnapshot();
+    final hasWifi = transportSnapshot.hasWifi;
     _logger.info(hasWifi ? 'foreground_upload_transport_wifi' : 'foreground_upload_transport_non_wifi');
     if (binding != null && !hasWifi) return;
 
@@ -296,11 +302,19 @@ class ForegroundUploadService {
     File? livePhotoFile;
 
     try {
-      if (isBindingCurrent?.call() == false) return;
+      Future<bool> gate() async {
+        if (isBindingCurrent?.call() == false) return false;
+        if (binding == null) return true;
+        final wifiCurrent = await _hasCurrentWifi(binding);
+        return wifiCurrent && isBindingCurrent?.call() != false;
+      }
+
+      if (!await gate()) return;
       final candidateKey = binding == null ? null : _candidateKeyForAsset(asset);
       if (!await _autoCandidateAllowed(executionLease, candidateKey)) return;
+      if (!await gate()) return;
       final entity = await _storageRepository.getAssetEntityForAsset(asset);
-      if (isBindingCurrent?.call() == false) return;
+      if (!await gate()) return;
       if (entity == null) {
         callbacks.onError?.call(
           asset.localId!,
@@ -309,6 +323,7 @@ class ForegroundUploadService {
         return;
       }
 
+      if (!await gate()) return;
       final isAvailableLocally = await _storageRepository.isAssetAvailableLocally(asset.id);
 
       if (!isAvailableLocally && CurrentPlatform.isIOS) {
@@ -324,8 +339,10 @@ class ForegroundUploadService {
         });
 
         try {
+          if (!await gate()) return;
           file = await _storageRepository.loadFileFromCloud(asset.id, progressHandler: progressHandler);
           if (entity.isLivePhoto) {
+            if (!await gate()) return;
             livePhotoFile = await _storageRepository.loadMotionFileFromCloud(
               asset.id,
               progressHandler: progressHandler,
@@ -336,6 +353,7 @@ class ForegroundUploadService {
         }
       } else {
         // Get files locally
+        if (!await gate()) return;
         file = await _storageRepository.getFileForAsset(asset.id);
         if (file == null) {
           _logger.warning('foreground_upload_file_unavailable');
@@ -348,6 +366,7 @@ class ForegroundUploadService {
 
         // For live photos, get the motion video file
         if (entity.isLivePhoto) {
+          if (!await gate()) return;
           livePhotoFile = await _storageRepository.getMotionFileForAsset(asset);
           if (livePhotoFile == null) {
             _logger.warning('foreground_upload_live_photo_part_unavailable');
@@ -365,6 +384,7 @@ class ForegroundUploadService {
         return;
       }
 
+      if (!await gate()) return;
       String fileName = await _assetMediaRepository.getOriginalFilename(asset.id) ?? asset.name;
 
       /// Handle special file name from DJI or Fusion app
@@ -390,7 +410,9 @@ class ForegroundUploadService {
       // Upload live photo video first if available
       String? livePhotoVideoId;
       if (entity.isLivePhoto && livePhotoFile != null) {
+        if (!await gate()) return;
         if (!await _autoCandidateAllowed(executionLease, candidateKey)) return;
+        if (!await gate()) return;
         final livePhotoTitle = p.setExtension(originalFileName, p.extension(livePhotoFile.path));
 
         final onProgress = callbacks.onProgress;
@@ -434,6 +456,7 @@ class ForegroundUploadService {
 
       final onProgress = callbacks.onProgress;
       if (!await _autoCandidateAllowed(executionLease, candidateKey)) return;
+      if (!await gate()) return;
       final result = await _uploadRepository.uploadFile(
         file: file,
         originalFileName: originalFileName,
@@ -474,6 +497,13 @@ class ForegroundUploadService {
         }
       }
     }
+  }
+
+  Future<bool> _hasCurrentWifi(BackupRunBinding binding) async {
+    final snapshot = await _connectivity.readCurrentSnapshot();
+    return snapshot.hasWifi &&
+        snapshot.monitorEpoch == binding.transportEpoch &&
+        snapshot.revision == binding.transportRevision;
   }
 
   Future<bool> _autoCandidateAllowed(BackupExecutionLease? lease, String? candidateKey) async {

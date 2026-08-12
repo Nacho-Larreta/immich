@@ -5,7 +5,7 @@ import 'package:immich_mobile/domain/models/background_task.model.dart';
 import 'package:immich_mobile/domain/utils/migrate_cloud_ids.dart' as m;
 import 'package:immich_mobile/domain/utils/sync_linked_album.dart';
 import 'package:immich_mobile/providers/infrastructure/sync.provider.dart';
-import 'package:immich_mobile/infrastructure/repositories/network.repository.dart';
+import 'package:immich_mobile/providers/background_sync.provider.dart';
 import 'package:immich_mobile/utils/isolate.dart';
 import 'package:worker_manager/worker_manager.dart';
 
@@ -24,31 +24,22 @@ final class IsolateBackgroundTaskRunner implements BackgroundTaskRunner {
 }
 
 Future<Object?> executeBackgroundTask(ProviderContainer ref, BackgroundTaskDescriptor task) async {
-  final evidence = NetworkRepository.serverAccessEvidence;
-  final expected = task.contextBinding;
+  final current = ref.read(backgroundTaskContextSourceProvider).capture();
   return executeBackgroundTaskWhenCurrent(
     task: task,
-    currentContext: BackgroundTaskContextBinding(
-      sessionEpoch: evidence.sessionEpoch,
-      nativeContextGeneration: evidence.generation,
-      apiEndpoint: expected?.apiEndpoint == null ? null : evidence.apiEndpoint,
-      canonicalOrigin: expected?.canonicalOrigin == null ? null : evidence.canonicalOrigin,
-      schemePolicy: expected?.schemePolicy == null ? null : evidence.schemePolicy,
-    ),
-    serverContextAvailable: evidence.confirmed && !evidence.fenced,
+    currentContext: current,
     dispatch: () => _dispatchBackgroundTask(ref, task),
   );
 }
 
 Future<T> executeBackgroundTaskWhenCurrent<T>({
   required BackgroundTaskDescriptor task,
-  required BackgroundTaskContextBinding currentContext,
-  bool serverContextAvailable = true,
+  required BackgroundTaskContextBinding? currentContext,
   required Future<T> Function() dispatch,
 }) {
   if (task.requiresServerContext) {
     final binding = task.contextBinding;
-    if (!serverContextAvailable || binding == null || binding != currentContext) {
+    if (binding == null || binding != currentContext) {
       return Future<T>.error(const BackgroundTaskContextChanged());
     }
   }

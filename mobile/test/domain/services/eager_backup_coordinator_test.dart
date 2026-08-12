@@ -324,6 +324,7 @@ final class _Operations implements EagerBackupOperationsPort {
       apiEndpoint: Uri.parse('https://photos.test/api'),
       canonicalOrigin: Uri.parse('https://photos.test'),
       schemePolicy: EndpointSchemePolicy.httpsOnly,
+      transportEpoch: 1,
       transportRevision: 4,
       localLeaseRevision: 5,
     );

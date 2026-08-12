@@ -101,14 +101,23 @@ enum ConnectivityTransportAvailability { unknown, unavailable, available }
 enum ConnectivityNetworkCapability { cellular, wifi, vpn, unmetered }
 
 class ConnectivityTransportSnapshot {
-  ConnectivityTransportSnapshot({required this.availability, required this.capabilities});
+  ConnectivityTransportSnapshot({
+    required this.availability,
+    required this.capabilities,
+    required this.monitorEpoch,
+    required this.revision,
+  });
 
   ConnectivityTransportAvailability availability;
 
   List<ConnectivityNetworkCapability> capabilities;
 
+  int monitorEpoch;
+
+  int revision;
+
   List<Object?> _toList() {
-    return <Object?>[availability, capabilities];
+    return <Object?>[availability, capabilities, monitorEpoch, revision];
   }
 
   Object encode() {
@@ -120,6 +129,8 @@ class ConnectivityTransportSnapshot {
     return ConnectivityTransportSnapshot(
       availability: result[0]! as ConnectivityTransportAvailability,
       capabilities: (result[1]! as List<Object?>).cast<ConnectivityNetworkCapability>(),
+      monitorEpoch: result[2]! as int,
+      revision: result[3]! as int,
     );
   }
 
@@ -132,7 +143,10 @@ class ConnectivityTransportSnapshot {
     if (identical(this, other)) {
       return true;
     }
-    return _deepEquals(availability, other.availability) && _deepEquals(capabilities, other.capabilities);
+    return _deepEquals(availability, other.availability) &&
+        _deepEquals(capabilities, other.capabilities) &&
+        _deepEquals(monitorEpoch, other.monitorEpoch) &&
+        _deepEquals(revision, other.revision);
   }
 
   @override
@@ -191,9 +205,9 @@ class ConnectivityApi {
 
   final String pigeonVar_messageChannelSuffix;
 
-  Future<ConnectivityTransportSnapshot> getSnapshot() async {
+  Future<ConnectivityTransportSnapshot> readCurrentSnapshot() async {
     final pigeonVar_channelName =
-        'dev.flutter.pigeon.immich_mobile.ConnectivityApi.getSnapshot$pigeonVar_messageChannelSuffix';
+        'dev.flutter.pigeon.immich_mobile.ConnectivityApi.readCurrentSnapshot$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,

@@ -12,8 +12,37 @@ import 'package:immich_mobile/domain/models/offline_result.model.dart';
 import 'package:immich_mobile/domain/models/server_reachability.model.dart';
 import 'package:immich_mobile/providers/server_reachability.provider.dart';
 import 'package:immich_mobile/providers/backup/eager_backup.provider.dart';
+import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
+import 'package:immich_mobile/platform/connectivity_api.g.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('headless container owns and disposes its native monitor exactly once', () async {
+    final api = _FakeConnectivityApi();
+    final container = ProviderContainer(overrides: [connectivityApiProvider.overrideWithValue(api)]);
+    final monitor = container.read(nativeConnectivityMonitorProvider);
+    await monitor.initialAvailability;
+
+    container.dispose();
+    await pumpEventQueue();
+
+    expect(api.disposeCount, 1);
+  });
+
+  test('provider disposal remains idempotent after coordinator-style disposal', () async {
+    final api = _FakeConnectivityApi();
+    final container = ProviderContainer(overrides: [connectivityApiProvider.overrideWithValue(api)]);
+    final monitor = container.read(nativeConnectivityMonitorProvider);
+    await monitor.initialAvailability;
+
+    await monitor.dispose();
+    container.dispose();
+    await pumpEventQueue();
+
+    expect(api.disposeCount, 1);
+  });
+
   test('owns one eager-started coordinator instance per container and disposes it once', () async {
     final firstConnectivity = _FakeConnectivityMonitor();
     final secondConnectivity = _FakeConnectivityMonitor();
@@ -43,6 +72,27 @@ void main() {
     expect(firstConnectivity.disposeCount, 1);
     expect(secondConnectivity.disposeCount, 1);
   });
+}
+
+final class _FakeConnectivityApi extends ConnectivityApi {
+  int disposeCount = 0;
+
+  @override
+  Future<void> dispose() async => disposeCount++;
+
+  @override
+  Future<ConnectivityTransportSnapshot> readCurrentSnapshot() async => ConnectivityTransportSnapshot(
+    availability: ConnectivityTransportAvailability.unknown,
+    capabilities: const [],
+    monitorEpoch: 1,
+    revision: 0,
+  );
+
+  @override
+  Future<void> start() async {}
+
+  @override
+  Future<void> stop() async {}
 }
 
 ProviderContainer _container(_FakeConnectivityMonitor connectivity) {

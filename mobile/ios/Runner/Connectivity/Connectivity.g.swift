@@ -177,35 +177,45 @@ enum ConnectivityNetworkCapability: Int {
 struct ConnectivityTransportSnapshot: Hashable {
   var availability: ConnectivityTransportAvailability
   var capabilities: [ConnectivityNetworkCapability]
+  var monitorEpoch: Int64
+  var revision: Int64
 
 
   // swift-format-ignore: AlwaysUseLowerCamelCase
   static func fromList(_ pigeonVar_list: [Any?]) -> ConnectivityTransportSnapshot? {
     let availability = pigeonVar_list[0] as! ConnectivityTransportAvailability
     let capabilities = pigeonVar_list[1] as! [ConnectivityNetworkCapability]
+    let monitorEpoch = pigeonVar_list[2] as! Int64
+    let revision = pigeonVar_list[3] as! Int64
 
     return ConnectivityTransportSnapshot(
       availability: availability,
-      capabilities: capabilities
+      capabilities: capabilities,
+      monitorEpoch: monitorEpoch,
+      revision: revision
     )
   }
   func toList() -> [Any?] {
     return [
       availability,
       capabilities,
+      monitorEpoch,
+      revision,
     ]
   }
   static func == (lhs: ConnectivityTransportSnapshot, rhs: ConnectivityTransportSnapshot) -> Bool {
     if Swift.type(of: lhs) != Swift.type(of: rhs) {
       return false
     }
-    return deepEqualsConnectivity(lhs.availability, rhs.availability) && deepEqualsConnectivity(lhs.capabilities, rhs.capabilities)
+    return deepEqualsConnectivity(lhs.availability, rhs.availability) && deepEqualsConnectivity(lhs.capabilities, rhs.capabilities) && deepEqualsConnectivity(lhs.monitorEpoch, rhs.monitorEpoch) && deepEqualsConnectivity(lhs.revision, rhs.revision)
   }
 
   func hash(into hasher: inout Hasher) {
     hasher.combine("ConnectivityTransportSnapshot")
     deepHashConnectivity(value: availability, hasher: &hasher)
     deepHashConnectivity(value: capabilities, hasher: &hasher)
+    deepHashConnectivity(value: monitorEpoch, hasher: &hasher)
+    deepHashConnectivity(value: revision, hasher: &hasher)
   }
 }
 
@@ -265,7 +275,7 @@ class ConnectivityPigeonCodec: FlutterStandardMessageCodec, @unchecked Sendable 
 
 /// Generated protocol from Pigeon that represents a handler of messages from Flutter.
 protocol ConnectivityApi {
-  func getSnapshot() throws -> ConnectivityTransportSnapshot
+  func readCurrentSnapshot() throws -> ConnectivityTransportSnapshot
   func start() throws
   func stop() throws
   func dispose() throws
@@ -282,20 +292,20 @@ class ConnectivityApiSetup {
     #else
       let taskQueue: FlutterTaskQueue? = nil
     #endif
-    let getSnapshotChannel = taskQueue == nil
-      ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.immich_mobile.ConnectivityApi.getSnapshot\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-      : FlutterBasicMessageChannel(name: "dev.flutter.pigeon.immich_mobile.ConnectivityApi.getSnapshot\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec, taskQueue: taskQueue)
+    let readCurrentSnapshotChannel = taskQueue == nil
+      ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.immich_mobile.ConnectivityApi.readCurrentSnapshot\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+      : FlutterBasicMessageChannel(name: "dev.flutter.pigeon.immich_mobile.ConnectivityApi.readCurrentSnapshot\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec, taskQueue: taskQueue)
     if let api = api {
-      getSnapshotChannel.setMessageHandler { _, reply in
+      readCurrentSnapshotChannel.setMessageHandler { _, reply in
         do {
-          let result = try api.getSnapshot()
+          let result = try api.readCurrentSnapshot()
           reply(wrapResult(result))
         } catch {
           reply(wrapError(error))
         }
       }
     } else {
-      getSnapshotChannel.setMessageHandler(nil)
+      readCurrentSnapshotChannel.setMessageHandler(nil)
     }
     let startChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.immich_mobile.ConnectivityApi.start\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {

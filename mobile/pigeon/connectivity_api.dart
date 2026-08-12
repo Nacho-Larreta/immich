@@ -16,16 +16,23 @@ enum ConnectivityTransportAvailability { unknown, unavailable, available }
 enum ConnectivityNetworkCapability { cellular, wifi, vpn, unmetered }
 
 class ConnectivityTransportSnapshot {
-  ConnectivityTransportSnapshot({required this.availability, required this.capabilities});
+  ConnectivityTransportSnapshot({
+    required this.availability,
+    required this.capabilities,
+    required this.monitorEpoch,
+    required this.revision,
+  });
 
   ConnectivityTransportAvailability availability;
   List<ConnectivityNetworkCapability> capabilities;
+  int monitorEpoch;
+  int revision;
 }
 
 @HostApi()
 abstract class ConnectivityApi {
   @TaskQueue(type: TaskQueueType.serialBackgroundThread)
-  ConnectivityTransportSnapshot getSnapshot();
+  ConnectivityTransportSnapshot readCurrentSnapshot();
 
   void start();
 

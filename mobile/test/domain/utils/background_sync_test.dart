@@ -21,6 +21,7 @@ void main() {
       apiEndpoint: Uri.parse('https://photos.example/api'),
       canonicalOrigin: Uri.parse('https://photos.example'),
       schemePolicy: EndpointSchemePolicy.httpsOnly,
+      transportEpoch: 1,
       transportRevision: 7,
       localLeaseRevision: 8,
     );
@@ -31,6 +32,7 @@ void main() {
       BackgroundTaskContextBinding(
         sessionEpoch: binding.sessionEpoch,
         nativeContextGeneration: binding.nativeGeneration,
+        userId: binding.userId,
         apiEndpoint: binding.apiEndpoint,
         canonicalOrigin: binding.canonicalOrigin,
         schemePolicy: binding.schemePolicy,
@@ -82,6 +84,22 @@ void main() {
 
     expect(await manager.syncRemote(), isFalse);
     expect(events, ['start', 'error', '1:remote:error']);
+  });
+
+  test('missing remote context emits one error terminal without dispatch', () async {
+    final runner = _ControlledTaskRunner();
+    final events = <String>[];
+    final manager = BackgroundSyncManager(
+      taskRunner: runner,
+      remoteTaskContext: () => throw const BackgroundTaskContextChanged(),
+      onRemoteSyncStart: () => events.add('start'),
+      onRemoteSyncError: (_) => events.add('error'),
+      onTerminal: (id, operation, terminal) => events.add('$id:${operation.name}:${terminal.name}'),
+    );
+
+    expect(await manager.syncRemote(), isFalse);
+    expect(runner.descriptors, isEmpty);
+    expect(events, ['error', '1:remote:error']);
   });
 
   test('synchronous start callback failure still emits one error terminal', () async {

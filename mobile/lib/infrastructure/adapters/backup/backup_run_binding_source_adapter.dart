@@ -7,6 +7,7 @@ typedef BackupBindingSnapshot = ({
   ReachabilityIdentity identity,
   ReachabilityState reachability,
   int localLeaseRevision,
+  int transportEpoch,
   int transportRevision,
   int authorityRevisionBefore,
   int authorityRevisionAfter,
@@ -45,6 +46,7 @@ final class BackupRunBindingSourceAdapter implements BackupRunBindingSourcePort 
       apiEndpoint: access.apiEndpoint,
       canonicalOrigin: access.canonicalOrigin,
       schemePolicy: access.schemePolicy,
+      transportEpoch: snapshot.transportEpoch,
       transportRevision: snapshot.transportRevision,
       localLeaseRevision: snapshot.localLeaseRevision,
     );

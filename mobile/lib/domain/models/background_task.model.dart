@@ -6,6 +6,7 @@ final class BackgroundTaskContextBinding {
   const BackgroundTaskContextBinding({
     required this.sessionEpoch,
     required this.nativeContextGeneration,
+    this.userId,
     this.apiEndpoint,
     this.canonicalOrigin,
     this.schemePolicy,
@@ -14,6 +15,7 @@ final class BackgroundTaskContextBinding {
 
   final int sessionEpoch;
   final int nativeContextGeneration;
+  final String? userId;
   final Uri? apiEndpoint;
   final Uri? canonicalOrigin;
   final EndpointSchemePolicy? schemePolicy;
@@ -23,12 +25,14 @@ final class BackgroundTaskContextBinding {
       other is BackgroundTaskContextBinding &&
       other.sessionEpoch == sessionEpoch &&
       other.nativeContextGeneration == nativeContextGeneration &&
+      other.userId == userId &&
       other.apiEndpoint == apiEndpoint &&
       other.canonicalOrigin == canonicalOrigin &&
       other.schemePolicy == schemePolicy;
 
   @override
-  int get hashCode => Object.hash(sessionEpoch, nativeContextGeneration, apiEndpoint, canonicalOrigin, schemePolicy);
+  int get hashCode =>
+      Object.hash(sessionEpoch, nativeContextGeneration, userId, apiEndpoint, canonicalOrigin, schemePolicy);
 }
 
 final class BackgroundTaskDescriptor {

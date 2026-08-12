@@ -44,6 +44,21 @@ final class NetworkConnectivityPathMonitor: ConnectivityPathMonitoring {
   }
 }
 
+private final class ConnectivityMonitorEpochAuthority: @unchecked Sendable {
+  static let shared = ConnectivityMonitorEpochAuthority()
+
+  private let lock = NSLock()
+  private var epoch: Int64 = 0
+
+  func next() -> Int64 {
+    lock.lock()
+    defer { lock.unlock() }
+    precondition(epoch < Int64.max, "Connectivity monitor epoch exhausted")
+    epoch += 1
+    return epoch
+  }
+}
+
 final class ConnectivityApiImpl: ConnectivityApi {
   private let flutterApi: ConnectivityFlutterApiProtocol
   private let monitorFactory: () -> ConnectivityPathMonitoring
@@ -52,7 +67,8 @@ final class ConnectivityApiImpl: ConnectivityApi {
   private let lock = NSLock()
   private var monitor: ConnectivityPathMonitoring?
   private var currentPath: ConnectivityPathValue?
-  private var monitorRevision = 0
+  private var monitorEpoch: Int64 = 0
+  private var pathRevision: Int64 = 0
 
   init(
     flutterApi: ConnectivityFlutterApiProtocol,
@@ -68,11 +84,15 @@ final class ConnectivityApiImpl: ConnectivityApi {
     try? stop()
   }
 
-  func getSnapshot() throws -> ConnectivityTransportSnapshot {
+  func readCurrentSnapshot() throws -> ConnectivityTransportSnapshot {
     lock.lock()
-    let path = currentPath
+    let snapshot = Self.snapshot(
+      for: currentPath,
+      monitorEpoch: monitorEpoch,
+      revision: pathRevision
+    )
     lock.unlock()
-    return Self.snapshot(for: path)
+    return snapshot
   }
 
   func start() throws {
@@ -83,12 +103,13 @@ final class ConnectivityApiImpl: ConnectivityApi {
         return
       }
 
-      monitorRevision &+= 1
-      let revision = monitorRevision
+      monitorEpoch = ConnectivityMonitorEpochAuthority.shared.next()
+      pathRevision = 0
+      let epoch = monitorEpoch
       let monitor = monitorFactory()
       let monitorIdentifier = ObjectIdentifier(monitor)
       monitor.pathUpdateHandler = { [weak self] path in
-        self?.receive(path, from: monitorIdentifier, revision: revision)
+        self?.receive(path, from: monitorIdentifier, epoch: epoch)
       }
       self.monitor = monitor
       lock.unlock()
@@ -99,7 +120,12 @@ final class ConnectivityApiImpl: ConnectivityApi {
   func stop() throws {
     lifecycleQueue.sync {
       lock.lock()
-      monitorRevision &+= 1
+      guard monitor != nil else {
+        lock.unlock()
+        return
+      }
+      monitorEpoch = ConnectivityMonitorEpochAuthority.shared.next()
+      pathRevision = 0
       let monitor = monitor
       self.monitor = nil
       currentPath = nil
@@ -115,36 +141,63 @@ final class ConnectivityApiImpl: ConnectivityApi {
   private func receive(
     _ path: ConnectivityPathValue,
     from monitorIdentifier: ObjectIdentifier,
-    revision: Int
+    epoch: Int64
   ) {
     lock.lock()
     guard
       let activeMonitor = monitor,
       ObjectIdentifier(activeMonitor) == monitorIdentifier,
-      monitorRevision == revision
+      monitorEpoch == epoch
     else {
       lock.unlock()
       return
     }
     currentPath = path
+    pathRevision &+= 1
+    let snapshot = Self.snapshot(
+      for: path,
+      monitorEpoch: monitorEpoch,
+      revision: pathRevision
+    )
     lock.unlock()
 
-    flutterApi.onTransportChanged(snapshot: Self.snapshot(for: path)) { _ in }
+    flutterApi.onTransportChanged(snapshot: snapshot) { _ in }
   }
 
-  private static func snapshot(for path: ConnectivityPathValue?) -> ConnectivityTransportSnapshot {
+  private static func snapshot(
+    for path: ConnectivityPathValue?,
+    monitorEpoch: Int64,
+    revision: Int64
+  ) -> ConnectivityTransportSnapshot {
     guard let path else {
-      return ConnectivityTransportSnapshot(availability: .unknown, capabilities: [])
+      return ConnectivityTransportSnapshot(
+        availability: .unknown,
+        capabilities: [],
+        monitorEpoch: monitorEpoch,
+        revision: revision
+      )
     }
     switch path.status {
     case .unknown, .requiresConnection:
-      return ConnectivityTransportSnapshot(availability: .unknown, capabilities: [])
+      return ConnectivityTransportSnapshot(
+        availability: .unknown,
+        capabilities: [],
+        monitorEpoch: monitorEpoch,
+        revision: revision
+      )
     case .unsatisfied:
-      return ConnectivityTransportSnapshot(availability: .unavailable, capabilities: [])
+      return ConnectivityTransportSnapshot(
+        availability: .unavailable,
+        capabilities: [],
+        monitorEpoch: monitorEpoch,
+        revision: revision
+      )
     case .satisfied:
       return ConnectivityTransportSnapshot(
         availability: .available,
-        capabilities: capabilities(for: path)
+        capabilities: capabilities(for: path),
+        monitorEpoch: monitorEpoch,
+        revision: revision
       )
     }
   }

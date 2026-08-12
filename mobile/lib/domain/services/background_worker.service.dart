@@ -18,6 +18,9 @@ import 'package:immich_mobile/platform/background_worker_lock_api.g.dart';
 import 'package:immich_mobile/providers/app_settings.provider.dart';
 import 'package:immich_mobile/providers/background_sync.provider.dart';
 import 'package:immich_mobile/providers/backup/drift_backup.provider.dart';
+import 'package:immich_mobile/providers/backup/backup_run_binding.provider.dart';
+import 'package:immich_mobile/domain/interfaces/connectivity_monitor.interface.dart';
+import 'package:immich_mobile/providers/server_reachability.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/db.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/platform.provider.dart' show nativeSyncApiProvider;
 import 'package:immich_mobile/providers/user.provider.dart';
@@ -236,9 +239,27 @@ class BackgroundWorkerBgService extends BackgroundWorkerFlutterApi {
         return;
       }
 
+      final connectivity = _ref!.read(nativeConnectivityMonitorProvider) as ConnectivitySnapshotMonitorPort;
+      await connectivity.initialSnapshot;
+      final transport = await connectivity.readCurrentSnapshot();
+      _ref!.read(backupTransportCursorProvider.notifier).state = (
+        epoch: transport.monitorEpoch,
+        revision: transport.revision,
+      );
+      if (!transport.hasWifi) {
+        _logger.info('background_backup_transport_unavailable');
+        return;
+      }
+
       final currentUser = _ref?.read(currentUserProvider);
       if (currentUser == null) {
         _logger.warning("No current user found. Skipping backup from background");
+        return;
+      }
+
+      final binding = _ref?.read(backupRunBindingSourceProvider).capture();
+      if (binding == null || binding.userId != currentUser.id) {
+        _logger.info('background_backup_binding_unavailable');
         return;
       }
 
@@ -248,7 +269,13 @@ class BackgroundWorkerBgService extends BackgroundWorkerFlutterApi {
 
       return _ref
           ?.read(foregroundUploadServiceProvider)
-          .uploadCandidates(currentUser.id, _cancellationToken, useSequentialUpload: true);
+          .uploadCandidates(
+            currentUser.id,
+            _cancellationToken,
+            useSequentialUpload: true,
+            binding: binding,
+            isBindingCurrent: _ref!.read(backupRunBindingSourceProvider).isCurrent,
+          );
     }, (_, _) => dPrint(() => 'background_worker_backup_zone_failed'));
   }
 

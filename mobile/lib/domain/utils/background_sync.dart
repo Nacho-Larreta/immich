@@ -190,61 +190,70 @@ class BackgroundSyncManager {
   }
 
   Future<bool> syncRemote() {
-    return _syncRemoteWithContext(_remoteTaskContext());
-  }
-
-  Future<bool> syncRemoteForBinding(BackupRunBinding binding) {
-    return _syncRemoteWithContext(
-      BackgroundTaskContextBinding(
-        sessionEpoch: binding.sessionEpoch,
-        nativeContextGeneration: binding.nativeGeneration,
-        apiEndpoint: binding.apiEndpoint,
-        canonicalOrigin: binding.canonicalOrigin,
-        schemePolicy: binding.schemePolicy,
-      ),
-    );
-  }
-
-  Future<bool> _syncRemoteWithContext(BackgroundTaskContextBinding context) {
     if (_syncTask != null) {
       return _syncTask!.completion;
     }
 
     final operationId = ++_nextOperationId;
     try {
-      onRemoteSyncStart?.call();
-      late final _SyncOperation<bool> operation;
-      final task = _taskRunner.start(
-        task: const BackgroundTaskDescriptor.remoteSync().boundTo(context),
-        debugLabel: 'remote-sync',
-      );
-      operation = _SyncOperation(operationId, task);
-      _syncTask = operation;
-      operation.completion = task.result
-          .then<bool>(
-            (result) {
-              final success = result is bool && result;
-              _complete(
-                operation,
-                SyncOperationType.remote,
-                SyncTerminal.success,
-                () => onRemoteSyncComplete?.call(success),
-              );
-              return success;
-            },
-            onError: (Object error, StackTrace _) {
-              _fail(operation, SyncOperationType.remote, error, onRemoteSyncError, onRemoteSyncCancelled);
-              return false;
-            },
-          )
-          .whenComplete(() {
-            if (identical(_syncTask, operation)) _syncTask = null;
-          });
-      return operation.completion;
+      return _startRemoteOperation(operationId, _remoteTaskContext());
     } on Object catch (error, _) {
       _emitStartFailure(operationId, SyncOperationType.remote, error, onRemoteSyncError);
       return Future<bool>.value(false);
     }
+  }
+
+  Future<bool> syncRemoteForBinding(BackupRunBinding binding) {
+    if (_syncTask != null) return _syncTask!.completion;
+    final operationId = ++_nextOperationId;
+    try {
+      return _startRemoteOperation(
+        operationId,
+        BackgroundTaskContextBinding(
+          sessionEpoch: binding.sessionEpoch,
+          nativeContextGeneration: binding.nativeGeneration,
+          userId: binding.userId,
+          apiEndpoint: binding.apiEndpoint,
+          canonicalOrigin: binding.canonicalOrigin,
+          schemePolicy: binding.schemePolicy,
+        ),
+      );
+    } on Object catch (error, _) {
+      _emitStartFailure(operationId, SyncOperationType.remote, error, onRemoteSyncError);
+      return Future<bool>.value(false);
+    }
+  }
+
+  Future<bool> _startRemoteOperation(int operationId, BackgroundTaskContextBinding context) {
+    onRemoteSyncStart?.call();
+    late final _SyncOperation<bool> operation;
+    final task = _taskRunner.start(
+      task: const BackgroundTaskDescriptor.remoteSync().boundTo(context),
+      debugLabel: 'remote-sync',
+    );
+    operation = _SyncOperation(operationId, task);
+    _syncTask = operation;
+    operation.completion = task.result
+        .then<bool>(
+          (result) {
+            final success = result is bool && result;
+            _complete(
+              operation,
+              SyncOperationType.remote,
+              SyncTerminal.success,
+              () => onRemoteSyncComplete?.call(success),
+            );
+            return success;
+          },
+          onError: (Object error, StackTrace _) {
+            _fail(operation, SyncOperationType.remote, error, onRemoteSyncError, onRemoteSyncCancelled);
+            return false;
+          },
+        )
+        .whenComplete(() {
+          if (identical(_syncTask, operation)) _syncTask = null;
+        });
+    return operation.completion;
   }
 
   Future<void> syncWebsocketBatch(List<dynamic> batchData) {

@@ -13,4 +13,6 @@ abstract interface class ConnectivitySnapshotMonitorPort {
   Future<BackupTransportSnapshot> get initialSnapshot;
 
   Stream<BackupTransportSnapshot> get snapshotEvents;
+
+  Future<BackupTransportSnapshot> readCurrentSnapshot();
 }

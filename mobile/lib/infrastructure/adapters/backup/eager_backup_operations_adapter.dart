@@ -110,7 +110,7 @@ final class EagerBackupOperationsAdapter implements EagerBackupOperationsPort {
       );
       if (!isPermitCurrent()) throw const EagerBackupFailure.staleContext();
       if (failed) throw const EagerBackupFailure.transient();
-      if (!await _synchronization.syncRemote()) throw const EagerBackupFailure.transient();
+      if (!await _synchronization.syncRemoteForBinding(binding)) throw const EagerBackupFailure.transient();
       if (!isPermitCurrent()) throw const EagerBackupFailure.staleContext();
     } on EagerBackupFailure {
       rethrow;

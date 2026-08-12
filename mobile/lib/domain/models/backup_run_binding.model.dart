@@ -13,6 +13,7 @@ final class BackupRunBinding {
     required this.apiEndpoint,
     required this.canonicalOrigin,
     required this.schemePolicy,
+    required this.transportEpoch,
     required this.transportRevision,
     required this.localLeaseRevision,
   }) {
@@ -21,6 +22,7 @@ final class BackupRunBinding {
       'sessionEpoch': sessionEpoch,
       'probeGeneration': probeGeneration,
       'nativeGeneration': nativeGeneration,
+      'transportEpoch': transportEpoch,
       'transportRevision': transportRevision,
       'localLeaseRevision': localLeaseRevision,
     }.entries) {
@@ -41,6 +43,7 @@ final class BackupRunBinding {
   final Uri apiEndpoint;
   final Uri canonicalOrigin;
   final EndpointSchemePolicy schemePolicy;
+  final int transportEpoch;
   final int transportRevision;
   final int localLeaseRevision;
 
@@ -54,6 +57,7 @@ final class BackupRunBinding {
     apiEndpoint.toString(),
     canonicalOrigin.toString(),
     schemePolicy.name,
+    transportEpoch,
     transportRevision,
     localLeaseRevision,
   ].join('\u001f');
@@ -68,6 +72,7 @@ final class BackupRunBinding {
       other.apiEndpoint == apiEndpoint &&
       other.canonicalOrigin == canonicalOrigin &&
       other.schemePolicy == schemePolicy &&
+      other.transportEpoch == transportEpoch &&
       other.transportRevision == transportRevision &&
       other.localLeaseRevision == localLeaseRevision;
 
@@ -80,6 +85,7 @@ final class BackupRunBinding {
     apiEndpoint,
     canonicalOrigin,
     schemePolicy,
+    transportEpoch,
     transportRevision,
     localLeaseRevision,
   );

@@ -6,8 +6,8 @@ final class ConnectivityApiImplTests: XCTestCase {
   func testInitialSnapshotIsUnknownBeforeTheMonitorPublishes() throws {
     let harness = Harness()
 
-    XCTAssertEqual(try harness.api.getSnapshot().availability, .unknown)
-    XCTAssertEqual(try harness.api.getSnapshot().capabilities, [])
+    XCTAssertEqual(try harness.api.readCurrentSnapshot().availability, .unknown)
+    XCTAssertEqual(try harness.api.readCurrentSnapshot().capabilities, [])
   }
 
   func testSatisfiedPathIsAvailableAndPreservesCapabilities() throws {
@@ -25,9 +25,9 @@ final class ConnectivityApiImplTests: XCTestCase {
       )
     )
 
-    XCTAssertEqual(try harness.api.getSnapshot().availability, .available)
+    XCTAssertEqual(try harness.api.readCurrentSnapshot().availability, .available)
     XCTAssertEqual(
-      try harness.api.getSnapshot().capabilities,
+      try harness.api.readCurrentSnapshot().capabilities,
       [.cellular, .wifi, .vpn]
     )
     XCTAssertEqual(harness.flutter.snapshots.last?.availability, .available)
@@ -39,8 +39,8 @@ final class ConnectivityApiImplTests: XCTestCase {
 
     harness.monitors[0].emit(path(status: .unsatisfied))
 
-    XCTAssertEqual(try harness.api.getSnapshot().availability, .unavailable)
-    XCTAssertEqual(try harness.api.getSnapshot().capabilities, [])
+    XCTAssertEqual(try harness.api.readCurrentSnapshot().availability, .unavailable)
+    XCTAssertEqual(try harness.api.readCurrentSnapshot().capabilities, [])
     XCTAssertEqual(harness.flutter.snapshots.last?.availability, .unavailable)
   }
 
@@ -51,8 +51,8 @@ final class ConnectivityApiImplTests: XCTestCase {
 
       harness.monitors[0].emit(path(status: status, usesWifi: true))
 
-      XCTAssertEqual(try harness.api.getSnapshot().availability, .unknown)
-      XCTAssertEqual(try harness.api.getSnapshot().capabilities, [])
+      XCTAssertEqual(try harness.api.readCurrentSnapshot().availability, .unknown)
+      XCTAssertEqual(try harness.api.readCurrentSnapshot().capabilities, [])
       XCTAssertEqual(harness.flutter.snapshots.last?.availability, .unknown)
     }
   }
@@ -62,7 +62,7 @@ final class ConnectivityApiImplTests: XCTestCase {
 
     try harness.api.start()
 
-    XCTAssertEqual(try harness.api.getSnapshot().availability, .available)
+    XCTAssertEqual(try harness.api.readCurrentSnapshot().availability, .available)
   }
 
   func testStaleMonitorRevisionCannotPublishAfterRestart() throws {
@@ -74,12 +74,47 @@ final class ConnectivityApiImplTests: XCTestCase {
 
     staleMonitor.emit(path(status: .satisfied, usesWifi: true))
 
-    XCTAssertEqual(try harness.api.getSnapshot().availability, .unknown)
+    XCTAssertEqual(try harness.api.readCurrentSnapshot().availability, .unknown)
     XCTAssertTrue(harness.flutter.snapshots.isEmpty)
 
     harness.monitors[1].emit(path(status: .unsatisfied))
-    XCTAssertEqual(try harness.api.getSnapshot().availability, .unavailable)
+    XCTAssertEqual(try harness.api.readCurrentSnapshot().availability, .unavailable)
     XCTAssertEqual(harness.flutter.snapshots.map(\.availability), [.unavailable])
+  }
+
+  func testNativeCursorIsMonotonicWithinAnEpochAndChangesAcrossRestart() throws {
+    let harness = Harness()
+    try harness.api.start()
+    let initial = try harness.api.readCurrentSnapshot()
+
+    harness.monitors[0].emit(path(status: .satisfied, usesWifi: true))
+    let wifi = try harness.api.readCurrentSnapshot()
+    harness.monitors[0].emit(path(status: .unsatisfied))
+    let unavailable = try harness.api.readCurrentSnapshot()
+
+    XCTAssertEqual(wifi.monitorEpoch, initial.monitorEpoch)
+    XCTAssertGreaterThan(wifi.revision, initial.revision)
+    XCTAssertEqual(unavailable.monitorEpoch, wifi.monitorEpoch)
+    XCTAssertGreaterThan(unavailable.revision, wifi.revision)
+
+    try harness.api.stop()
+    try harness.api.start()
+    let restarted = try harness.api.readCurrentSnapshot()
+    XCTAssertGreaterThan(restarted.monitorEpoch, unavailable.monitorEpoch)
+    XCTAssertEqual(restarted.revision, 0)
+  }
+
+  func testRecreatedApiUsesANewerProcessWideEpoch() throws {
+    let first = Harness()
+    try first.api.start()
+    first.monitors[0].emit(path(status: .satisfied, usesWifi: true))
+    let firstSnapshot = try first.api.readCurrentSnapshot()
+
+    let recreated = Harness()
+    try recreated.api.start()
+    let recreatedSnapshot = try recreated.api.readCurrentSnapshot()
+
+    XCTAssertGreaterThan(recreatedSnapshot.monitorEpoch, firstSnapshot.monitorEpoch)
   }
 
   func testStartStopAndDisposeAreIdempotent() throws {

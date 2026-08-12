@@ -2,10 +2,11 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:immich_mobile/domain/interfaces/backup_execution.interface.dart';
+import 'package:immich_mobile/domain/interfaces/connectivity_monitor.interface.dart';
+import 'package:immich_mobile/domain/models/eager_backup.model.dart';
 import 'package:immich_mobile/domain/models/backup_execution_lease.model.dart';
 import 'package:immich_mobile/domain/models/backup_run_binding.model.dart';
 import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
-import 'package:immich_mobile/platform/connectivity_api.g.dart';
 import 'package:immich_mobile/services/app_settings.service.dart';
 import 'package:immich_mobile/services/foreground_upload.service.dart';
 import 'package:mocktail/mocktail.dart';
@@ -15,16 +16,40 @@ import '../fixtures/asset.stub.dart';
 import '../infrastructure/repository.mock.dart';
 import '../repository.mocks.dart';
 
-class _MockConnectivityApi extends Mock implements ConnectivityApi {}
+class _MockConnectivityMonitor extends Mock implements ConnectivitySnapshotMonitorPort {}
 
 class _MockCandidateGate extends Mock implements BackupExecutionLeasePort {}
 
 void main() {
+  test('automatic backup rejects non-wifi before candidate query', () async {
+    final uploads = MockUploadRepository();
+    final storage = MockStorageRepository();
+    final backups = MockDriftBackupRepository();
+    final connectivity = _MockConnectivityMonitor();
+    final settings = MockAppSettingsService();
+    final media = MockAssetMediaRepository();
+    when(() => connectivity.readCurrentSnapshot()).thenAnswer(
+      (_) async => const BackupTransportSnapshot(
+        available: true,
+        capabilities: {BackupNetworkCapability.cellular},
+        monitorEpoch: 1,
+        revision: 4,
+      ),
+    );
+    final service = ForegroundUploadService(uploads, storage, backups, connectivity, settings, media);
+
+    await service.uploadCandidates('user-a', Completer<void>(), binding: _binding(), isBindingCurrent: (_) => true);
+
+    verifyNever(() => backups.getCandidates(any()));
+    verifyNoMoreInteractions(storage);
+    verifyNoMoreInteractions(uploads);
+  });
+
   test('quarantined automatic candidate is rejected before storage or HTTP work', () async {
     final uploads = MockUploadRepository();
     final storage = MockStorageRepository();
     final backups = MockDriftBackupRepository();
-    final connectivity = _MockConnectivityApi();
+    final connectivity = _MockConnectivityMonitor();
     final settings = MockAppSettingsService();
     final media = MockAssetMediaRepository();
     final gate = _MockCandidateGate();
@@ -35,10 +60,12 @@ void main() {
     when(() => storage.clearCache()).thenAnswer((_) async {});
     when(() => settings.getSetting(AppSettingsEnum.useCellularForUploadVideos)).thenReturn(false);
     when(() => settings.getSetting(AppSettingsEnum.useCellularForUploadPhotos)).thenReturn(false);
-    when(() => connectivity.getSnapshot()).thenAnswer(
-      (_) async => ConnectivityTransportSnapshot(
-        availability: ConnectivityTransportAvailability.available,
-        capabilities: [ConnectivityNetworkCapability.wifi],
+    when(() => connectivity.readCurrentSnapshot()).thenAnswer(
+      (_) async => const BackupTransportSnapshot(
+        available: true,
+        capabilities: {BackupNetworkCapability.wifi},
+        monitorEpoch: 1,
+        revision: 4,
       ),
     );
     when(
@@ -81,6 +108,7 @@ BackupRunBinding _binding() => BackupRunBinding(
   apiEndpoint: Uri.parse('https://photos.example/api'),
   canonicalOrigin: Uri.parse('https://photos.example'),
   schemePolicy: EndpointSchemePolicy.httpsOnly,
+  transportEpoch: 1,
   transportRevision: 4,
   localLeaseRevision: 5,
 );
