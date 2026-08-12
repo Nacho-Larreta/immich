@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/services.dart';
+import 'package:immich_mobile/domain/interfaces/eager_backup.interface.dart';
 import 'package:photo_manager/photo_manager.dart';
 
 typedef PhotoLibraryChangeCallback = void Function();
@@ -15,7 +16,7 @@ abstract interface class PhotoManagerChangeSource {
   Future<void> stop();
 }
 
-final class PhotoManagerChangeObserverAdapter {
+final class PhotoManagerChangeObserverAdapter implements EagerBackupPhotoObserverPort {
   PhotoManagerChangeObserverAdapter({required PhotoLibraryChangeCallback onChanged, PhotoManagerChangeSource? source})
     : _onChanged = onChanged,
       _source = source ?? const _DefaultPhotoManagerChangeSource();
@@ -27,11 +28,13 @@ final class PhotoManagerChangeObserverAdapter {
   bool _registered = false;
   bool _disposed = false;
 
+  @override
   Future<void> start() {
     if (_disposed) return Future.value();
     return _startFuture ??= _start();
   }
 
+  @override
   Future<void> dispose() => _disposeFuture ??= _dispose();
 
   Future<void> _start() async {

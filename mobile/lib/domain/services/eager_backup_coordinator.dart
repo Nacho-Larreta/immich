@@ -2,19 +2,23 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:immich_mobile/domain/interfaces/eager_backup.interface.dart';
+import 'package:immich_mobile/domain/interfaces/eager_backup_diagnostics.interface.dart';
 import 'package:immich_mobile/domain/models/eager_backup.model.dart';
 
 final class EagerBackupCoordinator {
   EagerBackupCoordinator({
     required EagerBackupOperationsPort operations,
     EagerBackupRetryScheduler? retryScheduler,
+    EagerBackupDiagnosticsPort diagnostics = const NoOpEagerBackupDiagnostics(),
     double Function()? jitter,
   }) : _operations = operations,
        _retryScheduler = retryScheduler ?? const _TimerRetryScheduler(),
+       _diagnostics = FailSafeEagerBackupDiagnostics(diagnostics),
        _jitter = jitter ?? (() => 0);
 
   final EagerBackupOperationsPort _operations;
   final EagerBackupRetryScheduler _retryScheduler;
+  final EagerBackupDiagnosticsPort _diagnostics;
   final double Function() _jitter;
   final StreamController<EagerBackupState> _states = StreamController<EagerBackupState>.broadcast(sync: true);
 
@@ -81,6 +85,9 @@ final class EagerBackupCoordinator {
   void setServerProofAvailable(bool available) {
     final lostProof = _serverProofAvailable && !available;
     _serverProofAvailable = available;
+    _diagnostics.report(
+      EagerBackupDiagnosticEvent(EagerBackupDiagnosticCode.serverProofChanged, proofAvailable: available),
+    );
     if (lostProof) {
       _demand = true;
       _cancelActiveWork();
@@ -100,6 +107,7 @@ final class EagerBackupCoordinator {
   }
 
   void signal(EagerBackupTrigger trigger) {
+    _diagnostics.report(EagerBackupDiagnosticEvent(EagerBackupDiagnosticCode.triggerReceived, trigger: trigger));
     if (_disposed || !_enabled) return;
     _activated = true;
     if (trigger == EagerBackupTrigger.uploadFailed) {
@@ -195,6 +203,9 @@ final class EagerBackupCoordinator {
           }
           _setState(EagerBackupPhase.uploading);
           final uploadOutcome = await _operations.upload(binding, cancellation);
+          _diagnostics.report(
+            EagerBackupDiagnosticEvent(EagerBackupDiagnosticCode.uploadFinished, uploadOutcome: uploadOutcome),
+          );
           if (_mustStop(cancellation)) return;
           if (uploadOutcome != EagerBackupUploadOutcome.completed) {
             _demand = true;
@@ -283,6 +294,15 @@ final class EagerBackupCoordinator {
 
   void _setState(EagerBackupPhase phase, {EagerBackupBlocker? blocker}) {
     _state = EagerBackupState(phase, retryAttempt: _retryAttempt, blocker: blocker, workload: _preparedWorkload);
+    _diagnostics.report(
+      EagerBackupDiagnosticEvent(
+        EagerBackupDiagnosticCode.phaseChanged,
+        phase: phase,
+        blocker: blocker,
+        ready: _preparedWorkload?.ready,
+        processing: _preparedWorkload?.processing,
+      ),
+    );
     if (!_states.isClosed) _states.add(_state);
   }
 }

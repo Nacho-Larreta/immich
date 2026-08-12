@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/interfaces/eager_backup.interface.dart';
+import 'package:immich_mobile/domain/interfaces/eager_backup_diagnostics.interface.dart';
 import 'package:immich_mobile/domain/models/backup_run_binding.model.dart';
 import 'package:immich_mobile/domain/models/eager_backup.model.dart';
 import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
@@ -11,6 +12,84 @@ import 'package:immich_mobile/domain/services/backup_disable_barrier.dart';
 import 'package:immich_mobile/providers/backup/eager_backup.provider.dart';
 
 void main() {
+  test('throwing diagnostics cannot alter upload phases or disposal', () async {
+    final operations = _Operations([
+      const BackupWorkload(total: 1, remainder: 1, processing: 0),
+      const BackupWorkload(total: 1, remainder: 1, processing: 0),
+      const BackupWorkload(total: 0, remainder: 0, processing: 0),
+    ]);
+    final coordinator = EagerBackupCoordinator(operations: operations, diagnostics: const _ThrowingDiagnostics())
+      ..setEnabled(true)
+      ..setForeground(true)
+      ..setTransport(const BackupTransportSnapshot(available: true, capabilities: {BackupNetworkCapability.wifi}))
+      ..setServerProofAvailable(true)
+      ..signal(EagerBackupTrigger.startup);
+
+    await operations.done.future;
+    await pumpEventQueue();
+
+    expect(operations.calls, contains('upload'));
+    expect(coordinator.state.phase, EagerBackupPhase.idle);
+    await expectLater(coordinator.dispose(), completes);
+    expect(coordinator.state.phase, EagerBackupPhase.disposed);
+  });
+
+  test('throwing diagnostics cannot prevent retry scheduling', () async {
+    final retry = _ManualRetryScheduler();
+    final operations = _Operations(
+      [
+        const BackupWorkload(total: 1, remainder: 1, processing: 0),
+        const BackupWorkload(total: 1, remainder: 1, processing: 0),
+      ],
+      uploadFailures: [const EagerBackupFailure.transient()],
+    );
+    final coordinator =
+        EagerBackupCoordinator(operations: operations, retryScheduler: retry, diagnostics: const _ThrowingDiagnostics())
+          ..setEnabled(true)
+          ..setForeground(true)
+          ..setTransport(const BackupTransportSnapshot(available: true, capabilities: {BackupNetworkCapability.wifi}))
+          ..setServerProofAvailable(true)
+          ..signal(EagerBackupTrigger.startup);
+
+    await operations.uploadStarted.future;
+    await pumpEventQueue();
+
+    expect(coordinator.state.phase, EagerBackupPhase.backingOff);
+    expect(retry.delays, hasLength(1));
+    await coordinator.dispose();
+  });
+
+  test('reports triggers and state transitions with allowlisted workload counts', () async {
+    final operations = _Operations([
+      const BackupWorkload(total: 2, remainder: 2, processing: 0),
+      const BackupWorkload(total: 2, remainder: 2, processing: 0),
+    ]);
+    final diagnostics = _Diagnostics();
+    final coordinator = EagerBackupCoordinator(operations: operations, diagnostics: diagnostics)
+      ..setEnabled(true)
+      ..setForeground(true)
+      ..signal(EagerBackupTrigger.startup);
+
+    await pumpEventQueue();
+
+    expect(
+      diagnostics.events
+          .where((event) => event.code == EagerBackupDiagnosticCode.triggerReceived)
+          .map((event) => event.trigger),
+      contains(EagerBackupTrigger.startup),
+    );
+    expect(
+      diagnostics.events.where((event) => event.code == EagerBackupDiagnosticCode.phaseChanged).last,
+      isA<EagerBackupDiagnosticEvent>()
+          .having((event) => event.phase, 'phase', EagerBackupPhase.blocked)
+          .having((event) => event.blocker, 'blocker', EagerBackupBlocker.noWifi)
+          .having((event) => event.ready, 'ready', 2)
+          .having((event) => event.processing, 'processing', 0),
+    );
+
+    await coordinator.dispose();
+  });
+
   test('state provider publishes typed noWifi, leaseOwned, and drainFailed blockers', () async {
     final operations = _Operations(const []);
     final coordinator = EagerBackupCoordinator(operations: operations);
@@ -413,4 +492,18 @@ final class _RetryHandle implements EagerBackupScheduledRetry {
 
   @override
   void cancel() => _onCancel();
+}
+
+final class _Diagnostics implements EagerBackupDiagnosticsPort {
+  final List<EagerBackupDiagnosticEvent> events = [];
+
+  @override
+  void report(EagerBackupDiagnosticEvent event) => events.add(event);
+}
+
+final class _ThrowingDiagnostics implements EagerBackupDiagnosticsPort {
+  const _ThrowingDiagnostics();
+
+  @override
+  void report(EagerBackupDiagnosticEvent event) => throw StateError('diagnostics unavailable');
 }

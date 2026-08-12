@@ -13,6 +13,16 @@ abstract interface class EagerBackupOperationsPort {
   Future<EagerBackupUploadOutcome> upload(BackupRunBinding binding, EagerBackupCancellation cancellation);
 }
 
+abstract interface class EagerBackupWorkloadMonitorPort {
+  Stream<BackupWorkload> watch(String userId);
+}
+
+abstract interface class EagerBackupPhotoObserverPort {
+  Future<void> start();
+
+  Future<void> dispose();
+}
+
 abstract interface class EagerBackupScheduledRetry {
   void cancel();
 }
