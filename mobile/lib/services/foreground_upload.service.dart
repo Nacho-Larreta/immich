@@ -10,6 +10,7 @@ import 'package:immich_mobile/domain/interfaces/connectivity_monitor.interface.d
 import 'package:immich_mobile/domain/models/backup_candidate_key.model.dart';
 import 'package:immich_mobile/domain/models/backup_execution_lease.model.dart';
 import 'package:immich_mobile/domain/models/backup_run_binding.model.dart';
+import 'package:immich_mobile/domain/models/eager_backup.model.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/extensions/platform_extensions.dart';
@@ -93,7 +94,7 @@ class ForegroundUploadService {
   }
 
   /// Bulk upload of backup candidates from selected albums
-  Future<void> uploadCandidates(
+  Future<ForegroundUploadResult> uploadCandidates(
     String userId,
     Completer<void> cancelToken, {
     UploadCallbacks callbacks = const UploadCallbacks(),
@@ -103,24 +104,25 @@ class ForegroundUploadService {
     bool Function(BackupRunBinding binding)? isBindingCurrent,
   }) async {
     bool current() => binding == null || isBindingCurrent?.call(binding) == true;
-    Future<bool> gate() async {
-      if (!current()) return false;
-      if (binding == null) return true;
-      final wifiCurrent = await _hasCurrentWifi(binding);
-      return wifiCurrent && current();
+    Future<ForegroundUploadGateDenial?> gate(ForegroundUploadGateStage stage) async {
+      return _bindingDenial(binding, current, stage);
     }
 
-    if (!await gate()) return;
+    final initialDenial = await gate(ForegroundUploadGateStage.preCandidate);
+    if (initialDenial != null) return _reportGateDenial(initialDenial);
     final candidates = await _backupRepository.getCandidates(userId);
-    if (!await gate()) return;
     if (candidates.isEmpty) {
-      return;
+      return const ForegroundUploadResult.completed();
     }
 
-    final transportSnapshot = await _connectivity.readCurrentSnapshot();
-    final hasWifi = transportSnapshot.hasWifi;
+    final hasWifi = binding != null || (await _connectivity.readCurrentSnapshot()).hasWifi;
     _logger.info(hasWifi ? 'foreground_upload_transport_wifi' : 'foreground_upload_transport_non_wifi');
-    if (binding != null && !hasWifi) return;
+
+    ForegroundUploadGateDenial? workerDenial;
+    void denyWorker(ForegroundUploadGateDenial denial) {
+      workerDenial ??= denial;
+      shouldAbortUpload = true;
+    }
 
     if (useSequentialUpload) {
       await _uploadSequentially(
@@ -131,11 +133,18 @@ class ForegroundUploadService {
         binding: binding,
         executionLease: executionLease,
         isBindingCurrent: current,
+        onDenied: denyWorker,
       );
     } else {
       await _executeWithWorkerPool<LocalAsset>(
         items: candidates,
         cancelToken: cancelToken,
+        beforeStorage: () async {
+          final denial = await gate(ForegroundUploadGateStage.preStorage);
+          if (denial == null) return true;
+          denyWorker(denial);
+          return false;
+        },
         shouldSkip: (asset) {
           final requireWifi = _shouldRequireWiFi(asset);
           return requireWifi && !hasWifi;
@@ -147,9 +156,17 @@ class ForegroundUploadService {
           binding: binding,
           executionLease: executionLease,
           isBindingCurrent: current,
+          onDenied: denyWorker,
         ),
       );
     }
+    final denial = workerDenial;
+    return denial == null ? const ForegroundUploadResult.completed() : _reportGateDenial(denial);
+  }
+
+  ForegroundUploadResult _reportGateDenial(ForegroundUploadGateDenial denial) {
+    _logger.info('foreground_upload_gate_denied_${denial.stage.name}_${denial.reason.name}');
+    return ForegroundUploadResult.denied(denial);
   }
 
   /// Sequential upload - used for background isolate where concurrent HTTP clients may cause issues
@@ -161,12 +178,18 @@ class ForegroundUploadService {
     BackupRunBinding? binding,
     BackupExecutionLease? executionLease,
     required bool Function() isBindingCurrent,
+    required void Function(ForegroundUploadGateDenial denial) onDenied,
   }) async {
+    final storageDenial = await _bindingDenial(binding, isBindingCurrent, ForegroundUploadGateStage.preStorage);
+    if (storageDenial != null) {
+      onDenied(storageDenial);
+      return;
+    }
     await _storageRepository.clearCache();
     shouldAbortUpload = false;
 
     for (final asset in items) {
-      if (shouldAbortUpload || cancelToken.isCompleted || !isBindingCurrent()) {
+      if (shouldAbortUpload || cancelToken.isCompleted) {
         break;
       }
 
@@ -183,6 +206,7 @@ class ForegroundUploadService {
         binding: binding,
         executionLease: executionLease,
         isBindingCurrent: isBindingCurrent,
+        onDenied: onDenied,
       );
     }
   }
@@ -252,9 +276,11 @@ class ForegroundUploadService {
     required List<T> items,
     required Completer<void>? cancelToken,
     required Future<void> Function(T item) processItem,
+    Future<bool> Function()? beforeStorage,
     bool Function(T item)? shouldSkip,
     int concurrentWorkers = 3,
   }) async {
+    if (beforeStorage != null && !await beforeStorage()) return;
     await _storageRepository.clearCache();
     shouldAbortUpload = false;
 
@@ -297,24 +323,25 @@ class ForegroundUploadService {
     BackupRunBinding? binding,
     BackupExecutionLease? executionLease,
     bool Function()? isBindingCurrent,
+    void Function(ForegroundUploadGateDenial denial)? onDenied,
   }) async {
     File? file;
     File? livePhotoFile;
 
     try {
-      Future<bool> gate() async {
-        if (isBindingCurrent?.call() == false) return false;
-        if (binding == null) return true;
-        final wifiCurrent = await _hasCurrentWifi(binding);
-        return wifiCurrent && isBindingCurrent?.call() != false;
+      Future<bool> gate(ForegroundUploadGateStage stage) async {
+        final denial = await _bindingDenial(binding, () => isBindingCurrent?.call() != false, stage);
+        if (denial == null) return true;
+        onDenied?.call(denial);
+        return false;
       }
 
-      if (!await gate()) return;
+      if (!await gate(ForegroundUploadGateStage.preReservation)) return;
       final candidateKey = binding == null ? null : _candidateKeyForAsset(asset);
       if (!await _autoCandidateAllowed(executionLease, candidateKey)) return;
-      if (!await gate()) return;
+      if (!await gate(ForegroundUploadGateStage.preFile)) return;
       final entity = await _storageRepository.getAssetEntityForAsset(asset);
-      if (!await gate()) return;
+      if (!await gate(ForegroundUploadGateStage.preFile)) return;
       if (entity == null) {
         callbacks.onError?.call(
           asset.localId!,
@@ -323,7 +350,7 @@ class ForegroundUploadService {
         return;
       }
 
-      if (!await gate()) return;
+      if (!await gate(ForegroundUploadGateStage.preFile)) return;
       final isAvailableLocally = await _storageRepository.isAssetAvailableLocally(asset.id);
 
       if (!isAvailableLocally && CurrentPlatform.isIOS) {
@@ -339,10 +366,10 @@ class ForegroundUploadService {
         });
 
         try {
-          if (!await gate()) return;
+          if (!await gate(ForegroundUploadGateStage.preFile)) return;
           file = await _storageRepository.loadFileFromCloud(asset.id, progressHandler: progressHandler);
           if (entity.isLivePhoto) {
-            if (!await gate()) return;
+            if (!await gate(ForegroundUploadGateStage.preFile)) return;
             livePhotoFile = await _storageRepository.loadMotionFileFromCloud(
               asset.id,
               progressHandler: progressHandler,
@@ -353,7 +380,7 @@ class ForegroundUploadService {
         }
       } else {
         // Get files locally
-        if (!await gate()) return;
+        if (!await gate(ForegroundUploadGateStage.preFile)) return;
         file = await _storageRepository.getFileForAsset(asset.id);
         if (file == null) {
           _logger.warning('foreground_upload_file_unavailable');
@@ -366,7 +393,7 @@ class ForegroundUploadService {
 
         // For live photos, get the motion video file
         if (entity.isLivePhoto) {
-          if (!await gate()) return;
+          if (!await gate(ForegroundUploadGateStage.preFile)) return;
           livePhotoFile = await _storageRepository.getMotionFileForAsset(asset);
           if (livePhotoFile == null) {
             _logger.warning('foreground_upload_live_photo_part_unavailable');
@@ -384,7 +411,7 @@ class ForegroundUploadService {
         return;
       }
 
-      if (!await gate()) return;
+      if (!await gate(ForegroundUploadGateStage.preFile)) return;
       String fileName = await _assetMediaRepository.getOriginalFilename(asset.id) ?? asset.name;
 
       /// Handle special file name from DJI or Fusion app
@@ -410,9 +437,9 @@ class ForegroundUploadService {
       // Upload live photo video first if available
       String? livePhotoVideoId;
       if (entity.isLivePhoto && livePhotoFile != null) {
-        if (!await gate()) return;
+        if (!await gate(ForegroundUploadGateStage.preReservation)) return;
         if (!await _autoCandidateAllowed(executionLease, candidateKey)) return;
-        if (!await gate()) return;
+        if (!await gate(ForegroundUploadGateStage.preUpload)) return;
         final livePhotoTitle = p.setExtension(originalFileName, p.extension(livePhotoFile.path));
 
         final onProgress = callbacks.onProgress;
@@ -455,8 +482,9 @@ class ForegroundUploadService {
       }
 
       final onProgress = callbacks.onProgress;
+      if (!await gate(ForegroundUploadGateStage.preReservation)) return;
       if (!await _autoCandidateAllowed(executionLease, candidateKey)) return;
-      if (!await gate()) return;
+      if (!await gate(ForegroundUploadGateStage.preUpload)) return;
       final result = await _uploadRepository.uploadFile(
         file: file,
         originalFileName: originalFileName,
@@ -499,13 +527,6 @@ class ForegroundUploadService {
     }
   }
 
-  Future<bool> _hasCurrentWifi(BackupRunBinding binding) async {
-    final snapshot = await _connectivity.readCurrentSnapshot();
-    return snapshot.hasWifi &&
-        snapshot.monitorEpoch == binding.transportEpoch &&
-        snapshot.revision == binding.transportRevision;
-  }
-
   Future<bool> _autoCandidateAllowed(BackupExecutionLease? lease, String? candidateKey) async {
     if (lease == null && candidateKey == null) return true;
     if (lease == null || candidateKey == null || _candidateGate == null) return false;
@@ -514,6 +535,29 @@ class ForegroundUploadService {
       bindingDigest: lease.bindingDigest,
       candidateKey: candidateKey,
     );
+  }
+
+  Future<ForegroundUploadGateDenial?> _bindingDenial(
+    BackupRunBinding? binding,
+    bool Function() isCurrent,
+    ForegroundUploadGateStage stage,
+  ) async {
+    ForegroundUploadGateDenial deny(ForegroundUploadGateReason reason) =>
+        ForegroundUploadGateDenial(stage: stage, reason: reason);
+
+    if (!isCurrent()) return deny(ForegroundUploadGateReason.bindingStale);
+    if (binding == null) return null;
+    try {
+      final snapshot = await _connectivity.readCurrentSnapshot();
+      if (!snapshot.available) return deny(ForegroundUploadGateReason.evidenceUnavailable);
+      if (!snapshot.hasWifi) return deny(ForegroundUploadGateReason.noWifi);
+      if (snapshot.monitorEpoch != binding.transportEpoch || snapshot.revision != binding.transportRevision) {
+        return deny(ForegroundUploadGateReason.transportCursorChanged);
+      }
+      return isCurrent() ? null : deny(ForegroundUploadGateReason.bindingStale);
+    } on Object {
+      return deny(ForegroundUploadGateReason.evidenceUnavailable);
+    }
   }
 
   Future<UploadResult> _uploadSingleFile(

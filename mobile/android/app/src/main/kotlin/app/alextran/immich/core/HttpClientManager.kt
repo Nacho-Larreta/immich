@@ -80,7 +80,9 @@ private enum class AuthCookie(
 }
 
 private data class RequestContextFingerprint(
+  val apiEndpoint: String?,
   val origins: List<String>,
+  val schemePolicy: NetworkEndpointSchemePolicy?,
   val token: String?,
   val headers: Map<String, String>,
 ) {
@@ -92,7 +94,9 @@ private data class RequestContextFingerprint(
       digest.update(ByteBuffer.allocate(Int.SIZE_BYTES).putInt(bytes.size).array())
       digest.update(bytes)
     }
+    add(apiEndpoint)
     origins.sorted().forEach(::add)
+    add(schemePolicy?.name)
     add(token)
     headers.toSortedMap().forEach { (name, value) ->
       add(name)
@@ -105,7 +109,9 @@ private data class RequestContextFingerprint(
 
   companion object {
     fun create(
+      apiEndpoint: String?,
       origins: List<CanonicalOrigin>,
+      schemePolicy: NetworkEndpointSchemePolicy?,
       token: String?,
       headers: Map<String, String>,
     ): RequestContextFingerprint {
@@ -118,7 +124,13 @@ private data class RequestContextFingerprint(
             }
           }
         }
-      return RequestContextFingerprint(origins.map(CanonicalOrigin::asString), token, canonicalHeaders)
+      return RequestContextFingerprint(
+        apiEndpoint,
+        origins.map(CanonicalOrigin::asString),
+        schemePolicy,
+        token,
+        canonicalHeaders,
+      )
     }
   }
 }
@@ -155,6 +167,8 @@ object HttpClientManager {
     private set
 
   private var activeOrigins = emptyList<CanonicalOrigin>()
+  private var activeApiEndpoint: String? = null
+  private var activeSchemePolicy: NetworkEndpointSchemePolicy? = null
   private var requestContextFingerprint: RequestContextFingerprint? = null
   private var requestContextGeneration = 0L
   private var requestContextTransitionEpoch = 0L
@@ -316,7 +330,9 @@ object HttpClientManager {
     synchronized(this) {
       NetworkRequestContextSnapshot(
         clientPointer = getClientPointer(),
+        apiEndpoint = activeApiEndpoint,
         canonicalOrigin = activeOrigins.singleOrNull()?.asString(),
+        schemePolicy = activeSchemePolicy,
         sessionEpoch = requestContextSessionEpoch,
         generation = requestContextGeneration,
         confirmed = requestContextConfirmed && !requestContextReplacing,
@@ -360,6 +376,30 @@ object HttpClientManager {
 
   fun replaceRequestContext(
     headerMap: Map<String, String>,
+    apiEndpoint: String?,
+    canonicalOrigin: String?,
+    schemePolicy: NetworkEndpointSchemePolicy?,
+    token: String?,
+    sessionEpoch: Long,
+  ) {
+    val origins =
+      canonicalOrigin?.let { value ->
+        listOf(CanonicalOrigin.fromStrictOrigin(value) ?: throw IllegalArgumentException("Invalid canonical origin"))
+      } ?: emptyList()
+    validateEndpointDescriptor(apiEndpoint, origins.singleOrNull(), schemePolicy)
+    transitionRequestContext(
+      headerMap,
+      origins,
+      token,
+      sessionEpoch,
+      confirmed = true,
+      apiEndpoint = apiEndpoint,
+      schemePolicy = schemePolicy,
+    )
+  }
+
+  fun replaceRequestContext(
+    headerMap: Map<String, String>,
     canonicalOrigin: String?,
     token: String?,
     sessionEpoch: Long,
@@ -378,6 +418,8 @@ object HttpClientManager {
       null,
       synchronized(this) { requestContextSessionEpoch },
       confirmed = false,
+      apiEndpoint = null,
+      schemePolicy = null,
     )
   }
 
@@ -387,6 +429,8 @@ object HttpClientManager {
     token: String?,
     sessionEpoch: Long,
     confirmed: Boolean = true,
+    apiEndpoint: String? = null,
+    schemePolicy: NetworkEndpointSchemePolicy? = null,
   ) {
     require(sessionEpoch >= 0) { "Session epoch must not be negative" }
     require(origins.isNotEmpty() || token == null) { "A token requires a canonical origin" }
@@ -394,7 +438,7 @@ object HttpClientManager {
     val builder = Headers.Builder()
     headerMap.forEach { (key, value) -> builder[key] = value }
     val newHeaders = builder.build()
-    val newFingerprint = RequestContextFingerprint.create(origins, token, headerMap)
+    val newFingerprint = RequestContextFingerprint.create(apiEndpoint, origins, schemePolicy, token, headerMap)
 
     lateinit var remoteImageDeliveryDrain: CompletableFuture<Unit>
     val transitionEpoch =
@@ -436,6 +480,8 @@ object HttpClientManager {
         cookieJar.clearAuthCookies()
         headers = newHeaders
         activeOrigins = origins
+        activeApiEndpoint = apiEndpoint
+        activeSchemePolicy = schemePolicy
         requestContextFingerprint = newFingerprint
         cookieJar.setAllowedOrigins(origins)
         requestContextGeneration++
@@ -484,6 +530,35 @@ object HttpClientManager {
     notifyClientChanged(publication.first)
     if (confirmed) NetworkContextBoundWorkRegistry.reopenAll(publication.second)
     cancellationError?.let { throw it }
+  }
+
+  private fun validateEndpointDescriptor(
+    apiEndpoint: String?,
+    canonicalOrigin: CanonicalOrigin?,
+    schemePolicy: NetworkEndpointSchemePolicy?,
+  ) {
+    if (canonicalOrigin == null) {
+      require(apiEndpoint == null && schemePolicy == null) { "A cleared context cannot contain endpoint metadata" }
+      return
+    }
+    requireNotNull(apiEndpoint) { "A canonical origin requires an API endpoint" }
+    requireNotNull(schemePolicy) { "A canonical origin requires an endpoint scheme policy" }
+    val uri = runCatching { java.net.URI(apiEndpoint) }.getOrNull()
+    require(
+      uri != null &&
+        uri.rawUserInfo == null &&
+        uri.rawQuery == null &&
+        uri.rawFragment == null &&
+        uri.rawPath?.endsWith("/api") == true &&
+        CanonicalOrigin.fromEndpoint(apiEndpoint) == canonicalOrigin
+    ) { "Invalid API endpoint descriptor" }
+    val schemeValid = when (schemePolicy) {
+      NetworkEndpointSchemePolicy.HTTPS_ONLY -> canonicalOrigin.scheme == "https"
+      NetworkEndpointSchemePolicy.EXPLICITLY_APPROVED_HTTP,
+      NetworkEndpointSchemePolicy.REGISTERED_LOCAL_HTTP,
+      -> canonicalOrigin.scheme == "http"
+    }
+    require(schemeValid) { "Endpoint scheme does not match its policy" }
   }
 
   private fun cancelOkHttpWorkAndAwaitIdle(): CompletableFuture<Unit> {

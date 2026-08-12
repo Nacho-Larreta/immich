@@ -1,6 +1,7 @@
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/interfaces/backup_run_binding.interface.dart';
 import 'package:immich_mobile/domain/models/confirmed_server_access.model.dart';
+import 'package:immich_mobile/domain/models/eager_backup.model.dart';
 import 'package:immich_mobile/domain/models/server_reachability.model.dart';
 import 'package:immich_mobile/infrastructure/adapters/backup/backup_run_binding_source_adapter.dart';
 import 'package:immich_mobile/providers/server_reachability.provider.dart';
@@ -12,6 +13,20 @@ final backupRunBindingSourceProvider = Provider<BackupRunBindingSourcePort>((ref
 });
 
 final backupTransportCursorProvider = StateProvider<({int epoch, int revision})>((_) => (epoch: 0, revision: 0));
+
+typedef BackupTransportCursor = ({int epoch, int revision});
+
+void publishBackupTransportCursor({
+  required BackupTransportCursor current,
+  required BackupTransportSnapshot snapshot,
+  required void Function(BackupTransportCursor cursor) publish,
+}) {
+  final candidate = (epoch: snapshot.monitorEpoch, revision: snapshot.revision);
+  if (candidate.epoch < current.epoch || (candidate.epoch == current.epoch && candidate.revision <= current.revision)) {
+    return;
+  }
+  publish(candidate);
+}
 
 BackupBindingSnapshot _readAtomicSnapshot(Ref ref) {
   final localLease = ref.read(requestContextLeaseProvider);

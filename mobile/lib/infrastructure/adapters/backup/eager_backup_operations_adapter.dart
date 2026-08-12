@@ -59,7 +59,7 @@ final class EagerBackupOperationsAdapter implements EagerBackupOperationsPort {
   Future<BackupRunBinding?> captureBinding() async => _bindings.capture();
 
   @override
-  Future<void> upload(BackupRunBinding binding, EagerBackupCancellation cancellation) async {
+  Future<EagerBackupUploadOutcome> upload(BackupRunBinding binding, EagerBackupCancellation cancellation) async {
     final admission = await _arbiter.acquireForeground(bindingDigest: binding.digest);
     final lease = admission.lease;
     if (!admission.admitted || lease == null) {
@@ -100,7 +100,7 @@ final class EagerBackupOperationsAdapter implements EagerBackupOperationsPort {
         renewalInFlight = renewal;
       });
       if (!isPermitCurrent()) throw const EagerBackupFailure.staleContext();
-      await _uploads.uploadCandidates(
+      final uploadResult = await _uploads.uploadCandidates(
         binding.userId,
         cancelToken,
         binding: binding,
@@ -108,10 +108,13 @@ final class EagerBackupOperationsAdapter implements EagerBackupOperationsPort {
         isBindingCurrent: (_) => isPermitCurrent(),
         callbacks: UploadCallbacks(onError: (_, _) => failed = true),
       );
+      final denial = uploadResult.denial;
+      if (denial != null) return _eagerOutcomeFor(denial.reason);
       if (!isPermitCurrent()) throw const EagerBackupFailure.staleContext();
       if (failed) throw const EagerBackupFailure.transient();
       if (!await _synchronization.syncRemoteForBinding(binding)) throw const EagerBackupFailure.transient();
       if (!isPermitCurrent()) throw const EagerBackupFailure.staleContext();
+      return EagerBackupUploadOutcome.completed;
     } on EagerBackupFailure {
       rethrow;
     } on Object {
@@ -127,4 +130,11 @@ final class EagerBackupOperationsAdapter implements EagerBackupOperationsPort {
       await _arbiter.releaseCurrentWhenQuiescent(runToken: lease.runToken, bindingDigest: lease.bindingDigest);
     }
   }
+
+  EagerBackupUploadOutcome _eagerOutcomeFor(ForegroundUploadGateReason reason) => switch (reason) {
+    ForegroundUploadGateReason.noWifi => EagerBackupUploadOutcome.noWifi,
+    ForegroundUploadGateReason.transportCursorChanged => EagerBackupUploadOutcome.transportCursorChanged,
+    ForegroundUploadGateReason.bindingStale => EagerBackupUploadOutcome.bindingStale,
+    ForegroundUploadGateReason.evidenceUnavailable => EagerBackupUploadOutcome.evidenceUnavailable,
+  };
 }

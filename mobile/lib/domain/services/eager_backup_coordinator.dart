@@ -194,8 +194,14 @@ final class EagerBackupCoordinator {
             return;
           }
           _setState(EagerBackupPhase.uploading);
-          await _operations.upload(binding, cancellation);
+          final uploadOutcome = await _operations.upload(binding, cancellation);
           if (_mustStop(cancellation)) return;
+          if (uploadOutcome != EagerBackupUploadOutcome.completed) {
+            _demand = true;
+            if (uploadOutcome == EagerBackupUploadOutcome.transportCursorChanged) continue;
+            _setState(EagerBackupPhase.blocked, blocker: _blockerForUploadOutcome(uploadOutcome));
+            return;
+          }
           _retryAttempt = 0;
           _preparedWorkload = null;
           _demand = true;
@@ -265,6 +271,14 @@ final class EagerBackupCoordinator {
     EagerBackupFailureKind.deterministic => EagerBackupBlocker.deterministicFailure,
     EagerBackupFailureKind.drainFailed => EagerBackupBlocker.drainFailed,
     EagerBackupFailureKind.transient => EagerBackupBlocker.drainFailed,
+  };
+
+  static EagerBackupBlocker _blockerForUploadOutcome(EagerBackupUploadOutcome outcome) => switch (outcome) {
+    EagerBackupUploadOutcome.noWifi => EagerBackupBlocker.noWifi,
+    EagerBackupUploadOutcome.bindingStale => EagerBackupBlocker.bindingStale,
+    EagerBackupUploadOutcome.evidenceUnavailable => EagerBackupBlocker.evidenceUnavailable,
+    EagerBackupUploadOutcome.transportCursorChanged ||
+    EagerBackupUploadOutcome.completed => EagerBackupBlocker.evidenceUnavailable,
   };
 
   void _setState(EagerBackupPhase phase, {EagerBackupBlocker? blocker}) {

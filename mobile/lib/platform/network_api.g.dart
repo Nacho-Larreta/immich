@@ -86,6 +86,8 @@ int _deepHash(Object? value) {
   return value.hashCode;
 }
 
+enum NetworkEndpointSchemePolicy { httpsOnly, explicitlyApprovedHttp, registeredLocalHttp }
+
 class ClientCertData {
   ClientCertData({required this.data, required this.password});
 
@@ -175,7 +177,9 @@ class ClientCertPrompt {
 class NetworkRequestContextSnapshot {
   NetworkRequestContextSnapshot({
     required this.clientPointer,
+    this.apiEndpoint,
     this.canonicalOrigin,
+    this.schemePolicy,
     required this.sessionEpoch,
     required this.generation,
     required this.confirmed,
@@ -183,7 +187,11 @@ class NetworkRequestContextSnapshot {
 
   int clientPointer;
 
+  String? apiEndpoint;
+
   String? canonicalOrigin;
+
+  NetworkEndpointSchemePolicy? schemePolicy;
 
   int sessionEpoch;
 
@@ -192,7 +200,7 @@ class NetworkRequestContextSnapshot {
   bool confirmed;
 
   List<Object?> _toList() {
-    return <Object?>[clientPointer, canonicalOrigin, sessionEpoch, generation, confirmed];
+    return <Object?>[clientPointer, apiEndpoint, canonicalOrigin, schemePolicy, sessionEpoch, generation, confirmed];
   }
 
   Object encode() {
@@ -203,10 +211,12 @@ class NetworkRequestContextSnapshot {
     result as List<Object?>;
     return NetworkRequestContextSnapshot(
       clientPointer: result[0]! as int,
-      canonicalOrigin: result[1] as String?,
-      sessionEpoch: result[2]! as int,
-      generation: result[3]! as int,
-      confirmed: result[4]! as bool,
+      apiEndpoint: result[1] as String?,
+      canonicalOrigin: result[2] as String?,
+      schemePolicy: result[3] as NetworkEndpointSchemePolicy?,
+      sessionEpoch: result[4]! as int,
+      generation: result[5]! as int,
+      confirmed: result[6]! as bool,
     );
   }
 
@@ -220,7 +230,9 @@ class NetworkRequestContextSnapshot {
       return true;
     }
     return _deepEquals(clientPointer, other.clientPointer) &&
+        _deepEquals(apiEndpoint, other.apiEndpoint) &&
         _deepEquals(canonicalOrigin, other.canonicalOrigin) &&
+        _deepEquals(schemePolicy, other.schemePolicy) &&
         _deepEquals(sessionEpoch, other.sessionEpoch) &&
         _deepEquals(generation, other.generation) &&
         _deepEquals(confirmed, other.confirmed);
@@ -238,14 +250,17 @@ class _PigeonCodec extends StandardMessageCodec {
     if (value is int) {
       buffer.putUint8(4);
       buffer.putInt64(value);
-    } else if (value is ClientCertData) {
+    } else if (value is NetworkEndpointSchemePolicy) {
       buffer.putUint8(129);
-      writeValue(buffer, value.encode());
-    } else if (value is ClientCertPrompt) {
+      writeValue(buffer, value.index);
+    } else if (value is ClientCertData) {
       buffer.putUint8(130);
       writeValue(buffer, value.encode());
-    } else if (value is NetworkRequestContextSnapshot) {
+    } else if (value is ClientCertPrompt) {
       buffer.putUint8(131);
+      writeValue(buffer, value.encode());
+    } else if (value is NetworkRequestContextSnapshot) {
+      buffer.putUint8(132);
       writeValue(buffer, value.encode());
     } else {
       super.writeValue(buffer, value);
@@ -256,10 +271,13 @@ class _PigeonCodec extends StandardMessageCodec {
   Object? readValueOfType(int type, ReadBuffer buffer) {
     switch (type) {
       case 129:
-        return ClientCertData.decode(readValue(buffer)!);
+        final value = readValue(buffer) as int?;
+        return value == null ? null : NetworkEndpointSchemePolicy.values[value];
       case 130:
-        return ClientCertPrompt.decode(readValue(buffer)!);
+        return ClientCertData.decode(readValue(buffer)!);
       case 131:
+        return ClientCertPrompt.decode(readValue(buffer)!);
+      case 132:
         return NetworkRequestContextSnapshot.decode(readValue(buffer)!);
       default:
         return super.readValueOfType(type, buffer);
@@ -395,7 +413,9 @@ class NetworkApi {
 
   Future<void> replaceRequestContext(
     Map<String, String> headers,
+    String? apiEndpoint,
     String? canonicalOrigin,
+    NetworkEndpointSchemePolicy? schemePolicy,
     String? token,
     int sessionEpoch,
   ) async {
@@ -408,7 +428,9 @@ class NetworkApi {
     );
     final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[
       headers,
+      apiEndpoint,
       canonicalOrigin,
+      schemePolicy,
       token,
       sessionEpoch,
     ]);

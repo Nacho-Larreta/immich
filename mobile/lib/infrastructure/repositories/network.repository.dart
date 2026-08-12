@@ -18,7 +18,14 @@ import 'package:ok_http/ok_http.dart';
 import 'package:web_socket/web_socket.dart';
 
 typedef NativeRequestContextReplacement =
-    Future<void> Function(Map<String, String> headers, String? canonicalOrigin, String? accessToken, int sessionEpoch);
+    Future<void> Function(
+      Map<String, String> headers,
+      String? apiEndpoint,
+      String? canonicalOrigin,
+      NetworkEndpointSchemePolicy? schemePolicy,
+      String? accessToken,
+      int sessionEpoch,
+    );
 typedef NativeRequestContextFailClosed = Future<void> Function();
 
 enum NetworkContextRole { rootWriter, attachedWorker }
@@ -156,7 +163,14 @@ class NetworkRepository {
       await drainTransport();
       var nativeContextConfirmed = false;
       try {
-        await replaceNativeContext(restored.customHeaders, restored.canonicalOrigin?.origin, restored.accessToken, 0);
+        await replaceNativeContext(
+          restored.customHeaders,
+          restored.apiEndpoint?.toString(),
+          restored.canonicalOrigin?.origin,
+          _toNativeSchemePolicy(restored.schemePolicy),
+          restored.accessToken,
+          0,
+        );
         nativeContextConfirmed = true;
         await bindNativeClient();
         _publishContext(
@@ -226,20 +240,42 @@ class NetworkRepository {
     if (!snapshot.confirmed) {
       return;
     }
-    final origin = snapshot.canonicalOrigin == null
-        ? null
-        : validateCanonicalOrigin(Uri.parse(snapshot.canonicalOrigin!));
+    final descriptor = _validatedNativeDescriptor(snapshot);
+    if (descriptor == null) return;
     _publishContext(
       transition,
-      origin == null ? const RequestOriginContext.cleared() : RequestOriginContext.restricted([origin]),
-      origin == null
-          ? null
-          : origin.scheme == 'https'
-          ? EndpointSchemePolicy.httpsOnly
-          : EndpointSchemePolicy.registeredLocalHttp,
-      null,
+      RequestOriginContext.restricted([descriptor.canonicalOrigin]),
+      descriptor.schemePolicy,
+      descriptor.apiEndpoint,
       snapshot.sessionEpoch,
     );
+  }
+
+  static ({Uri apiEndpoint, Uri canonicalOrigin, EndpointSchemePolicy schemePolicy})? _validatedNativeDescriptor(
+    NetworkRequestContextSnapshot snapshot,
+  ) {
+    final endpointValue = snapshot.apiEndpoint;
+    final originValue = snapshot.canonicalOrigin;
+    final policyValue = snapshot.schemePolicy;
+    if (!snapshot.confirmed || endpointValue == null || originValue == null || policyValue == null) return null;
+    try {
+      final endpoint = Uri.parse(endpointValue);
+      final origin = validateCanonicalOrigin(Uri.parse(originValue));
+      validateHttpEndpoint(endpoint, 'apiEndpoint');
+      if (!endpoint.path.endsWith('/api') || endpoint.origin != origin.origin) return null;
+      final policy = _fromNativeSchemePolicy(policyValue);
+      validateEndpointSchemePolicy(origin, policy);
+      final storedEndpointValue = Store.tryGet(StoreKey.serverEndpoint);
+      final storedPolicyValue = Store.tryGet(StoreKey.serverEndpointSchemePolicy);
+      if (storedEndpointValue == null || storedPolicyValue == null) return null;
+      final storedEndpoint = Uri.tryParse(storedEndpointValue);
+      final storedPolicy = parseEndpointSchemePolicy(storedPolicyValue);
+      if (storedEndpoint == null || storedPolicy == null) return null;
+      if (storedEndpoint != endpoint || storedPolicy != policy) return null;
+      return (apiEndpoint: endpoint, canonicalOrigin: origin, schemePolicy: policy);
+    } on Object {
+      return null;
+    }
   }
 
   @visibleForTesting
@@ -252,6 +288,23 @@ class NetworkRepository {
   @visibleForTesting
   static void setContextRoleForTest(NetworkContextRole role) {
     _contextRole = role;
+  }
+
+  @visibleForTesting
+  static void attachNativeSnapshotForTest(NetworkRequestContextSnapshot snapshot) {
+    _contextRole = NetworkContextRole.attachedWorker;
+    _nativeGeneration = snapshot.generation;
+    final transition = _blockForContextTransition();
+    final descriptor = _validatedNativeDescriptor(snapshot);
+    if (descriptor == null) return;
+    _transportFenced = false;
+    _publishContext(
+      transition,
+      RequestOriginContext.restricted([descriptor.canonicalOrigin]),
+      descriptor.schemePolicy,
+      descriptor.apiEndpoint,
+      snapshot.sessionEpoch,
+    );
   }
 
   static void _installNativeClient(http.Client nativeClient) {
@@ -349,7 +402,14 @@ class NetworkRepository {
       await _fenceAndDrainTransport();
       var nativeContextConfirmed = false;
       try {
-        await networkApi.replaceRequestContext(headers, origin?.origin, token, sessionEpoch);
+        await networkApi.replaceRequestContext(
+          headers,
+          apiEndpoint?.toString(),
+          origin?.origin,
+          _toNativeSchemePolicy(schemePolicy),
+          token,
+          sessionEpoch,
+        );
         nativeContextConfirmed = true;
         await _bindNativeClient();
         _publishContext(
@@ -482,7 +542,7 @@ class NetworkRepository {
       }
       var nativeContextConfirmed = false;
       try {
-        await replaceNativeContext(const {}, null, null, _serverAccessEvidence.sessionEpoch);
+        await replaceNativeContext(const {}, null, null, null, null, _serverAccessEvidence.sessionEpoch);
         nativeContextConfirmed = true;
         await bindNativeClient();
         if (_requestOriginGuard.isCurrent(transition)) {
@@ -755,3 +815,16 @@ void _validateHeaders(Map<String, String> headers) {
     }
   }
 }
+
+NetworkEndpointSchemePolicy? _toNativeSchemePolicy(EndpointSchemePolicy? policy) => switch (policy) {
+  EndpointSchemePolicy.httpsOnly => NetworkEndpointSchemePolicy.httpsOnly,
+  EndpointSchemePolicy.explicitlyApprovedHttp => NetworkEndpointSchemePolicy.explicitlyApprovedHttp,
+  EndpointSchemePolicy.registeredLocalHttp => NetworkEndpointSchemePolicy.registeredLocalHttp,
+  null => null,
+};
+
+EndpointSchemePolicy _fromNativeSchemePolicy(NetworkEndpointSchemePolicy policy) => switch (policy) {
+  NetworkEndpointSchemePolicy.httpsOnly => EndpointSchemePolicy.httpsOnly,
+  NetworkEndpointSchemePolicy.explicitlyApprovedHttp => EndpointSchemePolicy.explicitlyApprovedHttp,
+  NetworkEndpointSchemePolicy.registeredLocalHttp => EndpointSchemePolicy.registeredLocalHttp,
+};

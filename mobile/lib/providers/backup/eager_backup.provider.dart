@@ -74,9 +74,10 @@ final eagerBackupCoordinatorProvider = Provider<EagerBackupCoordinator>((ref) {
   }
 
   void publishTransport(BackupTransportSnapshot snapshot) {
-    ref.read(backupTransportCursorProvider.notifier).state = (
-      epoch: snapshot.monitorEpoch,
-      revision: snapshot.revision,
+    publishBackupTransportCursor(
+      current: ref.read(backupTransportCursorProvider),
+      snapshot: snapshot,
+      publish: (cursor) => ref.read(backupTransportCursorProvider.notifier).state = cursor,
     );
     coordinator.setTransport(snapshot);
     if (snapshot.hasWifi) resumePersistedReconciliations();
@@ -105,7 +106,7 @@ final eagerBackupCoordinatorProvider = Provider<EagerBackupCoordinator>((ref) {
   coordinator.setServerProofAvailable(
     reachability.phase == ReachabilityPhase.online && reachability.serverAccess?.isCurrent == true,
   );
-  unawaited(connectivity.initialSnapshot.then(publishTransport));
+  unawaited(connectivity.initialSnapshot);
   unawaited(watchWorkload(ref.read(currentUserProvider)?.id));
   unawaited(photoObserver.start());
   coordinator.signal(EagerBackupTrigger.startup);

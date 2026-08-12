@@ -85,9 +85,10 @@ class ConnectivityApiImpl internal constructor(
   private var started = false
   private var monitorEpoch = 0L
   private var revision = 0L
+  private var observedNetwork: ConnectivityNetworkValue? = null
 
   override fun readCurrentSnapshot(): ConnectivityTransportSnapshot = synchronized(lifecycleLock) {
-    currentSnapshot()
+    observeCurrent().first
   }
 
   override fun start() {
@@ -95,8 +96,9 @@ class ConnectivityApiImpl internal constructor(
       if (started) return
       monitorEpoch = ConnectivityMonitorEpochAuthority.next()
       revision = 0
-      networkMonitor.start(::emitSnapshot)
+      observedNetwork = null
       started = true
+      networkMonitor.start(::emitSnapshot)
     }
     emitSnapshot()
   }
@@ -108,22 +110,32 @@ class ConnectivityApiImpl internal constructor(
       started = false
       monitorEpoch = ConnectivityMonitorEpochAuthority.next()
       revision = 0
+      observedNetwork = null
     }
   }
 
   override fun dispose() = stop()
 
   private fun emitSnapshot() {
-    val snapshot = synchronized(lifecycleLock) {
+    val observed = synchronized(lifecycleLock) {
       if (!started) return
-      revision++
-      currentSnapshot()
+      observeCurrent()
     }
-    publish(snapshot)
+    if (observed.second) publish(observed.first)
   }
 
-  private fun currentSnapshot(): ConnectivityTransportSnapshot {
+  private fun observeCurrent(): Pair<ConnectivityTransportSnapshot, Boolean> {
     val network = networkMonitor.readCurrent()
+    val changed = network != observedNetwork
+    if (changed) {
+      check(revision < Long.MAX_VALUE) { "Connectivity revision exhausted" }
+      revision++
+      observedNetwork = network
+    }
+    return snapshot(network) to changed
+  }
+
+  private fun snapshot(network: ConnectivityNetworkValue): ConnectivityTransportSnapshot {
     if (!network.available) {
       return ConnectivityTransportSnapshot(
         ConnectivityTransportAvailability.UNAVAILABLE,

@@ -33,7 +33,9 @@ final class NetworkApiImplTests: XCTestCase {
 
     try NetworkApiImpl().replaceRequestContext(
       headers: [:],
+      apiEndpoint: "https://photos.test/api",
       canonicalOrigin: "https://photos.test",
+      schemePolicy: .httpsOnly,
       token: "current-token",
       sessionEpoch: 1
     )
@@ -181,7 +183,13 @@ final class NetworkApiImplTests: XCTestCase {
     )
 
     try NetworkApiImpl().replaceRequestContext(
-      headers: [:], canonicalOrigin: nil, token: nil, sessionEpoch: 0)
+      headers: [:],
+      apiEndpoint: nil,
+      canonicalOrigin: nil,
+      schemePolicy: nil,
+      token: nil,
+      sessionEpoch: 0
+    )
 
     XCTAssertFalse(
       (URLSessionManager.cookieStorage.cookies ?? []).contains {
@@ -454,6 +462,9 @@ final class NetworkApiImplTests: XCTestCase {
     let blocked = URLSessionManager.requestContextSnapshot()
     defer { Unmanaged<URLSession>.fromOpaque(blocked.clientPointer).release() }
     XCTAssertFalse(blocked.confirmed)
+    XCTAssertNil(blocked.apiEndpoint)
+    XCTAssertNil(blocked.canonicalOrigin)
+    XCTAssertNil(blocked.schemePolicy)
     XCTAssertEqual(blocked.generation, confirmed.generation + 1)
 
     try URLSessionManager.failClosedRequestContext()
@@ -462,6 +473,36 @@ final class NetworkApiImplTests: XCTestCase {
     XCTAssertFalse(duplicate.confirmed)
     XCTAssertEqual(duplicate.generation, blocked.generation)
     XCTAssertEqual(duplicate.clientPointer, blocked.clientPointer)
+  }
+
+  func testExactEndpointPolicyRoundTripAndPolicyOnlyChangeRotatesGeneration() throws {
+    let api = NetworkApiImpl()
+    try api.replaceRequestContext(
+      headers: [:],
+      apiEndpoint: "http://photos.test/custom/api",
+      canonicalOrigin: "http://photos.test",
+      schemePolicy: .explicitlyApprovedHttp,
+      token: "token",
+      sessionEpoch: 4
+    )
+    let first = try api.getRequestContextSnapshot()
+    defer { Unmanaged<URLSession>.fromOpaque(UnsafeMutableRawPointer(bitPattern: Int(first.clientPointer))!).release() }
+    XCTAssertEqual(first.apiEndpoint, "http://photos.test/custom/api")
+    XCTAssertEqual(first.canonicalOrigin, "http://photos.test")
+    XCTAssertEqual(first.schemePolicy, .explicitlyApprovedHttp)
+
+    try api.replaceRequestContext(
+      headers: [:],
+      apiEndpoint: "http://photos.test/custom/api",
+      canonicalOrigin: "http://photos.test",
+      schemePolicy: .registeredLocalHttp,
+      token: "token",
+      sessionEpoch: 4
+    )
+    let second = try api.getRequestContextSnapshot()
+    defer { Unmanaged<URLSession>.fromOpaque(UnsafeMutableRawPointer(bitPattern: Int(second.clientPointer))!).release() }
+    XCTAssertEqual(second.schemePolicy, .registeredLocalHttp)
+    XCTAssertEqual(second.generation, first.generation + 1)
   }
 
   func testInvalidationTimeoutCancelsObserversAndNeverPublishesReplacementContext() throws {

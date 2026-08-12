@@ -65,7 +65,9 @@ class NetworkApiImpl: NetworkApi {
     let snapshot = URLSessionManager.requestContextSnapshot()
     return NetworkRequestContextSnapshot(
       clientPointer: Int64(Int(bitPattern: snapshot.clientPointer)),
+      apiEndpoint: snapshot.apiEndpoint,
       canonicalOrigin: snapshot.canonicalOrigin,
+      schemePolicy: snapshot.schemePolicy,
       sessionEpoch: snapshot.sessionEpoch,
       generation: Int64(bitPattern: snapshot.generation),
       confirmed: snapshot.confirmed
@@ -78,7 +80,9 @@ class NetworkApiImpl: NetworkApi {
 
   func replaceRequestContext(
     headers: [String: String],
+    apiEndpoint: String?,
     canonicalOrigin: String?,
+    schemePolicy: NetworkEndpointSchemePolicy?,
     token: String?,
     sessionEpoch: Int64
   )
@@ -86,7 +90,9 @@ class NetworkApiImpl: NetworkApi {
   {
     try URLSessionManager.replaceRequestContext(
       headers: headers,
+      apiEndpoint: apiEndpoint,
       canonicalOrigin: canonicalOrigin,
+      schemePolicy: schemePolicy,
       token: token,
       sessionEpoch: sessionEpoch
     )

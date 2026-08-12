@@ -192,6 +192,18 @@ class FlutterError (
   val details: Any? = null
 ) : RuntimeException()
 
+enum class NetworkEndpointSchemePolicy(val raw: Int) {
+  HTTPS_ONLY(0),
+  EXPLICITLY_APPROVED_HTTP(1),
+  REGISTERED_LOCAL_HTTP(2);
+
+  companion object {
+    fun ofRaw(raw: Int): NetworkEndpointSchemePolicy? {
+      return values().firstOrNull { it.raw == raw }
+    }
+  }
+}
+
 /** Generated class from Pigeon that represents data sent in messages. */
 data class ClientCertData (
   val data: ByteArray,
@@ -279,7 +291,9 @@ data class ClientCertPrompt (
 /** Generated class from Pigeon that represents data sent in messages. */
 data class NetworkRequestContextSnapshot (
   val clientPointer: Long,
+  val apiEndpoint: String? = null,
   val canonicalOrigin: String? = null,
+  val schemePolicy: NetworkEndpointSchemePolicy? = null,
   val sessionEpoch: Long,
   val generation: Long,
   val confirmed: Boolean
@@ -288,17 +302,21 @@ data class NetworkRequestContextSnapshot (
   companion object {
     fun fromList(pigeonVar_list: List<Any?>): NetworkRequestContextSnapshot {
       val clientPointer = pigeonVar_list[0] as Long
-      val canonicalOrigin = pigeonVar_list[1] as String?
-      val sessionEpoch = pigeonVar_list[2] as Long
-      val generation = pigeonVar_list[3] as Long
-      val confirmed = pigeonVar_list[4] as Boolean
-      return NetworkRequestContextSnapshot(clientPointer, canonicalOrigin, sessionEpoch, generation, confirmed)
+      val apiEndpoint = pigeonVar_list[1] as String?
+      val canonicalOrigin = pigeonVar_list[2] as String?
+      val schemePolicy = pigeonVar_list[3] as NetworkEndpointSchemePolicy?
+      val sessionEpoch = pigeonVar_list[4] as Long
+      val generation = pigeonVar_list[5] as Long
+      val confirmed = pigeonVar_list[6] as Boolean
+      return NetworkRequestContextSnapshot(clientPointer, apiEndpoint, canonicalOrigin, schemePolicy, sessionEpoch, generation, confirmed)
     }
   }
   fun toList(): List<Any?> {
     return listOf(
       clientPointer,
+      apiEndpoint,
       canonicalOrigin,
+      schemePolicy,
       sessionEpoch,
       generation,
       confirmed,
@@ -312,13 +330,15 @@ data class NetworkRequestContextSnapshot (
       return true
     }
     val other = other as NetworkRequestContextSnapshot
-    return NetworkPigeonUtils.deepEquals(this.clientPointer, other.clientPointer) && NetworkPigeonUtils.deepEquals(this.canonicalOrigin, other.canonicalOrigin) && NetworkPigeonUtils.deepEquals(this.sessionEpoch, other.sessionEpoch) && NetworkPigeonUtils.deepEquals(this.generation, other.generation) && NetworkPigeonUtils.deepEquals(this.confirmed, other.confirmed)
+    return NetworkPigeonUtils.deepEquals(this.clientPointer, other.clientPointer) && NetworkPigeonUtils.deepEquals(this.apiEndpoint, other.apiEndpoint) && NetworkPigeonUtils.deepEquals(this.canonicalOrigin, other.canonicalOrigin) && NetworkPigeonUtils.deepEquals(this.schemePolicy, other.schemePolicy) && NetworkPigeonUtils.deepEquals(this.sessionEpoch, other.sessionEpoch) && NetworkPigeonUtils.deepEquals(this.generation, other.generation) && NetworkPigeonUtils.deepEquals(this.confirmed, other.confirmed)
   }
 
   override fun hashCode(): Int {
     var result = javaClass.hashCode()
     result = 31 * result + NetworkPigeonUtils.deepHash(this.clientPointer)
+    result = 31 * result + NetworkPigeonUtils.deepHash(this.apiEndpoint)
     result = 31 * result + NetworkPigeonUtils.deepHash(this.canonicalOrigin)
+    result = 31 * result + NetworkPigeonUtils.deepHash(this.schemePolicy)
     result = 31 * result + NetworkPigeonUtils.deepHash(this.sessionEpoch)
     result = 31 * result + NetworkPigeonUtils.deepHash(this.generation)
     result = 31 * result + NetworkPigeonUtils.deepHash(this.confirmed)
@@ -329,16 +349,21 @@ private open class NetworkPigeonCodec : StandardMessageCodec() {
   override fun readValueOfType(type: Byte, buffer: ByteBuffer): Any? {
     return when (type) {
       129.toByte() -> {
-        return (readValue(buffer) as? List<Any?>)?.let {
-          ClientCertData.fromList(it)
+        return (readValue(buffer) as Long?)?.let {
+          NetworkEndpointSchemePolicy.ofRaw(it.toInt())
         }
       }
       130.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          ClientCertPrompt.fromList(it)
+          ClientCertData.fromList(it)
         }
       }
       131.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          ClientCertPrompt.fromList(it)
+        }
+      }
+      132.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
           NetworkRequestContextSnapshot.fromList(it)
         }
@@ -348,16 +373,20 @@ private open class NetworkPigeonCodec : StandardMessageCodec() {
   }
   override fun writeValue(stream: ByteArrayOutputStream, value: Any?)   {
     when (value) {
-      is ClientCertData -> {
+      is NetworkEndpointSchemePolicy -> {
         stream.write(129)
-        writeValue(stream, value.toList())
+        writeValue(stream, value.raw.toLong())
       }
-      is ClientCertPrompt -> {
+      is ClientCertData -> {
         stream.write(130)
         writeValue(stream, value.toList())
       }
-      is NetworkRequestContextSnapshot -> {
+      is ClientCertPrompt -> {
         stream.write(131)
+        writeValue(stream, value.toList())
+      }
+      is NetworkRequestContextSnapshot -> {
+        stream.write(132)
         writeValue(stream, value.toList())
       }
       else -> super.writeValue(stream, value)
@@ -375,7 +404,7 @@ interface NetworkApi {
   fun getClientPointer(): Long
   fun getRequestContextSnapshot(): NetworkRequestContextSnapshot
   fun setRequestHeaders(headers: Map<String, String>, serverUrls: List<String>, token: String?)
-  fun replaceRequestContext(headers: Map<String, String>, canonicalOrigin: String?, token: String?, sessionEpoch: Long)
+  fun replaceRequestContext(headers: Map<String, String>, apiEndpoint: String?, canonicalOrigin: String?, schemePolicy: NetworkEndpointSchemePolicy?, token: String?, sessionEpoch: Long)
   fun failClosedRequestContext()
 
   companion object {
@@ -513,11 +542,13 @@ interface NetworkApi {
           channel.setMessageHandler { message, reply ->
             val args = message as List<Any?>
             val headersArg = args[0] as Map<String, String>
-            val canonicalOriginArg = args[1] as String?
-            val tokenArg = args[2] as String?
-            val sessionEpochArg = args[3] as Long
+            val apiEndpointArg = args[1] as String?
+            val canonicalOriginArg = args[2] as String?
+            val schemePolicyArg = args[3] as NetworkEndpointSchemePolicy?
+            val tokenArg = args[4] as String?
+            val sessionEpochArg = args[5] as Long
             val wrapped: List<Any?> = try {
-              api.replaceRequestContext(headersArg, canonicalOriginArg, tokenArg, sessionEpochArg)
+              api.replaceRequestContext(headersArg, apiEndpointArg, canonicalOriginArg, schemePolicyArg, tokenArg, sessionEpochArg)
               listOf(null)
             } catch (exception: Throwable) {
               NetworkPigeonUtils.wrapError(exception)

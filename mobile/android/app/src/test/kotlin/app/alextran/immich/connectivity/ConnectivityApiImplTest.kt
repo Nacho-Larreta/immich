@@ -1,6 +1,7 @@
 package app.alextran.immich.connectivity
 
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -32,10 +33,28 @@ class ConnectivityApiImplTest {
     assertTrue(capabilities.contains(ConnectivityNetworkCapability.VPN))
     assertFalse(capabilities.contains(ConnectivityNetworkCapability.WIFI))
   }
+
+  @Test
+  fun readBeforeCallbackAdvancesRevisionAndMatchingCallbackDoesNotAdvanceAgain() {
+    val monitor = FakeNetworkMonitor()
+    val published = mutableListOf<ConnectivityTransportSnapshot>()
+    val api = ConnectivityApiImpl(monitor, published::add)
+    api.start()
+    val initial = api.readCurrentSnapshot()
+    monitor.value = ConnectivityNetworkValue(available = true, usesWifi = true)
+
+    val read = api.readCurrentSnapshot()
+    monitor.emitChange()
+    val afterCallback = api.readCurrentSnapshot()
+
+    assertTrue(read.revision > initial.revision)
+    assertEquals(read.revision, afterCallback.revision)
+    assertEquals(1, published.size)
+  }
 }
 
 private class FakeNetworkMonitor(
-  private var value: ConnectivityNetworkValue = ConnectivityNetworkValue(available = false),
+  var value: ConnectivityNetworkValue = ConnectivityNetworkValue(available = false),
 ) : ConnectivityNetworkMonitoring {
   private var onChanged: (() -> Unit)? = null
 
@@ -47,5 +66,9 @@ private class FakeNetworkMonitor(
 
   override fun stop() {
     onChanged = null
+  }
+
+  fun emitChange() {
+    onChanged?.invoke()
   }
 }

@@ -156,6 +156,12 @@ func deepHashNetwork(value: Any?, hasher: inout Hasher) {
 }
 
 
+enum NetworkEndpointSchemePolicy: Int {
+  case httpsOnly = 0
+  case explicitlyApprovedHttp = 1
+  case registeredLocalHttp = 2
+}
+
 /// Generated class from Pigeon that represents data sent in messages.
 struct ClientCertData: Hashable {
   var data: FlutterStandardTypedData
@@ -241,7 +247,9 @@ struct ClientCertPrompt: Hashable {
 /// Generated class from Pigeon that represents data sent in messages.
 struct NetworkRequestContextSnapshot: Hashable {
   var clientPointer: Int64
+  var apiEndpoint: String? = nil
   var canonicalOrigin: String? = nil
+  var schemePolicy: NetworkEndpointSchemePolicy? = nil
   var sessionEpoch: Int64
   var generation: Int64
   var confirmed: Bool
@@ -250,14 +258,18 @@ struct NetworkRequestContextSnapshot: Hashable {
   // swift-format-ignore: AlwaysUseLowerCamelCase
   static func fromList(_ pigeonVar_list: [Any?]) -> NetworkRequestContextSnapshot? {
     let clientPointer = pigeonVar_list[0] as! Int64
-    let canonicalOrigin: String? = nilOrValue(pigeonVar_list[1])
-    let sessionEpoch = pigeonVar_list[2] as! Int64
-    let generation = pigeonVar_list[3] as! Int64
-    let confirmed = pigeonVar_list[4] as! Bool
+    let apiEndpoint: String? = nilOrValue(pigeonVar_list[1])
+    let canonicalOrigin: String? = nilOrValue(pigeonVar_list[2])
+    let schemePolicy: NetworkEndpointSchemePolicy? = nilOrValue(pigeonVar_list[3])
+    let sessionEpoch = pigeonVar_list[4] as! Int64
+    let generation = pigeonVar_list[5] as! Int64
+    let confirmed = pigeonVar_list[6] as! Bool
 
     return NetworkRequestContextSnapshot(
       clientPointer: clientPointer,
+      apiEndpoint: apiEndpoint,
       canonicalOrigin: canonicalOrigin,
+      schemePolicy: schemePolicy,
       sessionEpoch: sessionEpoch,
       generation: generation,
       confirmed: confirmed
@@ -266,7 +278,9 @@ struct NetworkRequestContextSnapshot: Hashable {
   func toList() -> [Any?] {
     return [
       clientPointer,
+      apiEndpoint,
       canonicalOrigin,
+      schemePolicy,
       sessionEpoch,
       generation,
       confirmed,
@@ -276,13 +290,15 @@ struct NetworkRequestContextSnapshot: Hashable {
     if Swift.type(of: lhs) != Swift.type(of: rhs) {
       return false
     }
-    return deepEqualsNetwork(lhs.clientPointer, rhs.clientPointer) && deepEqualsNetwork(lhs.canonicalOrigin, rhs.canonicalOrigin) && deepEqualsNetwork(lhs.sessionEpoch, rhs.sessionEpoch) && deepEqualsNetwork(lhs.generation, rhs.generation) && deepEqualsNetwork(lhs.confirmed, rhs.confirmed)
+    return deepEqualsNetwork(lhs.clientPointer, rhs.clientPointer) && deepEqualsNetwork(lhs.apiEndpoint, rhs.apiEndpoint) && deepEqualsNetwork(lhs.canonicalOrigin, rhs.canonicalOrigin) && deepEqualsNetwork(lhs.schemePolicy, rhs.schemePolicy) && deepEqualsNetwork(lhs.sessionEpoch, rhs.sessionEpoch) && deepEqualsNetwork(lhs.generation, rhs.generation) && deepEqualsNetwork(lhs.confirmed, rhs.confirmed)
   }
 
   func hash(into hasher: inout Hasher) {
     hasher.combine("NetworkRequestContextSnapshot")
     deepHashNetwork(value: clientPointer, hasher: &hasher)
+    deepHashNetwork(value: apiEndpoint, hasher: &hasher)
     deepHashNetwork(value: canonicalOrigin, hasher: &hasher)
+    deepHashNetwork(value: schemePolicy, hasher: &hasher)
     deepHashNetwork(value: sessionEpoch, hasher: &hasher)
     deepHashNetwork(value: generation, hasher: &hasher)
     deepHashNetwork(value: confirmed, hasher: &hasher)
@@ -293,10 +309,16 @@ private class NetworkPigeonCodecReader: FlutterStandardReader {
   override func readValue(ofType type: UInt8) -> Any? {
     switch type {
     case 129:
-      return ClientCertData.fromList(self.readValue() as! [Any?])
+      let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
+      if let enumResultAsInt = enumResultAsInt {
+        return NetworkEndpointSchemePolicy(rawValue: enumResultAsInt)
+      }
+      return nil
     case 130:
-      return ClientCertPrompt.fromList(self.readValue() as! [Any?])
+      return ClientCertData.fromList(self.readValue() as! [Any?])
     case 131:
+      return ClientCertPrompt.fromList(self.readValue() as! [Any?])
+    case 132:
       return NetworkRequestContextSnapshot.fromList(self.readValue() as! [Any?])
     default:
       return super.readValue(ofType: type)
@@ -306,14 +328,17 @@ private class NetworkPigeonCodecReader: FlutterStandardReader {
 
 private class NetworkPigeonCodecWriter: FlutterStandardWriter {
   override func writeValue(_ value: Any) {
-    if let value = value as? ClientCertData {
+    if let value = value as? NetworkEndpointSchemePolicy {
       super.writeByte(129)
-      super.writeValue(value.toList())
-    } else if let value = value as? ClientCertPrompt {
+      super.writeValue(value.rawValue)
+    } else if let value = value as? ClientCertData {
       super.writeByte(130)
       super.writeValue(value.toList())
-    } else if let value = value as? NetworkRequestContextSnapshot {
+    } else if let value = value as? ClientCertPrompt {
       super.writeByte(131)
+      super.writeValue(value.toList())
+    } else if let value = value as? NetworkRequestContextSnapshot {
+      super.writeByte(132)
       super.writeValue(value.toList())
     } else {
       super.writeValue(value)
@@ -345,7 +370,7 @@ protocol NetworkApi {
   func getClientPointer() throws -> Int64
   func getRequestContextSnapshot() throws -> NetworkRequestContextSnapshot
   func setRequestHeaders(headers: [String: String], serverUrls: [String], token: String?) throws
-  func replaceRequestContext(headers: [String: String], canonicalOrigin: String?, token: String?, sessionEpoch: Int64) throws
+  func replaceRequestContext(headers: [String: String], apiEndpoint: String?, canonicalOrigin: String?, schemePolicy: NetworkEndpointSchemePolicy?, token: String?, sessionEpoch: Int64) throws
   func failClosedRequestContext() throws
 }
 
@@ -465,11 +490,13 @@ class NetworkApiSetup {
       replaceRequestContextChannel.setMessageHandler { message, reply in
         let args = message as! [Any?]
         let headersArg = args[0] as! [String: String]
-        let canonicalOriginArg: String? = nilOrValue(args[1])
-        let tokenArg: String? = nilOrValue(args[2])
-        let sessionEpochArg = args[3] as! Int64
+        let apiEndpointArg: String? = nilOrValue(args[1])
+        let canonicalOriginArg: String? = nilOrValue(args[2])
+        let schemePolicyArg: NetworkEndpointSchemePolicy? = nilOrValue(args[3])
+        let tokenArg: String? = nilOrValue(args[4])
+        let sessionEpochArg = args[5] as! Int64
         do {
-          try api.replaceRequestContext(headers: headersArg, canonicalOrigin: canonicalOriginArg, token: tokenArg, sessionEpoch: sessionEpochArg)
+          try api.replaceRequestContext(headers: headersArg, apiEndpoint: apiEndpointArg, canonicalOrigin: canonicalOriginArg, schemePolicy: schemePolicyArg, token: tokenArg, sessionEpoch: sessionEpochArg)
           reply(wrapResult(nil))
         } catch {
           reply(wrapError(error))

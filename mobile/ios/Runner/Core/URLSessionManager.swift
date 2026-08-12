@@ -176,7 +176,9 @@ class URLSessionManager: NSObject {
   static let cookieStorage = HTTPCookieStorage.sharedCookieStorage(
     forGroupContainerIdentifier: APP_GROUP)
   private static var serverUrls: [String] = []
+  private static var activeApiEndpoint: String?
   private static var activeCanonicalOrigins: [NetworkCanonicalOrigin] = []
+  private static var activeSchemePolicy: NetworkEndpointSchemePolicy?
   private static var activeAuthCookieValues: [AuthCookie: String] = [:]
   private static var activeHeaders: [String: String] = [:]
   private static var sensitiveHeaderNames: Set<String> = ["authorization", "cookie"]
@@ -229,7 +231,9 @@ class URLSessionManager: NSObject {
       guard liveInstance?.invalidateCurrentSession() ?? true else { return }
       withRequestContextLock {
         serverUrls = []
+        activeApiEndpoint = nil
         activeCanonicalOrigins = []
+        activeSchemePolicy = nil
         activeAuthCookieValues = [:]
         activeHeaders = [:]
         let persistedHeaders =
@@ -256,14 +260,40 @@ class URLSessionManager: NSObject {
 
   static func replaceRequestContext(
     headers: [String: String],
+    apiEndpoint: String?,
+    canonicalOrigin: String?,
+    schemePolicy: NetworkEndpointSchemePolicy?,
+    token: String?,
+    sessionEpoch: Int64 = 0
+  ) throws {
+    guard sessionEpoch >= 0 else { throw NetworkContextError.invalidSessionEpoch }
+    _ = shared
+    let descriptor = try validateContextDescriptor(
+      headers: headers,
+      apiEndpoint: apiEndpoint,
+      canonicalOrigin: canonicalOrigin,
+      schemePolicy: schemePolicy,
+      token: token
+    )
+    try transitionRequestContext(
+      headers: headers,
+      apiEndpoint: apiEndpoint,
+      origins: descriptor.origin.map { [$0] } ?? [],
+      schemePolicy: descriptor.policy,
+      token: token,
+      sessionEpoch: sessionEpoch
+    )
+  }
+
+  static func replaceRequestContext(
+    headers: [String: String],
     canonicalOrigin: String?,
     token: String?,
     sessionEpoch: Int64 = 0
   ) throws {
     guard sessionEpoch >= 0 else { throw NetworkContextError.invalidSessionEpoch }
     _ = shared
-    let origin = try validateContext(
-      headers: headers, canonicalOrigin: canonicalOrigin, token: token)
+    let origin = try validateContext(headers: headers, canonicalOrigin: canonicalOrigin, token: token)
     try transitionRequestContext(
       headers: headers,
       origins: origin.map { [$0] } ?? [],
@@ -277,7 +307,9 @@ class URLSessionManager: NSObject {
     let sessionEpoch = withRequestContextLock { requestContextSessionEpoch }
     try transitionRequestContext(
       headers: [:],
+      apiEndpoint: nil,
       origins: [],
+      schemePolicy: nil,
       token: nil,
       sessionEpoch: sessionEpoch,
       confirmed: false
@@ -286,7 +318,9 @@ class URLSessionManager: NSObject {
 
   static func requestContextSnapshot() -> (
     clientPointer: UnsafeMutableRawPointer,
+    apiEndpoint: String?,
     canonicalOrigin: String?,
+    schemePolicy: NetworkEndpointSchemePolicy?,
     sessionEpoch: Int64,
     generation: UInt64,
     confirmed: Bool
@@ -297,7 +331,9 @@ class URLSessionManager: NSObject {
       return withRequestContextLock {
         (
           clientPointer,
+          activeApiEndpoint,
           activeCanonicalOrigins.first?.string,
+          activeSchemePolicy,
           requestContextSessionEpoch,
           requestContextRevision,
           requestContextConfirmed && !isReplacingRequestContext
@@ -583,9 +619,48 @@ class URLSessionManager: NSObject {
     return origin
   }
 
+  private static func validateContextDescriptor(
+    headers: [String: String],
+    apiEndpoint: String?,
+    canonicalOrigin: String?,
+    schemePolicy: NetworkEndpointSchemePolicy?,
+    token: String?
+  ) throws -> (origin: NetworkCanonicalOrigin?, policy: NetworkEndpointSchemePolicy?) {
+    let origin = try validateContext(headers: headers, canonicalOrigin: canonicalOrigin, token: token)
+    guard let origin else {
+      guard apiEndpoint == nil, schemePolicy == nil else { throw NetworkContextError.invalidEndpointDescriptor }
+      return (nil, nil)
+    }
+    guard
+      let apiEndpoint,
+      let schemePolicy,
+      let endpoint = URLComponents(string: apiEndpoint),
+      endpoint.user == nil,
+      endpoint.password == nil,
+      endpoint.query == nil,
+      endpoint.fragment == nil,
+      endpoint.percentEncodedPath.hasSuffix("/api"),
+      NetworkCanonicalOrigin(endpoint: apiEndpoint) == origin,
+      schemePolicyIsValid(origin.scheme, policy: schemePolicy)
+    else { throw NetworkContextError.invalidEndpointDescriptor }
+    return (origin, schemePolicy)
+  }
+
+  private static func schemePolicyIsValid(
+    _ scheme: String,
+    policy: NetworkEndpointSchemePolicy
+  ) -> Bool {
+    switch policy {
+    case .httpsOnly: return scheme == "https"
+    case .explicitlyApprovedHttp, .registeredLocalHttp: return scheme == "http"
+    }
+  }
+
   private static func replaceRequestContextLocked(
     headers: [String: String],
+    apiEndpoint: String? = nil,
     origins: [NetworkCanonicalOrigin],
+    schemePolicy: NetworkEndpointSchemePolicy? = nil,
     token: String?,
     sessionEpoch: Int64,
     confirmed: Bool = true
@@ -594,6 +669,8 @@ class URLSessionManager: NSObject {
     clearManagedAuthCookiesLocked(for: replacedOrigins)
     sensitiveHeaderNames.formUnion(headers.keys.map { $0.lowercased() })
     activeCanonicalOrigins = origins
+    activeApiEndpoint = apiEndpoint
+    activeSchemePolicy = schemePolicy
     activeAuthCookieValues = authCookieValues(token: token)
     serverUrls = origins.map(\.string)
     UserDefaults.group.set(serverUrls, forKey: SERVER_URLS_KEY)
@@ -606,7 +683,9 @@ class URLSessionManager: NSObject {
 
   private static func transitionRequestContext(
     headers: [String: String],
+    apiEndpoint: String? = nil,
     origins: [NetworkCanonicalOrigin],
+    schemePolicy: NetworkEndpointSchemePolicy? = nil,
     token: String?,
     sessionEpoch: Int64,
     confirmed: Bool = true
@@ -617,7 +696,9 @@ class URLSessionManager: NSObject {
         let matchesActiveContext = withRequestContextLock {
           requestContextMatchesLocked(
             headers: headers,
+            apiEndpoint: apiEndpoint,
             origins: origins,
+            schemePolicy: schemePolicy,
             token: token,
             sessionEpoch: sessionEpoch,
             confirmed: confirmed
@@ -638,7 +719,9 @@ class URLSessionManager: NSObject {
           withRequestContextLock {
             replaceRequestContextLocked(
               headers: [:],
+              apiEndpoint: nil,
               origins: [],
+              schemePolicy: nil,
               token: nil,
               sessionEpoch: requestContextSessionEpoch,
               confirmed: false
@@ -650,7 +733,9 @@ class URLSessionManager: NSObject {
         withRequestContextLock {
           replaceRequestContextLocked(
             headers: headers,
+            apiEndpoint: apiEndpoint,
             origins: origins,
+            schemePolicy: schemePolicy,
             token: token,
             sessionEpoch: sessionEpoch,
             confirmed: confirmed
@@ -671,7 +756,9 @@ class URLSessionManager: NSObject {
 
   private static func requestContextMatchesLocked(
     headers: [String: String],
+    apiEndpoint: String? = nil,
     origins: [NetworkCanonicalOrigin],
+    schemePolicy: NetworkEndpointSchemePolicy? = nil,
     token: String?,
     sessionEpoch: Int64,
     confirmed: Bool
@@ -680,6 +767,8 @@ class URLSessionManager: NSObject {
       requestContextSessionEpoch == sessionEpoch,
       !isReplacingRequestContext,
       activeCanonicalOrigins == origins,
+      activeApiEndpoint == apiEndpoint,
+      activeSchemePolicy == schemePolicy,
       activeAuthCookieValues[.accessToken] == token,
       let activeCanonicalHeaders = canonicalHeaders(activeHeaders),
       let requestedCanonicalHeaders = canonicalHeaders(headers)
@@ -1045,6 +1134,7 @@ class URLSessionManager: NSObject {
 enum NetworkContextError: Error {
   case invalidSessionEpoch
   case invalidCanonicalOrigin
+  case invalidEndpointDescriptor
   case tokenWithoutOrigin
   case headersWithoutOrigin
   case multipleOriginsNotAllowed

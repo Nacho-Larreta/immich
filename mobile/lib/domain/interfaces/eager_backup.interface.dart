@@ -10,7 +10,7 @@ abstract interface class EagerBackupOperationsPort {
 
   Future<BackupRunBinding?> captureBinding();
 
-  Future<void> upload(BackupRunBinding binding, EagerBackupCancellation cancellation);
+  Future<EagerBackupUploadOutcome> upload(BackupRunBinding binding, EagerBackupCancellation cancellation);
 }
 
 abstract interface class EagerBackupScheduledRetry {

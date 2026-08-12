@@ -10,6 +10,7 @@ import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/services/app_settings.service.dart';
 import 'package:immich_mobile/services/foreground_upload.service.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:logging/logging.dart';
 
 import '../domain/service.mock.dart';
 import '../fixtures/asset.stub.dart';
@@ -21,29 +22,116 @@ class _MockConnectivityMonitor extends Mock implements ConnectivitySnapshotMonit
 class _MockCandidateGate extends Mock implements BackupExecutionLeasePort {}
 
 void main() {
-  test('automatic backup rejects non-wifi before candidate query', () async {
-    final uploads = MockUploadRepository();
-    final storage = MockStorageRepository();
-    final backups = MockDriftBackupRepository();
-    final connectivity = _MockConnectivityMonitor();
-    final settings = MockAppSettingsService();
-    final media = MockAssetMediaRepository();
-    when(() => connectivity.readCurrentSnapshot()).thenAnswer(
-      (_) async => const BackupTransportSnapshot(
+  final preCandidateCases = <({String name, BackupTransportSnapshot snapshot, ForegroundUploadGateReason reason})>[
+    (
+      name: 'non-wifi',
+      snapshot: const BackupTransportSnapshot(
         available: true,
         capabilities: {BackupNetworkCapability.cellular},
         monitorEpoch: 1,
         revision: 4,
       ),
-    );
-    final service = ForegroundUploadService(uploads, storage, backups, connectivity, settings, media);
+      reason: ForegroundUploadGateReason.noWifi,
+    ),
+    (
+      name: 'unavailable evidence',
+      snapshot: const BackupTransportSnapshot(available: false, capabilities: {}, monitorEpoch: 1, revision: 4),
+      reason: ForegroundUploadGateReason.evidenceUnavailable,
+    ),
+    (
+      name: 'fresh cursor',
+      snapshot: const BackupTransportSnapshot(
+        available: true,
+        capabilities: {BackupNetworkCapability.wifi},
+        monitorEpoch: 1,
+        revision: 5,
+      ),
+      reason: ForegroundUploadGateReason.transportCursorChanged,
+    ),
+  ];
 
-    await service.uploadCandidates('user-a', Completer<void>(), binding: _binding(), isBindingCurrent: (_) => true);
+  for (final testCase in preCandidateCases) {
+    test('${testCase.name} returns one opaque pre-candidate denial', () async {
+      final uploads = MockUploadRepository();
+      final storage = MockStorageRepository();
+      final backups = MockDriftBackupRepository();
+      final connectivity = _MockConnectivityMonitor();
+      final settings = MockAppSettingsService();
+      final media = MockAssetMediaRepository();
+      final logRecords = <LogRecord>[];
+      final subscription = Logger('ForegroundUploadService').onRecord.listen(logRecords.add);
+      addTearDown(subscription.cancel);
+      when(() => connectivity.readCurrentSnapshot()).thenAnswer((_) async => testCase.snapshot);
+      final service = ForegroundUploadService(uploads, storage, backups, connectivity, settings, media);
 
-    verifyNever(() => backups.getCandidates(any()));
-    verifyNoMoreInteractions(storage);
-    verifyNoMoreInteractions(uploads);
-  });
+      final result = await service.uploadCandidates(
+        'user-a',
+        Completer<void>(),
+        binding: _binding(),
+        isBindingCurrent: (_) => true,
+      );
+
+      expect(
+        result.denial,
+        ForegroundUploadGateDenial(stage: ForegroundUploadGateStage.preCandidate, reason: testCase.reason),
+      );
+      expect(logRecords.map((record) => record.message), [
+        'foreground_upload_gate_denied_preCandidate_${testCase.reason.name}',
+      ]);
+      verifyNever(() => backups.getCandidates(any()));
+      verifyNoMoreInteractions(storage);
+      verifyNoMoreInteractions(uploads);
+    });
+  }
+
+  for (final sequential in [false, true]) {
+    test('fresh N plus 1 denies ${sequential ? 'sequential' : 'pooled'} upload before storage', () async {
+      final uploads = MockUploadRepository();
+      final storage = MockStorageRepository();
+      final backups = MockDriftBackupRepository();
+      final connectivity = _MockConnectivityMonitor();
+      final settings = MockAppSettingsService();
+      final media = MockAssetMediaRepository();
+      final logRecords = <LogRecord>[];
+      final subscription = Logger('ForegroundUploadService').onRecord.listen(logRecords.add);
+      addTearDown(subscription.cancel);
+      final snapshots = [
+        const BackupTransportSnapshot(
+          available: true,
+          capabilities: {BackupNetworkCapability.wifi},
+          monitorEpoch: 1,
+          revision: 4,
+        ),
+        const BackupTransportSnapshot(
+          available: true,
+          capabilities: {BackupNetworkCapability.wifi},
+          monitorEpoch: 1,
+          revision: 5,
+        ),
+      ];
+      when(() => backups.getCandidates('user-a')).thenAnswer((_) async => [LocalAssetStub.image1]);
+      when(() => connectivity.readCurrentSnapshot()).thenAnswer((_) async => snapshots.removeAt(0));
+      final service = ForegroundUploadService(uploads, storage, backups, connectivity, settings, media);
+
+      final result = await service.uploadCandidates(
+        'user-a',
+        Completer<void>(),
+        useSequentialUpload: sequential,
+        binding: _binding(),
+        isBindingCurrent: (_) => true,
+      );
+
+      expect(result.denial?.stage, ForegroundUploadGateStage.preStorage);
+      expect(result.denial?.reason, ForegroundUploadGateReason.transportCursorChanged);
+      expect(
+        logRecords.map((record) => record.message).where((message) => message.startsWith('foreground_upload_gate_')),
+        ['foreground_upload_gate_denied_preStorage_transportCursorChanged'],
+      );
+      verifyNever(storage.clearCache);
+      verifyNever(() => storage.getAssetEntityForAsset(LocalAssetStub.image1));
+      verifyNoMoreInteractions(uploads);
+    });
+  }
 
   test('quarantined automatic candidate is rejected before storage or HTTP work', () async {
     final uploads = MockUploadRepository();
@@ -87,7 +175,7 @@ void main() {
       candidateKeyForAsset: (_) => 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     );
 
-    await service.uploadCandidates(
+    final result = await service.uploadCandidates(
       'user-a',
       Completer<void>(),
       binding: binding,
@@ -95,6 +183,7 @@ void main() {
       isBindingCurrent: (_) => true,
     );
 
+    expect(result.completed, isTrue);
     verifyNever(() => storage.getAssetEntityForAsset(LocalAssetStub.image1));
     verifyNoMoreInteractions(uploads);
   });

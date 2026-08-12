@@ -24,6 +24,10 @@ final class ConnectivityHostException implements Exception {
   final String message;
 }
 
+final class ConnectivitySnapshotConflict implements Exception {
+  const ConnectivitySnapshotConflict();
+}
+
 final class PigeonConnectivityHostApi implements ConnectivityHostApi {
   PigeonConnectivityHostApi({ConnectivityApi? api}) : _api = api ?? ConnectivityApi();
 
@@ -82,12 +86,7 @@ final class NativeConnectivityMonitorAdapter
     if (_disposed) {
       return;
     }
-    final mapped = _mapSnapshot(snapshot);
-    if (!mapped.isNewerThan(_latestSnapshot)) return;
-    _latestSnapshot = mapped;
-    _lastAvailability = _mapAvailability(snapshot.availability);
-    _events.add(_mapAvailability(snapshot.availability));
-    _snapshotEvents.add(mapped);
+    _acceptSnapshot(snapshot);
   }
 
   @override
@@ -95,36 +94,11 @@ final class NativeConnectivityMonitorAdapter
     if (_disposed) return const BackupTransportSnapshot(available: false, capabilities: {});
     try {
       await _ensureStarted();
-      var mapped = _mapSnapshot(await _api.readCurrentSnapshot());
-      if (mapped.monitorEpoch > 0 && mapped.revision == 0) {
-        await _awaitSettledCallback(mapped.monitorEpoch);
-        mapped = _mapSnapshot(await _api.readCurrentSnapshot());
-      }
-      if (mapped.isNewerThan(_latestSnapshot)) {
-        _latestSnapshot = mapped;
-        return mapped;
-      }
-      return _latestSnapshot;
+      return _acceptSnapshot(await _api.readCurrentSnapshot());
     } on ConnectivityHostException {
       return const BackupTransportSnapshot(available: false, capabilities: {});
     } on PlatformException {
       return const BackupTransportSnapshot(available: false, capabilities: {});
-    }
-  }
-
-  Future<void> _awaitSettledCallback(int monitorEpoch) async {
-    if (_latestSnapshot.monitorEpoch == monitorEpoch && _latestSnapshot.revision > 0) return;
-    final completer = Completer<void>();
-    late final StreamSubscription<BackupTransportSnapshot> subscription;
-    subscription = _snapshotEvents.stream.listen((snapshot) {
-      if (snapshot.monitorEpoch == monitorEpoch && snapshot.revision > 0 && !completer.isCompleted) {
-        completer.complete();
-      }
-    });
-    try {
-      await completer.future.timeout(const Duration(seconds: 1), onTimeout: () {});
-    } finally {
-      await subscription.cancel();
     }
   }
 
@@ -164,13 +138,7 @@ final class NativeConnectivityMonitorAdapter
       if (_disposed) {
         return const BackupTransportSnapshot(available: false, capabilities: {});
       }
-      _lastAvailability = _mapAvailability(snapshot.availability);
-      final mapped = _mapSnapshot(snapshot);
-      if (mapped.isNewerThan(_latestSnapshot)) {
-        _latestSnapshot = mapped;
-        return mapped;
-      }
-      return _latestSnapshot;
+      return _acceptSnapshot(snapshot);
     } on ConnectivityHostException {
       return const BackupTransportSnapshot(available: false, capabilities: {});
     } on PlatformException {
@@ -179,6 +147,20 @@ final class NativeConnectivityMonitorAdapter
   }
 
   Future<void>? _startFuture;
+
+  BackupTransportSnapshot _acceptSnapshot(ConnectivityTransportSnapshot snapshot) {
+    final candidate = _mapSnapshot(snapshot);
+    if (candidate.hasSameCursorAs(_latestSnapshot)) {
+      if (!candidate.hasSamePayloadAs(_latestSnapshot)) throw const ConnectivitySnapshotConflict();
+      return _latestSnapshot;
+    }
+    if (!candidate.isNewerThan(_latestSnapshot)) return _latestSnapshot;
+    _latestSnapshot = candidate;
+    _lastAvailability = _mapAvailability(snapshot.availability);
+    _events.add(_lastAvailability);
+    _snapshotEvents.add(candidate);
+    return candidate;
+  }
 
   Future<void> _ensureStarted() => _startFuture ??= _start();
 

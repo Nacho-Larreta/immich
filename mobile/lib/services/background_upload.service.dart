@@ -48,9 +48,10 @@ final Provider<BackgroundUploadService> backgroundUploadServiceProvider = Provid
   Future<bool> canContinueOwnedUpload(BackupRunBinding binding) async {
     await connectivity.initialSnapshot;
     final snapshot = await connectivity.readCurrentSnapshot();
-    ref.read(backupTransportCursorProvider.notifier).state = (
-      epoch: snapshot.monitorEpoch,
-      revision: snapshot.revision,
+    publishBackupTransportCursor(
+      current: ref.read(backupTransportCursorProvider),
+      snapshot: snapshot,
+      publish: (cursor) => ref.read(backupTransportCursorProvider.notifier).state = cursor,
     );
     return snapshot.hasWifi &&
         snapshot.monitorEpoch == binding.transportEpoch &&

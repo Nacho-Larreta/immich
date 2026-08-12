@@ -10,6 +10,8 @@ enum EagerBackupBlocker {
   reconciliationBlocked,
   disabled,
   paused,
+  bindingStale,
+  evidenceUnavailable,
 }
 
 enum EagerBackupTrigger {
@@ -32,6 +34,42 @@ enum EagerBackupTrigger {
 
 enum BackupNetworkCapability { wifi, cellular, vpn, unmetered }
 
+enum EagerBackupUploadOutcome { completed, noWifi, transportCursorChanged, bindingStale, evidenceUnavailable }
+
+enum ForegroundUploadGateStage { preCandidate, preStorage, preFile, preReservation, preUpload }
+
+enum ForegroundUploadGateReason { noWifi, transportCursorChanged, bindingStale, evidenceUnavailable }
+
+final class ForegroundUploadGateDenial {
+  const ForegroundUploadGateDenial({required this.stage, required this.reason});
+
+  final ForegroundUploadGateStage stage;
+  final ForegroundUploadGateReason reason;
+
+  @override
+  bool operator ==(Object other) =>
+      other is ForegroundUploadGateDenial && other.stage == stage && other.reason == reason;
+
+  @override
+  int get hashCode => Object.hash(stage, reason);
+}
+
+final class ForegroundUploadResult {
+  const ForegroundUploadResult.completed() : denial = null;
+
+  const ForegroundUploadResult.denied(this.denial);
+
+  final ForegroundUploadGateDenial? denial;
+
+  bool get completed => denial == null;
+
+  @override
+  bool operator ==(Object other) => other is ForegroundUploadResult && other.denial == denial;
+
+  @override
+  int get hashCode => denial.hashCode;
+}
+
 final class BackupTransportSnapshot {
   const BackupTransportSnapshot({
     required this.available,
@@ -49,6 +87,14 @@ final class BackupTransportSnapshot {
 
   bool isNewerThan(BackupTransportSnapshot other) =>
       monitorEpoch > other.monitorEpoch || (monitorEpoch == other.monitorEpoch && revision > other.revision);
+
+  bool hasSameCursorAs(BackupTransportSnapshot other) =>
+      monitorEpoch == other.monitorEpoch && revision == other.revision;
+
+  bool hasSamePayloadAs(BackupTransportSnapshot other) =>
+      available == other.available &&
+      capabilities.length == other.capabilities.length &&
+      capabilities.containsAll(other.capabilities);
 }
 
 final class BackupWorkload {

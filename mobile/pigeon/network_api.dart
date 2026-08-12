@@ -16,16 +16,22 @@ class ClientCertPrompt {
   ClientCertPrompt(this.title, this.message, this.cancel, this.confirm);
 }
 
+enum NetworkEndpointSchemePolicy { httpsOnly, explicitlyApprovedHttp, registeredLocalHttp }
+
 class NetworkRequestContextSnapshot {
   int clientPointer;
+  String? apiEndpoint;
   String? canonicalOrigin;
+  NetworkEndpointSchemePolicy? schemePolicy;
   int sessionEpoch;
   int generation;
   bool confirmed;
 
   NetworkRequestContextSnapshot(
     this.clientPointer,
+    this.apiEndpoint,
     this.canonicalOrigin,
+    this.schemePolicy,
     this.sessionEpoch,
     this.generation,
     this.confirmed,
@@ -62,7 +68,14 @@ abstract class NetworkApi {
 
   void setRequestHeaders(Map<String, String> headers, List<String> serverUrls, String? token);
 
-  void replaceRequestContext(Map<String, String> headers, String? canonicalOrigin, String? token, int sessionEpoch);
+  void replaceRequestContext(
+    Map<String, String> headers,
+    String? apiEndpoint,
+    String? canonicalOrigin,
+    NetworkEndpointSchemePolicy? schemePolicy,
+    String? token,
+    int sessionEpoch,
+  );
 
   void failClosedRequestContext();
 }

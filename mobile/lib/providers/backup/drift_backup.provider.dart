@@ -291,6 +291,7 @@ class DriftBackupNotifier extends StateNotifier<DriftBackupState> {
             onICloudProgress: _handleICloudProgress,
           ),
         )
+        .then<void>((_) {})
         .whenComplete(() {
           if (identical(_cancelToken, runToken)) {
             _cancelToken = null;

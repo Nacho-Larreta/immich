@@ -110,6 +110,58 @@ void main() {
       await harness.adapter.dispose();
     });
 
+    test('fresh read publishes N plus 1 exactly once and duplicate callback publishes nothing', () async {
+      final harness = _Harness(
+        snapshotAvailability: ConnectivityTransportAvailability.unavailable,
+        snapshotMonitorEpoch: 7,
+        snapshotRevision: 1,
+      );
+      await harness.adapter.initialSnapshot;
+      final snapshots = <BackupTransportSnapshot>[];
+      final subscription = harness.adapter.snapshotEvents.listen(snapshots.add);
+      harness.host
+        ..snapshotAvailability = ConnectivityTransportAvailability.available
+        ..snapshotCapabilities = const [ConnectivityNetworkCapability.wifi]
+        ..snapshotRevision = 2;
+
+      final refreshed = await harness.adapter.readCurrentSnapshot();
+      harness.registration.activeApi!.onTransportChanged(
+        ConnectivityTransportSnapshot(
+          availability: ConnectivityTransportAvailability.available,
+          capabilities: const [ConnectivityNetworkCapability.wifi],
+          monitorEpoch: 7,
+          revision: 2,
+        ),
+      );
+
+      expect(refreshed.revision, 2);
+      expect(snapshots, [refreshed]);
+      await subscription.cancel();
+      await harness.adapter.dispose();
+    });
+
+    test('same cursor with different payload fails closed with a typed conflict', () async {
+      final harness = _Harness(
+        snapshotAvailability: ConnectivityTransportAvailability.unavailable,
+        snapshotMonitorEpoch: 7,
+        snapshotRevision: 1,
+      );
+      await harness.adapter.initialSnapshot;
+
+      expect(
+        () => harness.registration.activeApi!.onTransportChanged(
+          ConnectivityTransportSnapshot(
+            availability: ConnectivityTransportAvailability.available,
+            capabilities: const [ConnectivityNetworkCapability.wifi],
+            monitorEpoch: 7,
+            revision: 1,
+          ),
+        ),
+        throwsA(isA<ConnectivitySnapshotConflict>()),
+      );
+      await harness.adapter.dispose();
+    });
+
     test('preserves wifi, cellular, vpn, and unmetered capabilities', () async {
       final harness = _Harness(
         snapshotAvailability: ConnectivityTransportAvailability.available,

@@ -10,6 +10,7 @@ import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/infrastructure/repositories/db.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/network.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/store.repository.dart';
+import 'package:immich_mobile/platform/network_api.g.dart';
 import 'package:immich_mobile/services/api.service.dart';
 import 'package:immich_mobile/utils/migration.dart';
 
@@ -39,8 +40,8 @@ void main() {
   tearDownAll(() => db.close());
 
   Future<void> init() => NetworkRepository.initForTest(
-    replaceNativeContext: (headers, origin, token, sessionEpoch) async {
-      replacements.add(_NativeReplacement(headers, origin, token));
+    replaceNativeContext: (headers, endpoint, origin, policy, token, sessionEpoch) async {
+      replacements.add(_NativeReplacement(headers, endpoint, origin, policy, token));
     },
   );
 
@@ -49,7 +50,7 @@ void main() {
 
     await init();
 
-    expect(replacements.single, const _NativeReplacement({}, null, null));
+    expect(replacements.single, const _NativeReplacement({}, null, null, null, null));
     expect(NetworkRepository.hasConfirmedRequestContext(Uri.parse('https://photos.test')), isFalse);
   });
 
@@ -58,7 +59,7 @@ void main() {
 
     await init();
 
-    expect(replacements.single, const _NativeReplacement({}, null, null));
+    expect(replacements.single, const _NativeReplacement({}, null, null, null, null));
     expect(NetworkRepository.hasConfirmedRequestContext(Uri.parse('http://photos.test')), isFalse);
   });
 
@@ -70,7 +71,7 @@ void main() {
     await init();
 
     expect(Store.tryGet(StoreKey.authenticatedSessionReady), isFalse);
-    expect(replacements.single, const _NativeReplacement({}, null, null));
+    expect(replacements.single, const _NativeReplacement({}, null, null, null, null));
   });
 
   test('database migration does not reopen credentials after restrictive legacy migration', () async {
@@ -81,7 +82,7 @@ void main() {
     await migrateDatabaseIfNeeded();
 
     expect(Store.tryGet(StoreKey.version), targetVersion);
-    expect(replacements, [const _NativeReplacement({}, null, null)]);
+    expect(replacements, [const _NativeReplacement({}, null, null, null, null)]);
     expect(NetworkRepository.hasConfirmedRequestContext(Uri.parse('https://photos.test')), isFalse);
   });
 
@@ -90,10 +91,94 @@ void main() {
 
     await init();
 
-    expect(replacements.single, const _NativeReplacement({'X-Server': 'header'}, 'https://photos.test', 'token'));
+    expect(
+      replacements.single,
+      const _NativeReplacement(
+        {'X-Server': 'header'},
+        'https://photos.test/api',
+        'https://photos.test',
+        NetworkEndpointSchemePolicy.httpsOnly,
+        'token',
+      ),
+    );
     expect(NetworkRepository.hasConfirmedRequestContext(Uri.parse('https://photos.test')), isTrue);
     expect(NetworkRepository.activeEndpointSchemePolicy, EndpointSchemePolicy.httpsOnly);
     expect(NetworkRepository.serverAccessEvidence.apiEndpoint, Uri.parse('https://photos.test/api'));
+  });
+
+  test('explicit HTTP approval crosses the root to native descriptor without scheme inference', () async {
+    await _storeSession(
+      endpoint: 'http://photos.test/api',
+      policy: EndpointSchemePolicy.explicitlyApprovedHttp,
+      ready: true,
+    );
+
+    await init();
+
+    expect(replacements.single.endpoint, 'http://photos.test/api');
+    expect(replacements.single.origin, 'http://photos.test');
+    expect(replacements.single.policy, NetworkEndpointSchemePolicy.explicitlyApprovedHttp);
+  });
+
+  test('attached worker rejects exact native and Store policy mismatch', () async {
+    await _storeSession(
+      endpoint: 'http://photos.test/api',
+      policy: EndpointSchemePolicy.explicitlyApprovedHttp,
+      ready: true,
+    );
+
+    NetworkRepository.attachNativeSnapshotForTest(
+      NetworkRequestContextSnapshot(
+        clientPointer: 1,
+        apiEndpoint: 'http://photos.test/api',
+        canonicalOrigin: 'http://photos.test',
+        schemePolicy: NetworkEndpointSchemePolicy.registeredLocalHttp,
+        sessionEpoch: 4,
+        generation: 8,
+        confirmed: true,
+      ),
+    );
+
+    expect(NetworkRepository.serverAccessEvidence.confirmed, isFalse);
+    expect(NetworkRepository.serverAccessEvidence.fenced, isTrue);
+  });
+
+  final invalidAttachedStoreCases = <({String name, Future<void> Function() arrange})>[
+    (name: 'missing endpoint', arrange: () => Store.delete(StoreKey.serverEndpoint)),
+    (name: 'invalid endpoint', arrange: () => Store.put(StoreKey.serverEndpoint, 'not-an-http-endpoint')),
+    (name: 'endpoint mismatch', arrange: () => Store.put(StoreKey.serverEndpoint, 'http://other.test/api')),
+    (name: 'missing policy', arrange: () => Store.delete(StoreKey.serverEndpointSchemePolicy)),
+    (name: 'invalid policy', arrange: () => Store.put(StoreKey.serverEndpointSchemePolicy, 'approved-http')),
+  ];
+
+  for (final testCase in invalidAttachedStoreCases) {
+    test('attached worker rejects ${testCase.name} corroboration', () async {
+      await _storeSession(
+        endpoint: 'http://photos.test/api',
+        policy: EndpointSchemePolicy.explicitlyApprovedHttp,
+        ready: true,
+      );
+      await testCase.arrange();
+
+      NetworkRepository.attachNativeSnapshotForTest(_explicitHttpNativeSnapshot());
+
+      expect(NetworkRepository.serverAccessEvidence.confirmed, isFalse);
+      expect(NetworkRepository.serverAccessEvidence.fenced, isTrue);
+    });
+  }
+
+  test('attached worker accepts exact persisted explicit HTTP corroboration', () async {
+    await _storeSession(
+      endpoint: 'http://photos.test/api',
+      policy: EndpointSchemePolicy.explicitlyApprovedHttp,
+      ready: true,
+    );
+
+    NetworkRepository.attachNativeSnapshotForTest(_explicitHttpNativeSnapshot());
+
+    expect(NetworkRepository.serverAccessEvidence.confirmed, isTrue);
+    expect(NetworkRepository.serverAccessEvidence.fenced, isFalse);
+    expect(NetworkRepository.activeEndpointSchemePolicy, EndpointSchemePolicy.explicitlyApprovedHttp);
   });
 
   test('runtime proof is immutable when Store changes and is replaced only by a runtime transition', () async {
@@ -121,7 +206,8 @@ void main() {
 
     await expectLater(
       NetworkRepository.initForTest(
-        replaceNativeContext: (headers, origin, token, sessionEpoch) async => events.add('replace:$origin'),
+        replaceNativeContext: (headers, endpoint, origin, policy, token, sessionEpoch) async =>
+            events.add('replace:$origin'),
         bindNativeClient: () async {
           events.add('bind');
           throw StateError('snapshot failed');
@@ -145,7 +231,7 @@ void main() {
           events.add('drain');
           throw timeout;
         },
-        replaceNativeContext: (headers, origin, token, sessionEpoch) async => events.add('replace'),
+        replaceNativeContext: (headers, endpoint, origin, policy, token, sessionEpoch) async => events.add('replace'),
         bindNativeClient: () async => events.add('bind'),
         failClosedNativeContext: () async => events.add('failClosed'),
       ),
@@ -167,7 +253,7 @@ void main() {
             events.add('drain');
             throw cancellationError;
           },
-          replaceNativeContext: (headers, origin, token, sessionEpoch) async => events.add('replace'),
+          replaceNativeContext: (headers, endpoint, origin, policy, token, sessionEpoch) async => events.add('replace'),
           bindNativeClient: () async => events.add('bind'),
           failClosedNativeContext: () async => events.add('failClosed'),
         ),
@@ -189,7 +275,7 @@ void main() {
           events.add('drain');
           throw timeout;
         },
-        replaceNativeContext: (headers, origin, token, sessionEpoch) async => events.add('replace'),
+        replaceNativeContext: (headers, endpoint, origin, policy, token, sessionEpoch) async => events.add('replace'),
         failClosedNativeContext: () async => events.add('failClosed'),
       ),
       throwsA(same(timeout)),
@@ -208,7 +294,7 @@ void main() {
 
     await init();
 
-    expect(replacements.single, const _NativeReplacement({}, null, null));
+    expect(replacements.single, const _NativeReplacement({}, null, null, null, null));
     expect(NetworkRepository.activeEndpointSchemePolicy, isNull);
   });
 
@@ -264,6 +350,16 @@ void main() {
   });
 }
 
+NetworkRequestContextSnapshot _explicitHttpNativeSnapshot() => NetworkRequestContextSnapshot(
+  clientPointer: 1,
+  apiEndpoint: 'http://photos.test/api',
+  canonicalOrigin: 'http://photos.test',
+  schemePolicy: NetworkEndpointSchemePolicy.explicitlyApprovedHttp,
+  sessionEpoch: 4,
+  generation: 8,
+  confirmed: true,
+);
+
 Future<void> _storeSession({
   required String endpoint,
   required EndpointSchemePolicy policy,
@@ -277,22 +373,26 @@ Future<void> _storeSession({
 }
 
 final class _NativeReplacement {
-  const _NativeReplacement(this.headers, this.origin, this.token);
+  const _NativeReplacement(this.headers, this.endpoint, this.origin, this.policy, this.token);
 
   final Map<String, String> headers;
+  final String? endpoint;
   final String? origin;
+  final NetworkEndpointSchemePolicy? policy;
   final String? token;
 
   @override
   bool operator ==(Object other) {
     return other is _NativeReplacement &&
         _mapsEqual(other.headers, headers) &&
+        other.endpoint == endpoint &&
         other.origin == origin &&
+        other.policy == policy &&
         other.token == token;
   }
 
   @override
-  int get hashCode => Object.hash(Object.hashAllUnordered(headers.entries), origin, token);
+  int get hashCode => Object.hash(Object.hashAllUnordered(headers.entries), endpoint, origin, policy, token);
 }
 
 bool _mapsEqual(Map<String, String> first, Map<String, String> second) {

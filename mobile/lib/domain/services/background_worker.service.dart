@@ -242,9 +242,10 @@ class BackgroundWorkerBgService extends BackgroundWorkerFlutterApi {
       final connectivity = _ref!.read(nativeConnectivityMonitorProvider) as ConnectivitySnapshotMonitorPort;
       await connectivity.initialSnapshot;
       final transport = await connectivity.readCurrentSnapshot();
-      _ref!.read(backupTransportCursorProvider.notifier).state = (
-        epoch: transport.monitorEpoch,
-        revision: transport.revision,
+      publishBackupTransportCursor(
+        current: _ref!.read(backupTransportCursorProvider),
+        snapshot: transport,
+        publish: (cursor) => _ref!.read(backupTransportCursorProvider.notifier).state = cursor,
       );
       if (!transport.hasWifi) {
         _logger.info('background_backup_transport_unavailable');
@@ -267,7 +268,7 @@ class BackgroundWorkerBgService extends BackgroundWorkerFlutterApi {
         return _ref?.read(driftBackupProvider.notifier).startBackupWithURLSession(currentUser.id);
       }
 
-      return _ref
+      await _ref
           ?.read(foregroundUploadServiceProvider)
           .uploadCandidates(
             currentUser.id,

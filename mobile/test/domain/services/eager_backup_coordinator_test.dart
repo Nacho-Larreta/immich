@@ -69,6 +69,7 @@ void main() {
     coordinator.signal(EagerBackupTrigger.startup);
     await operations.done.future;
     await pumpEventQueue();
+    await pumpEventQueue();
 
     expect(operations.calls, ['read', 'syncLocal', 'read', 'hash', 'read', 'binding', 'upload', 'read']);
     expect(coordinator.state.phase, EagerBackupPhase.idle);
@@ -95,6 +96,27 @@ void main() {
 
     expect(operations.calls.where((call) => call == 'upload'), hasLength(1));
     expect(operations.calls.where((call) => call == 'read'), hasLength(3));
+    await coordinator.dispose();
+  });
+
+  test('transport cursor change immediately re-evaluates with the next binding', () async {
+    final operations = _Operations(
+      [
+        const BackupWorkload(total: 1, remainder: 1, processing: 0),
+        const BackupWorkload(total: 1, remainder: 1, processing: 0),
+        const BackupWorkload(total: 1, remainder: 0, processing: 0),
+      ],
+      uploadOutcomes: [EagerBackupUploadOutcome.transportCursorChanged, EagerBackupUploadOutcome.completed],
+    );
+    final coordinator = _readyCoordinator(operations);
+
+    coordinator.signal(EagerBackupTrigger.startup);
+    await operations.done.future;
+    await pumpEventQueue();
+
+    expect(operations.calls.where((call) => call == 'binding'), hasLength(2));
+    expect(operations.calls.where((call) => call == 'upload'), hasLength(2));
+    expect(coordinator.state.phase, EagerBackupPhase.idle);
     await coordinator.dispose();
   });
 
@@ -302,12 +324,18 @@ EagerBackupCoordinator _readyCoordinator(_Operations operations, {EagerBackupRet
 }
 
 final class _Operations implements EagerBackupOperationsPort {
-  _Operations(this.workloads, {this.pendingUpload, List<Object>? uploadFailures})
-    : uploadFailures = List.of(uploadFailures ?? const []);
+  _Operations(
+    this.workloads, {
+    this.pendingUpload,
+    List<Object>? uploadFailures,
+    List<EagerBackupUploadOutcome>? uploadOutcomes,
+  }) : uploadFailures = List.of(uploadFailures ?? const []),
+       uploadOutcomes = List.of(uploadOutcomes ?? const []);
 
   final List<BackupWorkload> workloads;
   final Completer<void>? pendingUpload;
   final List<Object> uploadFailures;
+  final List<EagerBackupUploadOutcome> uploadOutcomes;
   final List<String> calls = [];
   final Completer<void> uploadStarted = Completer<void>();
   final Completer<void> done = Completer<void>();
@@ -351,12 +379,13 @@ final class _Operations implements EagerBackupOperationsPort {
   }
 
   @override
-  Future<void> upload(BackupRunBinding binding, EagerBackupCancellation cancellation) async {
+  Future<EagerBackupUploadOutcome> upload(BackupRunBinding binding, EagerBackupCancellation cancellation) async {
     calls.add('upload');
     this.cancellation = cancellation;
     if (!uploadStarted.isCompleted) uploadStarted.complete();
     if (uploadFailures.isNotEmpty) throw uploadFailures.removeAt(0);
     await pendingUpload?.future;
+    return uploadOutcomes.isEmpty ? EagerBackupUploadOutcome.completed : uploadOutcomes.removeAt(0);
   }
 }
 
