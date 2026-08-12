@@ -309,7 +309,18 @@ public class BDPlugin: NSObject, FlutterPlugin, UNUserNotificationCenterDelegate
         if isParallelDownloadTask(task: task) {
             baseRequest.httpMethod = "HEAD"
         }
-        let preparedRequest = BackgroundDownloaderRequestContextBridge.prepare(baseRequest)
+        let revisionConstraint = nativeRevisionConstraint(from: task.metaData)
+        let requiresBoundRevision = task.group == "backup_group" ||
+            task.group == "backup_live_photo_group" ||
+            revisionConstraint.isOwned
+        if requiresBoundRevision && revisionConstraint.expected == nil {
+            os_log("Bound request metadata is invalid", log: log, type: .error)
+            return false
+        }
+        let preparedRequest = BackgroundDownloaderRequestContextBridge.prepare(
+            baseRequest,
+            expectedRevision: revisionConstraint.expected
+        )
         if BackgroundDownloaderRequestContextBridge.isInstalled && preparedRequest == nil {
             os_log("Request context is unavailable for taskId %@", log: log, type: .info, task.taskId)
             return false
@@ -344,6 +355,23 @@ public class BDPlugin: NSObject, FlutterPlugin, UNUserNotificationCenterDelegate
                 requestContext: requestContext
             )
         }
+    }
+
+    private func nativeRevisionConstraint(
+        from metadata: String
+    ) -> (isOwned: Bool, expected: UInt64?) {
+        guard
+            let data = metadata.data(using: .utf8),
+            let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return (false, nil) }
+        let isOwned = value["schemaVersion"] != nil ||
+            value["runToken"] != nil ||
+            value["bindingDigest"] != nil
+        guard
+            let revision = value["expectedNativeRevision"] as? NSNumber,
+            revision.int64Value >= 0
+        else { return (isOwned, nil) }
+        return (isOwned, revision.uint64Value)
     }
     
     
@@ -429,7 +457,7 @@ public class BDPlugin: NSObject, FlutterPlugin, UNUserNotificationCenterDelegate
                 fileUrl = maybeFileUrl!
             }
             if !FileManager.default.fileExists(atPath: fileUrl.path) {
-                os_log("Could not find file %@ for taskId %@", log: log, type: .info, fileUrl.path, task.taskId)
+                os_log("upload_source_file_unavailable", log: log, type: .info)
                 return false
             }
             let resolvedMimeType = task.mimeType?.isEmpty == true

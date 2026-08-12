@@ -2,16 +2,15 @@ import 'package:auto_route/auto_route.dart';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
-import 'package:immich_mobile/domain/utils/background_sync.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
 import 'package:immich_mobile/providers/app_settings.provider.dart';
-import 'package:immich_mobile/providers/background_sync.provider.dart';
 import 'package:immich_mobile/providers/backup/drift_backup.provider.dart';
+import 'package:immich_mobile/providers/backup/eager_backup_signal.provider.dart';
+import 'package:immich_mobile/domain/models/eager_backup.model.dart';
 import 'package:immich_mobile/providers/user.provider.dart';
 import 'package:immich_mobile/services/app_settings.service.dart';
 import 'package:immich_mobile/widgets/settings/backup_settings/drift_backup_settings.dart';
-import 'package:logging/logging.dart';
 
 @RoutePage()
 class DriftBackupOptionsPage extends ConsumerWidget {
@@ -56,18 +55,7 @@ class DriftBackupOptionsPage extends ConsumerWidget {
             ),
           );
 
-          final backupNotifier = ref.read(driftBackupProvider.notifier);
-          final backgroundSync = ref.read(backgroundSyncProvider);
-          backupNotifier.stopForegroundBackup();
-          consumeBackgroundSyncTap(
-            backgroundSync.syncRemote().then((success) {
-              if (success) {
-                return backupNotifier.startForegroundBackup(currentUser.id);
-              } else {
-                Logger('DriftBackupOptionsPage').warning('Background sync failed, not starting backup');
-              }
-            }),
-          );
+          ref.read(eagerBackupSignalProvider).signal(EagerBackupTrigger.connectivityChanged);
         }
       },
       child: Scaffold(

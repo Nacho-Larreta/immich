@@ -401,6 +401,29 @@ class NetworkRepository {
   static EndpointSchemePolicy? get activeEndpointSchemePolicy => _activeSchemePolicy;
 
   static NativeServerAccessEvidence get serverAccessEvidence => _serverAccessEvidence;
+  static bool get isAttachedWorker => _contextRole == NetworkContextRole.attachedWorker;
+
+  static Future<bool> fenceAndDrainCurrentTransport({
+    required Uri canonicalOrigin,
+    required int sessionEpoch,
+    required int nativeGeneration,
+  }) async {
+    _ensureRootWriter();
+    final expectedOrigin = validateCanonicalOrigin(canonicalOrigin);
+    final before = _serverAccessEvidence;
+    if (before.canonicalOrigin != expectedOrigin ||
+        before.sessionEpoch != sessionEpoch ||
+        before.generation != nativeGeneration) {
+      return false;
+    }
+    _blockForContextTransition();
+    await _fenceAndDrainTransport();
+    final after = _serverAccessEvidence;
+    return after.canonicalOrigin == expectedOrigin &&
+        after.sessionEpoch == sessionEpoch &&
+        after.generation == nativeGeneration &&
+        after.fenced;
+  }
 
   static Future<void> purgeRequestContext() {
     _ensureRootWriter();

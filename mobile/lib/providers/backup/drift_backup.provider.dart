@@ -4,14 +4,21 @@ import 'package:collection/collection.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:logging/logging.dart';
 
-import 'package:immich_mobile/constants/constants.dart';
 import 'package:immich_mobile/domain/models/album/local_album.model.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/domain/models/backup_sync.model.dart';
+import 'package:immich_mobile/domain/interfaces/backup_run_binding.interface.dart';
+import 'package:immich_mobile/domain/services/backup_execution_arbiter.dart';
+import 'package:immich_mobile/providers/backup/backup_execution.provider.dart';
+import 'package:immich_mobile/providers/backup/backup_sync_error.provider.dart';
+import 'package:immich_mobile/providers/backup/backup_run_binding.provider.dart';
 import 'package:immich_mobile/utils/upload_speed_calculator.dart';
 import 'package:immich_mobile/providers/infrastructure/asset.provider.dart';
 import 'package:immich_mobile/providers/user.provider.dart';
 import 'package:immich_mobile/services/foreground_upload.service.dart';
 import 'package:immich_mobile/services/background_upload.service.dart';
+
+export 'package:immich_mobile/domain/models/backup_sync.model.dart' show BackupError;
 
 class EnqueueStatus {
   final int enqueueCount;
@@ -68,7 +75,7 @@ class DriftUploadStatus {
 
   @override
   String toString() {
-    return 'DriftUploadStatus(taskId: $taskId, filename: $filename, progress: $progress, fileSize: $fileSize, networkSpeedAsString: $networkSpeedAsString, isFailed: $isFailed, error: $error)';
+    return 'DriftUploadStatus(progress: $progress, fileSize: $fileSize, isFailed: $isFailed)';
   }
 
   @override
@@ -95,8 +102,6 @@ class DriftUploadStatus {
         error.hashCode;
   }
 }
-
-enum BackupError { none, syncFailed }
 
 class DriftBackupState {
   final int totalCount;
@@ -148,7 +153,7 @@ class DriftBackupState {
 
   @override
   String toString() {
-    return 'DriftBackupState(totalCount: $totalCount, backupCount: $backupCount, remainderCount: $remainderCount, processingCount: $processingCount, isSyncing: $isSyncing, error: $error, uploadItems: $uploadItems, iCloudDownloadProgress: $iCloudDownloadProgress)';
+    return 'DriftBackupState(totalCount: $totalCount, backupCount: $backupCount, remainderCount: $remainderCount, processingCount: $processingCount, isSyncing: $isSyncing, error: $error, uploadItemCount: ${uploadItems.length})';
   }
 
   @override
@@ -179,17 +184,27 @@ class DriftBackupState {
   }
 }
 
-final driftBackupProvider = StateNotifierProvider<DriftBackupNotifier, DriftBackupState>((ref) {
-  return DriftBackupNotifier(
-    ref.watch(foregroundUploadServiceProvider),
-    ref.watch(backgroundUploadServiceProvider),
-    UploadSpeedManager(),
-  );
-});
+final StateNotifierProvider<DriftBackupNotifier, DriftBackupState> driftBackupProvider =
+    StateNotifierProvider<DriftBackupNotifier, DriftBackupState>((ref) {
+      final notifier = DriftBackupNotifier(
+        ref.watch(foregroundUploadServiceProvider),
+        ref.watch(backgroundUploadServiceProvider),
+        UploadSpeedManager(),
+        ref.watch(backupExecutionArbiterProvider),
+        ref.watch(backupRunBindingSourceProvider),
+      );
+      ref.listen(backupSyncErrorProvider, (_, next) => notifier.updateError(next));
+      return notifier;
+    });
 
 class DriftBackupNotifier extends StateNotifier<DriftBackupState> {
-  DriftBackupNotifier(this._foregroundUploadService, this._backgroundUploadService, this._uploadSpeedManager)
-    : super(
+  DriftBackupNotifier(
+    this._foregroundUploadService,
+    this._backgroundUploadService,
+    this._uploadSpeedManager,
+    this._arbiter,
+    this._bindings,
+  ) : super(
         const DriftBackupState(
           totalCount: 0,
           backupCount: 0,
@@ -204,6 +219,8 @@ class DriftBackupNotifier extends StateNotifier<DriftBackupState> {
   final ForegroundUploadService _foregroundUploadService;
   final BackgroundUploadService _backgroundUploadService;
   final UploadSpeedManager _uploadSpeedManager;
+  final BackupExecutionArbiter _arbiter;
+  final BackupRunBindingSourcePort _bindings;
   Completer<void>? _cancelToken;
 
   final _logger = Logger("DriftBackupNotifier");
@@ -260,22 +277,30 @@ class DriftBackupNotifier extends StateNotifier<DriftBackupState> {
 
     state = state.copyWith(error: BackupError.none);
 
-    _cancelToken = Completer<void>();
+    final runToken = Completer<void>();
+    _cancelToken = runToken;
 
-    return _foregroundUploadService.uploadCandidates(
-      userId,
-      _cancelToken!,
-      callbacks: UploadCallbacks(
-        onProgress: _handleForegroundBackupProgress,
-        onSuccess: _handleForegroundBackupSuccess,
-        onError: _handleForegroundBackupError,
-        onICloudProgress: _handleICloudProgress,
-      ),
-    );
+    return _foregroundUploadService
+        .uploadCandidates(
+          userId,
+          runToken,
+          callbacks: UploadCallbacks(
+            onProgress: _handleForegroundBackupProgress,
+            onSuccess: _handleForegroundBackupSuccess,
+            onError: _handleForegroundBackupError,
+            onICloudProgress: _handleICloudProgress,
+          ),
+        )
+        .whenComplete(() {
+          if (identical(_cancelToken, runToken)) {
+            _cancelToken = null;
+          }
+        });
   }
 
   void stopForegroundBackup() {
-    _cancelToken?.complete();
+    final token = _cancelToken;
+    if (token != null && !token.isCompleted) token.complete();
     _cancelToken = null;
     _uploadSpeedManager.clear();
     state = state.copyWith(uploadItems: {}, iCloudDownloadProgress: {});
@@ -339,7 +364,7 @@ class DriftBackupNotifier extends StateNotifier<DriftBackupState> {
   }
 
   void _handleForegroundBackupError(String localAssetId, String errorMessage) {
-    _logger.severe("Upload failed for $localAssetId: $errorMessage");
+    _logger.severe('foreground_upload_rejected');
 
     final currentItem = state.uploadItems[localAssetId];
     if (currentItem != null) {
@@ -374,22 +399,38 @@ class DriftBackupNotifier extends StateNotifier<DriftBackupState> {
       _logger.warning("Skip handleBackupResume (pre-call): notifier disposed");
       return;
     }
-    _logger.info("Start background backup sequence");
-    state = state.copyWith(error: BackupError.none);
-    final tasks = await _backgroundUploadService.getActiveTasks(kBackupGroup);
-    if (!mounted) {
-      _logger.warning("Skip handleBackupResume (post-call): notifier disposed");
+    final binding = _bindings.capture();
+    if (binding == null || binding.userId != userId) {
+      _logger.info('background_backup_binding_unavailable');
       return;
     }
-    _logger.info("Found ${tasks.length} pending tasks");
-
-    if (tasks.isEmpty) {
-      _logger.info("No pending tasks, starting new upload");
-      return _backgroundUploadService.uploadBackupCandidates(userId);
+    _logger.info("Start background backup sequence");
+    state = state.copyWith(error: BackupError.none);
+    final admission = await _arbiter.acquireBackground(bindingDigest: binding.digest);
+    final lease = admission.lease;
+    var ownershipTransferred = false;
+    try {
+      if (!mounted) {
+        _logger.warning("Skip handleBackupResume (post-call): notifier disposed");
+        return;
+      }
+      if (admission.disposition == BackupAdmissionDisposition.adoptedBackground) {
+        ownershipTransferred = true;
+        return _backgroundUploadService.resume();
+      }
+      if (!admission.admitted || lease == null || !_bindings.isCurrent(binding)) return;
+      ownershipTransferred = true;
+      return _backgroundUploadService.uploadBackupCandidates(
+        userId,
+        binding: binding,
+        lease: lease,
+        isBindingCurrent: () => _bindings.isCurrent(binding),
+      );
+    } finally {
+      if (!ownershipTransferred && admission.admitted && lease != null) {
+        await _arbiter.releaseCurrentWhenQuiescent(runToken: lease.runToken, bindingDigest: lease.bindingDigest);
+      }
     }
-
-    _logger.info("Resuming upload ${tasks.length} assets");
-    return _backgroundUploadService.resume();
   }
 }
 

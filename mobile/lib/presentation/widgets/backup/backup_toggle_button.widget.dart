@@ -4,13 +4,13 @@ import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
 import 'package:immich_mobile/providers/app_settings.provider.dart';
 import 'package:immich_mobile/providers/backup/drift_backup.provider.dart';
+import 'package:immich_mobile/providers/backup/eager_backup_signal.provider.dart';
+import 'package:immich_mobile/providers/backup/eager_backup.provider.dart';
+import 'package:immich_mobile/domain/models/eager_backup.model.dart';
 import 'package:immich_mobile/services/app_settings.service.dart';
 
 class BackupToggleButton extends ConsumerStatefulWidget {
-  final VoidCallback onStart;
-  final VoidCallback onStop;
-
-  const BackupToggleButton({super.key, required this.onStart, required this.onStop});
+  const BackupToggleButton({super.key});
 
   @override
   ConsumerState<BackupToggleButton> createState() => BackupToggleButtonState();
@@ -42,16 +42,15 @@ class BackupToggleButtonState extends ConsumerState<BackupToggleButton> with Sin
 
   Future<void> _onToggle(bool value) async {
     await ref.read(appSettingsServiceProvider).setSetting(AppSettingsEnum.enableBackup, value);
+    if (!value) {
+      if (!await ref.read(backupDisableBarrierProvider).disable()) throw StateError('background_backup_drain_failed');
+    }
 
     setState(() {
       _isEnabled = value;
     });
 
-    if (value) {
-      widget.onStart.call();
-    } else {
-      widget.onStop.call();
-    }
+    ref.read(eagerBackupSignalProvider).signal(EagerBackupTrigger.settingChanged);
   }
 
   @override

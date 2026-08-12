@@ -37,6 +37,14 @@ class DriftBackupRepository extends DriftDatabaseRepository {
   ///              (includes processing)
   /// - processing: number of those assets that are still preparing/have a null checksum
   Future<({int total, int remainder, int processing})> getAllCounts(String userId) async {
+    return _allCountsQuery(userId).getSingle().then(_mapCounts);
+  }
+
+  Stream<({int total, int remainder, int processing})> watchAllCounts(String userId) {
+    return _allCountsQuery(userId).watchSingle().map(_mapCounts).distinct();
+  }
+
+  Selectable<QueryRow> _allCountsQuery(String userId) {
     const sql = '''
         SELECT
         COUNT(*) AS total_count,
@@ -61,18 +69,18 @@ class DriftBackupRepository extends DriftDatabaseRepository {
         );
       ''';
 
-    final row = await _db
-        .customSelect(
-          sql,
-          variables: [
-            Variable.withString(userId),
-            Variable.withInt(BackupSelection.selected.index),
-            Variable.withInt(BackupSelection.excluded.index),
-          ],
-          readsFrom: {_db.localAlbumAssetEntity, _db.localAlbumEntity, _db.localAssetEntity, _db.remoteAssetEntity},
-        )
-        .getSingle();
+    return _db.customSelect(
+      sql,
+      variables: [
+        Variable.withString(userId),
+        Variable.withInt(BackupSelection.selected.index),
+        Variable.withInt(BackupSelection.excluded.index),
+      ],
+      readsFrom: {_db.localAlbumAssetEntity, _db.localAlbumEntity, _db.localAssetEntity, _db.remoteAssetEntity},
+    );
+  }
 
+  ({int total, int remainder, int processing}) _mapCounts(QueryRow row) {
     final data = row.data;
     return (
       total: (data['total_count'] as int?) ?? 0,

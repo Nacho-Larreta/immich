@@ -5,12 +5,16 @@ import 'package:immich_mobile/domain/services/log.service.dart';
 import 'package:immich_mobile/extensions/platform_extensions.dart';
 import 'package:immich_mobile/providers/background_sync.provider.dart';
 import 'package:immich_mobile/providers/backup/drift_backup.provider.dart';
+import 'package:immich_mobile/providers/backup/eager_backup.provider.dart';
 import 'package:immich_mobile/providers/gallery_permission.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
 import 'package:immich_mobile/providers/notification_permission.provider.dart';
 import 'package:immich_mobile/providers/server_reachability.provider.dart';
 import 'package:immich_mobile/providers/session_work.provider.dart';
 import 'package:immich_mobile/providers/websocket.provider.dart';
+import 'package:immich_mobile/providers/app_settings.provider.dart';
+import 'package:immich_mobile/providers/user.provider.dart';
+import 'package:immich_mobile/services/app_settings.service.dart';
 import 'package:logging/logging.dart';
 
 enum AppLifeCycleEnum { active, inactive, paused, resumed, detached, hidden }
@@ -126,6 +130,7 @@ class AppLifeCycleNotifier extends StateNotifier<AppLifeCycleEnum> {
 
 final appStateProvider = StateNotifierProvider<AppLifeCycleNotifier, AppLifeCycleEnum>((ref) {
   final coordinator = ref.read(serverReachabilityCoordinatorProvider);
+  final eagerBackup = ref.read(eagerBackupCoordinatorProvider);
   final backgroundSync = ref.read(backgroundSyncProvider);
   return AppLifeCycleNotifier(
     ref,
@@ -136,6 +141,15 @@ final appStateProvider = StateNotifierProvider<AppLifeCycleNotifier, AppLifeCycl
       cancelLocalSync: ref.read(sessionWorkProvider).cancelLocalSync,
       cancelBackgroundSync: backgroundSync.cancel,
       stopBackup: ref.read(driftBackupProvider.notifier).stopForegroundBackup,
+      pauseEagerBackup: () async {
+        if (!await eagerBackup.suspendForeground()) return;
+        final enabled = ref.read(appSettingsServiceProvider).getSetting(AppSettingsEnum.enableBackup);
+        final user = ref.read(currentUserProvider);
+        if (enabled && user != null) {
+          await ref.read(driftBackupProvider.notifier).startBackupWithURLSession(user.id);
+        }
+      },
+      resumeEagerBackup: () => eagerBackup.setForeground(true),
       disconnectWebsocket: ref.read(websocketProvider.notifier).disconnect,
       lockBackgroundWorker: ref.read(backgroundWorkerLockServiceProvider).lock,
       unlockBackgroundWorker: ref.read(backgroundWorkerLockServiceProvider).unlock,
@@ -151,6 +165,8 @@ final class LifecycleSessionWork {
     required Future<void> Function() cancelLocalSync,
     required Future<void> Function() cancelBackgroundSync,
     required void Function() stopBackup,
+    required Future<void> Function() pauseEagerBackup,
+    required void Function() resumeEagerBackup,
     required void Function() disconnectWebsocket,
     required Future<void> Function() lockBackgroundWorker,
     required Future<void> Function() unlockBackgroundWorker,
@@ -160,6 +176,8 @@ final class LifecycleSessionWork {
        _cancelLocalSync = cancelLocalSync,
        _cancelBackgroundSync = cancelBackgroundSync,
        _stopBackup = stopBackup,
+       _pauseEagerBackup = pauseEagerBackup,
+       _resumeEagerBackup = resumeEagerBackup,
        _disconnectWebsocket = disconnectWebsocket,
        _lockBackgroundWorker = lockBackgroundWorker,
        _unlockBackgroundWorker = unlockBackgroundWorker;
@@ -170,6 +188,8 @@ final class LifecycleSessionWork {
   final Future<void> Function() _cancelLocalSync;
   final Future<void> Function() _cancelBackgroundSync;
   final void Function() _stopBackup;
+  final Future<void> Function() _pauseEagerBackup;
+  final void Function() _resumeEagerBackup;
   final void Function() _disconnectWebsocket;
   final Future<void> Function() _lockBackgroundWorker;
   final Future<void> Function() _unlockBackgroundWorker;
@@ -187,6 +207,7 @@ final class LifecycleSessionWork {
       }
     }
 
+    await attempt(_pauseEagerBackup);
     await Future.wait([
       attempt(_pauseReachability),
       attempt(_cancelLocalSync),
@@ -203,6 +224,7 @@ final class LifecycleSessionWork {
   Future<void> resume({required bool fullLocalSync}) async {
     await _lockBackgroundWorker();
     _resumeReachability();
+    _resumeEagerBackup();
     _triggerLocalSync(full: fullLocalSync);
   }
 }

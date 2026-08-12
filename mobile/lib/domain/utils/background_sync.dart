@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:immich_mobile/domain/interfaces/background_task_runner.interface.dart';
 import 'package:immich_mobile/domain/interfaces/cancellable_request.interface.dart';
 import 'package:immich_mobile/domain/models/background_task.model.dart';
+import 'package:immich_mobile/domain/models/backup_run_binding.model.dart';
 
 typedef SyncCallback = void Function();
 typedef SyncCallbackWithResult<T> = void Function(T result);
@@ -189,6 +190,22 @@ class BackgroundSyncManager {
   }
 
   Future<bool> syncRemote() {
+    return _syncRemoteWithContext(_remoteTaskContext());
+  }
+
+  Future<bool> syncRemoteForBinding(BackupRunBinding binding) {
+    return _syncRemoteWithContext(
+      BackgroundTaskContextBinding(
+        sessionEpoch: binding.sessionEpoch,
+        nativeContextGeneration: binding.nativeGeneration,
+        apiEndpoint: binding.apiEndpoint,
+        canonicalOrigin: binding.canonicalOrigin,
+        schemePolicy: binding.schemePolicy,
+      ),
+    );
+  }
+
+  Future<bool> _syncRemoteWithContext(BackgroundTaskContextBinding context) {
     if (_syncTask != null) {
       return _syncTask!.completion;
     }
@@ -198,7 +215,7 @@ class BackgroundSyncManager {
       onRemoteSyncStart?.call();
       late final _SyncOperation<bool> operation;
       final task = _taskRunner.start(
-        task: _bindToCurrentServer(const BackgroundTaskDescriptor.remoteSync()),
+        task: const BackgroundTaskDescriptor.remoteSync().boundTo(context),
         debugLabel: 'remote-sync',
       );
       operation = _SyncOperation(operationId, task);

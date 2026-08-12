@@ -5,8 +5,6 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/models/album/local_album.model.dart';
-import 'package:immich_mobile/domain/models/store.model.dart';
-import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/extensions/theme_extensions.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
@@ -19,7 +17,6 @@ import 'package:immich_mobile/providers/sync_status.provider.dart';
 import 'package:immich_mobile/providers/user.provider.dart';
 import 'package:immich_mobile/routing/router.dart';
 import 'package:immich_mobile/widgets/backup/backup_info_card.dart';
-import 'package:logging/logging.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 @RoutePage()
@@ -75,30 +72,6 @@ class _DriftBackupPageState extends ConsumerState<DriftBackupPage> {
 
     final error = ref.watch(driftBackupProvider.select((p) => p.error));
 
-    final backupNotifier = ref.read(driftBackupProvider.notifier);
-    final backupSyncManager = ref.read(backgroundSyncProvider);
-
-    Future<void> startBackup() async {
-      final currentUser = Store.tryGet(StoreKey.currentUser);
-      if (currentUser == null) {
-        return;
-      }
-
-      if (syncSuccess == null) {
-        backupNotifier.updateSyncing(true);
-        syncSuccess = await backupSyncManager.syncRemote();
-        backupNotifier.updateSyncing(false);
-      }
-
-      await backupNotifier.getBackupStatus(currentUser.id);
-
-      if (syncSuccess == false) {
-        Logger("DriftBackupPage").warning("Remote sync did not complete successfully, skipping backup");
-        return;
-      }
-      await backupNotifier.startForegroundBackup(currentUser.id);
-    }
-
     return Scaffold(
       appBar: AppBar(
         elevation: 0,
@@ -133,13 +106,7 @@ class _DriftBackupPageState extends ConsumerState<DriftBackupPage> {
                   const _BackupCard(),
                   const _RemainderCard(),
                   const Divider(),
-                  BackupToggleButton(
-                    onStart: () async => await startBackup(),
-                    onStop: () {
-                      syncSuccess = null;
-                      backupNotifier.stopForegroundBackup();
-                    },
-                  ),
+                  const BackupToggleButton(),
                   switch (error) {
                     BackupError.none => const SizedBox.shrink(),
                     BackupError.syncFailed => Padding(

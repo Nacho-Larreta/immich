@@ -144,6 +144,50 @@ final class BackgroundDownloaderRequestContextTests: XCTestCase {
     wait(for: [replacementReceived], timeout: 1)
   }
 
+  func testExpectedNativeRevisionRejectsSameOriginReplacementBeforeTaskCreation() throws {
+    try commitContext(token: "old-token", sessionHeader: "old-session")
+    URLSessionManager.patchBackgroundDownloader()
+    let url = try requestURL()
+    let old = try XCTUnwrap(
+      BackgroundDownloaderRequestContextBridge.prepare(URLRequest(url: url))
+    )
+
+    try commitContext(token: "new-token", sessionHeader: "new-session")
+
+    XCTAssertNil(
+      BackgroundDownloaderRequestContextBridge.prepare(
+        URLRequest(url: url),
+        expectedRevision: old.context.revision
+      )
+    )
+  }
+
+  func testExpectedNativeRevisionRejectsLocalHTTPReplacementBeforeTaskCreation() throws {
+    try URLSessionManager.replaceRequestContext(
+      headers: ["Authorization": "Bearer old-token"],
+      canonicalOrigin: "http://photos.test",
+      token: "old-token"
+    )
+    URLSessionManager.patchBackgroundDownloader()
+    let url = try XCTUnwrap(URL(string: "http://photos.test/api/assets"))
+    let old = try XCTUnwrap(
+      BackgroundDownloaderRequestContextBridge.prepare(URLRequest(url: url))
+    )
+
+    try URLSessionManager.replaceRequestContext(
+      headers: ["Authorization": "Bearer new-token"],
+      canonicalOrigin: "http://photos.test",
+      token: "new-token"
+    )
+
+    XCTAssertNil(
+      BackgroundDownloaderRequestContextBridge.prepare(
+        URLRequest(url: url),
+        expectedRevision: old.context.revision
+      )
+    )
+  }
+
   func testContextReplacementRejectsRedirectFromRunningOldRevision() throws {
     try commitContext(token: "old-token", sessionHeader: "old-session")
     URLSessionManager.patchBackgroundDownloader()

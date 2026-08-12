@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:immich_mobile/domain/models/server_reachability.model.dart';
+import 'package:immich_mobile/domain/models/eager_backup.model.dart';
 import 'package:immich_mobile/infrastructure/adapters/connectivity/native_connectivity_monitor_adapter.dart';
 import 'package:immich_mobile/platform/connectivity_api.g.dart';
 
@@ -46,6 +47,29 @@ void main() {
 
       expect(events, [TransportAvailability.available, TransportAvailability.unavailable]);
       await subscription.cancel();
+      await harness.adapter.dispose();
+    });
+
+    test('preserves wifi, cellular, vpn, and unmetered capabilities', () async {
+      final harness = _Harness(
+        snapshotAvailability: ConnectivityTransportAvailability.available,
+        snapshotCapabilities: const [
+          ConnectivityNetworkCapability.wifi,
+          ConnectivityNetworkCapability.cellular,
+          ConnectivityNetworkCapability.vpn,
+          ConnectivityNetworkCapability.unmetered,
+        ],
+      );
+
+      final snapshot = await harness.adapter.initialSnapshot;
+
+      expect(snapshot.available, isTrue);
+      expect(snapshot.capabilities, {
+        BackupNetworkCapability.wifi,
+        BackupNetworkCapability.cellular,
+        BackupNetworkCapability.vpn,
+        BackupNetworkCapability.unmetered,
+      });
       await harness.adapter.dispose();
     });
 
@@ -152,12 +176,14 @@ void main() {
 final class _Harness {
   _Harness({
     ConnectivityTransportAvailability snapshotAvailability = ConnectivityTransportAvailability.unknown,
+    List<ConnectivityNetworkCapability> snapshotCapabilities = const [],
     Future<void>? start,
     Object? startError,
     Object? snapshotError,
     Object? registrationError,
   }) : host = _FakeConnectivityHostApi(
          snapshotAvailability: snapshotAvailability,
+         snapshotCapabilities: snapshotCapabilities,
          start: start,
          startError: startError,
          snapshotError: snapshotError,
@@ -193,12 +219,14 @@ final class _FakeConnectivityFlutterApiRegistration {
 final class _FakeConnectivityHostApi implements ConnectivityHostApi {
   _FakeConnectivityHostApi({
     required this.snapshotAvailability,
+    required this.snapshotCapabilities,
     Future<void>? start,
     this.startError,
     this.snapshotError,
   }) : _start = start ?? Future.value();
 
   final ConnectivityTransportAvailability snapshotAvailability;
+  final List<ConnectivityNetworkCapability> snapshotCapabilities;
   final Future<void> _start;
   final Object? startError;
   final Object? snapshotError;
@@ -223,7 +251,7 @@ final class _FakeConnectivityHostApi implements ConnectivityHostApi {
     if (error != null) {
       throw error;
     }
-    return ConnectivityTransportSnapshot(availability: snapshotAvailability, capabilities: const []);
+    return ConnectivityTransportSnapshot(availability: snapshotAvailability, capabilities: snapshotCapabilities);
   }
 
   @override

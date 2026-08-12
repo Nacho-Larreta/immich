@@ -5,6 +5,10 @@ import 'dart:io';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/models/asset/asset_metadata.model.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/domain/interfaces/backup_execution.interface.dart';
+import 'package:immich_mobile/domain/models/backup_candidate_key.model.dart';
+import 'package:immich_mobile/domain/models/backup_execution_lease.model.dart';
+import 'package:immich_mobile/domain/models/backup_run_binding.model.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/extensions/platform_extensions.dart';
@@ -13,6 +17,7 @@ import 'package:immich_mobile/infrastructure/repositories/backup.repository.dart
 import 'package:immich_mobile/infrastructure/repositories/storage.repository.dart';
 import 'package:immich_mobile/platform/connectivity_api.g.dart';
 import 'package:immich_mobile/providers/app_settings.provider.dart';
+import 'package:immich_mobile/providers/backup/backup_execution.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/storage.provider.dart';
 import 'package:immich_mobile/repositories/asset_media.repository.dart';
@@ -40,6 +45,7 @@ final foregroundUploadServiceProvider = Provider((ref) {
     ref.watch(connectivityApiProvider),
     ref.watch(appSettingsServiceProvider),
     ref.watch(assetMediaRepositoryProvider),
+    candidateGate: ref.watch(backupExecutionLeaseProvider),
   );
 });
 
@@ -55,8 +61,16 @@ class ForegroundUploadService {
     this._backupRepository,
     this._connectivityApi,
     this._appSettingsService,
-    this._assetMediaRepository,
-  );
+    this._assetMediaRepository, {
+    BackupExecutionLeasePort? candidateGate,
+    String Function(LocalAsset asset)? candidateKeyForAsset,
+  }) : _candidateGate = candidateGate,
+       _candidateKeyForAsset =
+           candidateKeyForAsset ??
+           ((asset) => BackupCandidateKey.fromLocalIdentity(
+             deviceId: Store.get(StoreKey.deviceId),
+             localAssetId: asset.id,
+           ).value);
 
   final UploadRepository _uploadRepository;
   final StorageRepository _storageRepository;
@@ -64,6 +78,8 @@ class ForegroundUploadService {
   final ConnectivityApi _connectivityApi;
   final AppSettingsService _appSettingsService;
   final AssetMediaRepository _assetMediaRepository;
+  final BackupExecutionLeasePort? _candidateGate;
+  final String Function(LocalAsset asset) _candidateKeyForAsset;
   final Logger _logger = Logger('ForegroundUploadService');
 
   bool shouldAbortUpload = false;
@@ -82,19 +98,34 @@ class ForegroundUploadService {
     Completer<void> cancelToken, {
     UploadCallbacks callbacks = const UploadCallbacks(),
     bool useSequentialUpload = false,
+    BackupRunBinding? binding,
+    BackupExecutionLease? executionLease,
+    bool Function(BackupRunBinding binding)? isBindingCurrent,
   }) async {
+    bool current() => binding == null || isBindingCurrent?.call(binding) == true;
+    if (!current()) return;
     final candidates = await _backupRepository.getCandidates(userId);
+    if (!current()) return;
     if (candidates.isEmpty) {
       return;
     }
 
     final transportSnapshot = await _connectivityApi.getSnapshot();
     final networkCapabilities = transportSnapshot.capabilities;
-    final hasWifi = networkCapabilities.contains(ConnectivityNetworkCapability.unmetered);
-    _logger.info('Network capabilities: $networkCapabilities, hasWifi/isUnmetered: $hasWifi');
+    final hasWifi = networkCapabilities.contains(ConnectivityNetworkCapability.wifi);
+    _logger.info(hasWifi ? 'foreground_upload_transport_wifi' : 'foreground_upload_transport_non_wifi');
+    if (binding != null && !hasWifi) return;
 
     if (useSequentialUpload) {
-      await _uploadSequentially(items: candidates, cancelToken: cancelToken, hasWifi: hasWifi, callbacks: callbacks);
+      await _uploadSequentially(
+        items: candidates,
+        cancelToken: cancelToken,
+        hasWifi: hasWifi,
+        callbacks: callbacks,
+        binding: binding,
+        executionLease: executionLease,
+        isBindingCurrent: current,
+      );
     } else {
       await _executeWithWorkerPool<LocalAsset>(
         items: candidates,
@@ -103,7 +134,14 @@ class ForegroundUploadService {
           final requireWifi = _shouldRequireWiFi(asset);
           return requireWifi && !hasWifi;
         },
-        processItem: (asset) => _uploadSingleAsset(asset, cancelToken, callbacks: callbacks),
+        processItem: (asset) => _uploadSingleAsset(
+          asset,
+          cancelToken,
+          callbacks: callbacks,
+          binding: binding,
+          executionLease: executionLease,
+          isBindingCurrent: current,
+        ),
       );
     }
   }
@@ -114,22 +152,32 @@ class ForegroundUploadService {
     required Completer<void> cancelToken,
     required bool hasWifi,
     required UploadCallbacks callbacks,
+    BackupRunBinding? binding,
+    BackupExecutionLease? executionLease,
+    required bool Function() isBindingCurrent,
   }) async {
     await _storageRepository.clearCache();
     shouldAbortUpload = false;
 
     for (final asset in items) {
-      if (shouldAbortUpload || cancelToken.isCompleted) {
+      if (shouldAbortUpload || cancelToken.isCompleted || !isBindingCurrent()) {
         break;
       }
 
       final requireWifi = _shouldRequireWiFi(asset);
       if (requireWifi && !hasWifi) {
-        _logger.warning('Skipping upload for ${asset.id} because it requires WiFi');
+        _logger.warning('foreground_upload_requires_wifi');
         continue;
       }
 
-      await _uploadSingleAsset(asset, cancelToken, callbacks: callbacks);
+      await _uploadSingleAsset(
+        asset,
+        cancelToken,
+        callbacks: callbacks,
+        binding: binding,
+        executionLease: executionLease,
+        isBindingCurrent: isBindingCurrent,
+      );
     }
   }
 
@@ -240,12 +288,19 @@ class ForegroundUploadService {
     LocalAsset asset,
     Completer<void>? cancelToken, {
     required UploadCallbacks callbacks,
+    BackupRunBinding? binding,
+    BackupExecutionLease? executionLease,
+    bool Function()? isBindingCurrent,
   }) async {
     File? file;
     File? livePhotoFile;
 
     try {
+      if (isBindingCurrent?.call() == false) return;
+      final candidateKey = binding == null ? null : _candidateKeyForAsset(asset);
+      if (!await _autoCandidateAllowed(executionLease, candidateKey)) return;
       final entity = await _storageRepository.getAssetEntityForAsset(asset);
+      if (isBindingCurrent?.call() == false) return;
       if (entity == null) {
         callbacks.onError?.call(
           asset.localId!,
@@ -257,7 +312,7 @@ class ForegroundUploadService {
       final isAvailableLocally = await _storageRepository.isAssetAvailableLocally(asset.id);
 
       if (!isAvailableLocally && CurrentPlatform.isIOS) {
-        _logger.info("Loading iCloud asset ${asset.id} - ${asset.name}");
+        _logger.info('foreground_upload_loading_cloud_asset');
 
         // Create progress handler for iCloud download
         PMProgressHandler? progressHandler;
@@ -283,7 +338,7 @@ class ForegroundUploadService {
         // Get files locally
         file = await _storageRepository.getFileForAsset(asset.id);
         if (file == null) {
-          _logger.warning("Failed to get file ${asset.id} - ${asset.name}");
+          _logger.warning('foreground_upload_file_unavailable');
           callbacks.onError?.call(
             asset.localId!,
             CurrentPlatform.isAndroid ? "asset_not_found_on_device_android".t() : "asset_not_found_on_device_ios".t(),
@@ -295,7 +350,7 @@ class ForegroundUploadService {
         if (entity.isLivePhoto) {
           livePhotoFile = await _storageRepository.getMotionFileForAsset(asset);
           if (livePhotoFile == null) {
-            _logger.warning("Failed to obtain motion part of the livePhoto - ${asset.name}");
+            _logger.warning('foreground_upload_live_photo_part_unavailable');
             callbacks.onError?.call(
               asset.localId!,
               CurrentPlatform.isAndroid ? "asset_not_found_on_device_android".t() : "asset_not_found_on_device_ios".t(),
@@ -305,7 +360,7 @@ class ForegroundUploadService {
       }
 
       if (file == null) {
-        _logger.warning("Failed to obtain file from iCloud for asset ${asset.id} - ${asset.name}");
+        _logger.warning('foreground_upload_cloud_file_unavailable');
         callbacks.onError?.call(asset.localId!, "asset_not_found_on_icloud".t());
         return;
       }
@@ -335,6 +390,7 @@ class ForegroundUploadService {
       // Upload live photo video first if available
       String? livePhotoVideoId;
       if (entity.isLivePhoto && livePhotoFile != null) {
+        if (!await _autoCandidateAllowed(executionLease, candidateKey)) return;
         final livePhotoTitle = p.setExtension(originalFileName, p.extension(livePhotoFile.path));
 
         final onProgress = callbacks.onProgress;
@@ -346,7 +402,9 @@ class ForegroundUploadService {
           onProgress: onProgress != null
               ? (bytes, totalBytes) => onProgress(asset.localId!, livePhotoTitle, bytes, totalBytes)
               : null,
-          logContext: 'livePhotoVideo[${asset.localId}]',
+          logContext: 'live_photo_video',
+          apiEndpoint: binding?.apiEndpoint,
+          isContextCurrent: isBindingCurrent,
         );
 
         if (livePhotoResult.isSuccess && livePhotoResult.remoteAssetId != null) {
@@ -375,6 +433,7 @@ class ForegroundUploadService {
       }
 
       final onProgress = callbacks.onProgress;
+      if (!await _autoCandidateAllowed(executionLease, candidateKey)) return;
       final result = await _uploadRepository.uploadFile(
         file: file,
         originalFileName: originalFileName,
@@ -383,19 +442,18 @@ class ForegroundUploadService {
         onProgress: onProgress != null
             ? (bytes, totalBytes) => onProgress(asset.localId!, originalFileName, bytes, totalBytes)
             : null,
-        logContext: 'asset[${asset.localId}]',
+        logContext: 'asset_upload',
+        apiEndpoint: binding?.apiEndpoint,
+        isContextCurrent: isBindingCurrent,
       );
 
       if (result.isSuccess && result.remoteAssetId != null) {
         callbacks.onSuccess?.call(asset.localId!, result.remoteAssetId!);
-      } else if (result.isCancelled) {
-        _logger.warning(() => "Backup was cancelled by the user");
+      } else if (result.isCancelled || result.isStaleContext) {
+        _logger.warning('foreground_upload_cancelled');
         shouldAbortUpload = true;
       } else if (result.errorMessage != null) {
-        _logger.severe(
-          () =>
-              "Error(${result.statusCode}) uploading ${asset.localId} | $originalFileName | Created on ${asset.createdAt} | ${result.errorMessage}",
-        );
+        _logger.severe('foreground_upload_rejected');
 
         callbacks.onError?.call(asset.localId!, result.errorMessage!);
 
@@ -403,19 +461,29 @@ class ForegroundUploadService {
           shouldAbortUpload = true;
         }
       }
-    } catch (error, stackTrace) {
-      _logger.severe(() => "Error backup asset: ${error.toString()}", stackTrace);
-      callbacks.onError?.call(asset.localId!, error.toString());
+    } on Object {
+      _logger.severe('foreground_upload_asset_failed');
+      callbacks.onError?.call(asset.localId!, 'Upload failed');
     } finally {
       if (Platform.isIOS) {
         try {
           await file?.delete();
           await livePhotoFile?.delete();
-        } catch (error, stackTrace) {
-          _logger.severe(() => "ERROR deleting file: ${error.toString()}", stackTrace);
+        } on Object {
+          _logger.severe('foreground_upload_cleanup_failed');
         }
       }
     }
+  }
+
+  Future<bool> _autoCandidateAllowed(BackupExecutionLease? lease, String? candidateKey) async {
+    if (lease == null && candidateKey == null) return true;
+    if (lease == null || candidateKey == null || _candidateGate == null) return false;
+    return _candidateGate.allowForegroundCandidateUnlessQuarantined(
+      runToken: lease.runToken,
+      bindingDigest: lease.bindingDigest,
+      candidateKey: candidateKey,
+    );
   }
 
   Future<UploadResult> _uploadSingleFile(
@@ -445,10 +513,10 @@ class ForegroundUploadService {
         fields: fields,
         cancelToken: cancelToken,
         onProgress: onProgress,
-        logContext: 'shareIntent[$deviceAssetId]',
+        logContext: 'share_intent_upload',
       );
-    } catch (e) {
-      return UploadResult.error(errorMessage: e.toString());
+    } on Object {
+      return UploadResult.error(errorMessage: 'Upload failed');
     }
   }
 

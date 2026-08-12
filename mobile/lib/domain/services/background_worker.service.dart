@@ -103,7 +103,6 @@ class BackgroundWorkerBgService extends BackgroundWorkerFlutterApi {
             ],
           ),
           FileDownloader().trackTasksInGroup(kDownloadGroupLivePhoto, markDownloadedComplete: false),
-          FileDownloader().trackTasks(),
         ].nonNulls,
       );
 
@@ -111,8 +110,8 @@ class BackgroundWorkerBgService extends BackgroundWorkerFlutterApi {
 
       // Notify the host that the background worker service has been initialized and is ready to use
       unawaited(_backgroundHostApi.onInitialized());
-    } catch (error, stack) {
-      _logger.severe("Failed to initialize background worker", error, stack);
+    } on Object {
+      _logger.severe('background_worker_initialization_failed');
       try {
         await _cleanup();
         unawaited(_backgroundHostApi.close());
@@ -133,11 +132,11 @@ class BackgroundWorkerBgService extends BackgroundWorkerFlutterApi {
         return;
       }
       await _handleBackup();
-    } catch (error, stack) {
-      _logger.severe("Failed to complete Android background processing", error, stack);
+    } on Object {
+      _logger.severe('background_worker_android_processing_failed');
     } finally {
       sw.stop();
-      _logger.info("Android background processing completed in ${sw.elapsed.inSeconds}s");
+      _logger.info('background_worker_android_processing_completed');
       await _cleanup();
     }
   }
@@ -159,11 +158,11 @@ class BackgroundWorkerBgService extends BackgroundWorkerFlutterApi {
       } else {
         await backupFuture;
       }
-    } catch (error, stack) {
-      _logger.severe("Failed to complete iOS background upload", error, stack);
+    } on Object {
+      _logger.severe('background_worker_ios_upload_failed');
     } finally {
       sw.stop();
-      _logger.info("iOS background upload completed in ${sw.elapsed.inSeconds}s");
+      _logger.info('background_worker_ios_upload_completed');
       await _cleanup();
     }
   }
@@ -205,7 +204,7 @@ class BackgroundWorkerBgService extends BackgroundWorkerFlutterApi {
           _ref = null;
 
           _cancellationToken.complete();
-          final cleanupFutures = [
+          final cleanupFutures = <Future<void>?>[
             nativeSyncApi?.cancelHashing(),
             LogService.I.dispose(),
             Store.dispose(),
@@ -227,35 +226,30 @@ class BackgroundWorkerBgService extends BackgroundWorkerFlutterApi {
   }
 
   Future<void> _handleBackup() async {
-    await runZonedGuarded(
-      () async {
-        if (_isCleanedUp) {
-          return;
-        }
+    await runZonedGuarded(() async {
+      if (_isCleanedUp) {
+        return;
+      }
 
-        if (!_isBackupEnabled) {
-          _logger.info("Backup is disabled. Skipping backup routine");
-          return;
-        }
+      if (!_isBackupEnabled) {
+        _logger.info("Backup is disabled. Skipping backup routine");
+        return;
+      }
 
-        final currentUser = _ref?.read(currentUserProvider);
-        if (currentUser == null) {
-          _logger.warning("No current user found. Skipping backup from background");
-          return;
-        }
+      final currentUser = _ref?.read(currentUserProvider);
+      if (currentUser == null) {
+        _logger.warning("No current user found. Skipping backup from background");
+        return;
+      }
 
-        if (Platform.isIOS) {
-          return _ref?.read(driftBackupProvider.notifier).startBackupWithURLSession(currentUser.id);
-        }
+      if (Platform.isIOS) {
+        return _ref?.read(driftBackupProvider.notifier).startBackupWithURLSession(currentUser.id);
+      }
 
-        return _ref
-            ?.read(foregroundUploadServiceProvider)
-            .uploadCandidates(currentUser.id, _cancellationToken, useSequentialUpload: true);
-      },
-      (error, stack) {
-        dPrint(() => "Error in backup zone $error, $stack");
-      },
-    );
+      return _ref
+          ?.read(foregroundUploadServiceProvider)
+          .uploadCandidates(currentUser.id, _cancellationToken, useSequentialUpload: true);
+    }, (_, _) => dPrint(() => 'background_worker_backup_zone_failed'));
   }
 
   Future<bool> _syncAssets({Duration? hashTimeout}) async {

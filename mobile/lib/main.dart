@@ -106,8 +106,6 @@ Future<void> initApp() async {
 
   await FileDownloader().trackTasksInGroup(kDownloadGroupLivePhoto, markDownloadedComplete: false);
 
-  unawaited(FileDownloader().trackTasks());
-
   LicenseRegistry.addLicense(() async* {
     for (final license in nonPubLicenses.entries) {
       yield LicenseEntryWithLineBreaks([license.key], license.value);

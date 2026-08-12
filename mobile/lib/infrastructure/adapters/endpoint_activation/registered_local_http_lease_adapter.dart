@@ -24,6 +24,9 @@ final class RegisteredLocalHttpLeaseAdapter implements RequestContextLeasePort {
   RequestContextActivationLease? _pendingActivation;
 
   @override
+  int get revision => _transportRevision;
+
+  @override
   RequestContextActivationLease? beginActivation(EndpointSchemePolicy policy) {
     if (policy != EndpointSchemePolicy.registeredLocalHttp) {
       return null;

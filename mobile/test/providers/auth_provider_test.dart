@@ -1293,6 +1293,9 @@ final class _NoopRequestContextLease implements RequestContextLeasePort {
   const _NoopRequestContextLease();
 
   @override
+  int get revision => 0;
+
+  @override
   RequestContextActivationLease? beginActivation(EndpointSchemePolicy policy) => null;
 
   @override

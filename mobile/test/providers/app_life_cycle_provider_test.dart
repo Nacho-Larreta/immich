@@ -14,6 +14,8 @@ void main() {
       cancelLocalSync: () async => events.add('syncLocal.cancel'),
       cancelBackgroundSync: () async => events.add('backgroundSync.cancel'),
       stopBackup: () => events.add('backup.stop'),
+      pauseEagerBackup: () async => events.add('eager.handoff'),
+      resumeEagerBackup: () => events.add('eager.resume'),
       disconnectWebsocket: () => events.add('websocket.disconnect'),
       lockBackgroundWorker: () {
         events.add('worker.lock');
@@ -29,13 +31,14 @@ void main() {
     lock.complete();
     await resume;
 
-    expect(events, ['worker.lock', 'coordinator.resume', 'syncLocal:true']);
+    expect(events, ['worker.lock', 'coordinator.resume', 'eager.resume', 'syncLocal:true']);
   });
 
   test('pause drains reconciliation, local sync, and accepted websocket work before unlocking the worker', () async {
     final reconciliation = Completer<void>();
     final localSync = Completer<void>();
     final websocketSync = Completer<void>();
+    final foregroundStopped = Completer<void>();
     final events = <String>[];
     final work = LifecycleSessionWork(
       pauseReachability: () {
@@ -53,6 +56,12 @@ void main() {
         return websocketSync.future;
       },
       stopBackup: () => events.add('backup.stop'),
+      pauseEagerBackup: () async {
+        events.add('eager.foreground.stop');
+        await foregroundStopped.future;
+        events.add('eager.urlSession.start');
+      },
+      resumeEagerBackup: () => events.add('eager.resume'),
       disconnectWebsocket: () => events.add('websocket.disconnect'),
       lockBackgroundWorker: () async => events.add('worker.lock'),
       unlockBackgroundWorker: () async => events.add('worker.unlock'),
@@ -61,7 +70,13 @@ void main() {
     final pause = work.pause();
     await pumpEventQueue();
 
+    expect(events, ['eager.foreground.stop']);
+    foregroundStopped.complete();
+    await pumpEventQueue();
+
     expect(events, [
+      'eager.foreground.stop',
+      'eager.urlSession.start',
       'coordinator.pause',
       'syncLocal.cancel',
       'backup.stop',

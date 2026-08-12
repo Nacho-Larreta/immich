@@ -2,6 +2,7 @@ import 'dart:isolate';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:immich_mobile/domain/models/background_task.model.dart';
+import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/infrastructure/adapters/background_sync/isolate_background_task_runner.dart';
 
 void main() {
@@ -80,6 +81,34 @@ void main() {
     );
 
     expect(remoteDispatches, 1);
+  });
+
+  test('remote task rejects a same-generation endpoint mismatch before dispatch', () async {
+    final expected = BackgroundTaskContextBinding(
+      sessionEpoch: 3,
+      nativeContextGeneration: 7,
+      apiEndpoint: Uri.parse('https://photos-a.example/api'),
+      canonicalOrigin: Uri.parse('https://photos-a.example'),
+      schemePolicy: EndpointSchemePolicy.httpsOnly,
+    );
+    final current = BackgroundTaskContextBinding(
+      sessionEpoch: 3,
+      nativeContextGeneration: 7,
+      apiEndpoint: Uri.parse('https://photos-b.example/api'),
+      canonicalOrigin: Uri.parse('https://photos-b.example'),
+      schemePolicy: EndpointSchemePolicy.httpsOnly,
+    );
+    var dispatches = 0;
+
+    await expectLater(
+      executeBackgroundTaskWhenCurrent(
+        task: const BackgroundTaskDescriptor.remoteSync().boundTo(expected),
+        currentContext: current,
+        dispatch: () async => dispatches++,
+      ),
+      throwsA(isA<BackgroundTaskContextChanged>()),
+    );
+    expect(dispatches, 0);
   });
 
   test('local-only task remains runnable without a server context binding', () async {

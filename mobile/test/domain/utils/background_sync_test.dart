@@ -5,9 +5,41 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:immich_mobile/domain/interfaces/background_task_runner.interface.dart';
 import 'package:immich_mobile/domain/interfaces/cancellable_request.interface.dart';
 import 'package:immich_mobile/domain/models/background_task.model.dart';
+import 'package:immich_mobile/domain/models/backup_run_binding.model.dart';
+import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/domain/utils/background_sync.dart';
 
 void main() {
+  test('explicit backup binding is carried into headless remote reconciliation', () async {
+    final runner = _ControlledTaskRunner();
+    final manager = BackgroundSyncManager(taskRunner: runner, remoteTaskContext: _testRemoteTaskContext);
+    final binding = BackupRunBinding(
+      userId: 'user',
+      sessionEpoch: 4,
+      probeGeneration: 5,
+      nativeGeneration: 6,
+      apiEndpoint: Uri.parse('https://photos.example/api'),
+      canonicalOrigin: Uri.parse('https://photos.example'),
+      schemePolicy: EndpointSchemePolicy.httpsOnly,
+      transportRevision: 7,
+      localLeaseRevision: 8,
+    );
+
+    final reconciliation = manager.syncRemoteForBinding(binding);
+    expect(
+      runner.descriptors.single.contextBinding,
+      BackgroundTaskContextBinding(
+        sessionEpoch: binding.sessionEpoch,
+        nativeContextGeneration: binding.nativeGeneration,
+        apiEndpoint: binding.apiEndpoint,
+        canonicalOrigin: binding.canonicalOrigin,
+        schemePolicy: binding.schemePolicy,
+      ),
+    );
+    runner.task(0).succeed(true);
+    expect(await reconciliation, isTrue);
+  });
+
   test('domain background sync has no ProviderContainer, worker, or infrastructure imports', () {
     final source = File('lib/domain/utils/background_sync.dart').readAsStringSync();
 
@@ -213,9 +245,11 @@ BackgroundTaskContextBinding _testRemoteTaskContext() => _testBackgroundContext;
 
 final class _ControlledTaskRunner implements BackgroundTaskRunner {
   final tasks = <_ControlledTask>[];
+  final descriptors = <BackgroundTaskDescriptor>[];
 
   @override
   CancellableRequest<Object?> start({required BackgroundTaskDescriptor task, String? debugLabel}) {
+    descriptors.add(task);
     final controlled = _ControlledTask();
     tasks.add(controlled);
     return controlled.cancelable;

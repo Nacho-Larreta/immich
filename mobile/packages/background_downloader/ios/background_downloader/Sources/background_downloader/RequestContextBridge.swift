@@ -121,11 +121,15 @@ public enum BackgroundDownloaderRequestContextBridge {
     configuration.httpAdditionalHeaders = nil
   }
 
-  public static func prepare(_ request: URLRequest) -> BackgroundDownloaderPreparedRequest? {
+  public static func prepare(
+    _ request: URLRequest,
+    expectedRevision: UInt64? = nil
+  ) -> BackgroundDownloaderPreparedRequest? {
     guard
       let url = request.url,
       let integration = lock.withLock({ integration }),
-      let context = integration.capture(url)
+      let context = integration.capture(url),
+      expectedRevision == nil || context.revision == expectedRevision
     else { return nil }
     return BackgroundDownloaderPreparedRequest(
       request: secure(request, with: context),

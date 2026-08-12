@@ -1,0 +1,1 @@
+enum BackupError { none, syncFailed }

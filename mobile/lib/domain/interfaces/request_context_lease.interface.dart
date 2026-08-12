@@ -7,6 +7,8 @@ final class RequestContextActivationLease {
 }
 
 abstract interface class RequestContextLeasePort {
+  int get revision;
+
   RequestContextActivationLease? beginActivation(EndpointSchemePolicy policy);
 
   bool commitActivation(RequestContextActivationLease lease);

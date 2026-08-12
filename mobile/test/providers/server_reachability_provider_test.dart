@@ -11,6 +11,7 @@ import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/domain/models/offline_result.model.dart';
 import 'package:immich_mobile/domain/models/server_reachability.model.dart';
 import 'package:immich_mobile/providers/server_reachability.provider.dart';
+import 'package:immich_mobile/providers/backup/eager_backup.provider.dart';
 
 void main() {
   test('owns one eager-started coordinator instance per container and disposes it once', () async {
@@ -51,6 +52,7 @@ ProviderContainer _container(_FakeConnectivityMonitor connectivity) {
       endpointProbeCycleProvider.overrideWithValue(const _UnusedProbeCycles()),
       endpointActivationProvider.overrideWithValue(const _UnusedActivations()),
       reconciliationProvider.overrideWithValue(const _UnusedReconciliations()),
+      eagerBackupStartupProvider.overrideWith((_) {}),
     ],
   );
 }

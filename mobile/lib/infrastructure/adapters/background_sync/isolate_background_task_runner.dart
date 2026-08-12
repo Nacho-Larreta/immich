@@ -25,11 +25,15 @@ final class IsolateBackgroundTaskRunner implements BackgroundTaskRunner {
 
 Future<Object?> executeBackgroundTask(ProviderContainer ref, BackgroundTaskDescriptor task) async {
   final evidence = NetworkRepository.serverAccessEvidence;
+  final expected = task.contextBinding;
   return executeBackgroundTaskWhenCurrent(
     task: task,
     currentContext: BackgroundTaskContextBinding(
       sessionEpoch: evidence.sessionEpoch,
       nativeContextGeneration: evidence.generation,
+      apiEndpoint: expected?.apiEndpoint == null ? null : evidence.apiEndpoint,
+      canonicalOrigin: expected?.canonicalOrigin == null ? null : evidence.canonicalOrigin,
+      schemePolicy: expected?.schemePolicy == null ? null : evidence.schemePolicy,
     ),
     serverContextAvailable: evidence.confirmed && !evidence.fenced,
     dispatch: () => _dispatchBackgroundTask(ref, task),

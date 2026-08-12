@@ -27,6 +27,7 @@ import 'package:immich_mobile/providers/remote_authentication.provider.dart';
 import 'package:immich_mobile/providers/server_reachability.provider.dart';
 import 'package:immich_mobile/providers/session_mutation.provider.dart';
 import 'package:immich_mobile/providers/backup/drift_backup.provider.dart';
+import 'package:immich_mobile/providers/backup/eager_backup.provider.dart';
 import 'package:immich_mobile/providers/websocket.provider.dart';
 import 'package:immich_mobile/repositories/asset_media.repository.dart';
 import 'package:immich_mobile/services/api.service.dart';
@@ -72,7 +73,12 @@ final authProvider = StateNotifierProvider<AuthNotifier, AuthState>((ref) {
     suspendRemoteShares: ref.read(assetMediaRepositoryProvider).suspendRemoteShares,
     cancelShares: ref.read(assetMediaRepositoryProvider).cancelAll,
     activateShares: ref.read(assetMediaRepositoryProvider).activateRemoteShares,
-    stopBackup: ref.read(driftBackupProvider.notifier).stopForegroundBackup,
+    stopBackup: () async {
+      ref.read(eagerBackupCoordinatorProvider).setEnabled(false);
+      ref.read(driftBackupProvider.notifier).stopForegroundBackup();
+      final remaining = await ref.read(backgroundUploadServiceProvider).cancel();
+      if (remaining != 0) throw StateError('background_backup_drain_failed');
+    },
     disconnectWebsocket: ref.read(websocketProvider.notifier).disconnect,
   );
 });
@@ -165,7 +171,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
   final Future<void> Function() _suspendRemoteShares;
   final Future<void> Function() _cancelShares;
   final void Function() _activateShares;
-  final void Function() _stopBackup;
+  final FutureOr<void> Function() _stopBackup;
   final void Function() _disconnectWebsocket;
   final Future<void> Function(String) _persistAccessToken;
   final Future<void> Function() _clearPersistedAuthentication;
@@ -205,7 +211,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
     Future<void> Function()? suspendRemoteShares,
     Future<void> Function()? cancelShares,
     void Function()? activateShares,
-    required void Function() stopBackup,
+    required FutureOr<void> Function() stopBackup,
     required void Function() disconnectWebsocket,
     Future<void> Function(String)? persistAccessToken,
     Future<void> Function()? clearPersistedAuthentication,
@@ -481,39 +487,44 @@ class AuthNotifier extends StateNotifier<AuthState> {
     var serverForgotten = false;
 
     try {
-      await attempt(() => _ref.read(backgroundUploadServiceProvider).cancel(), recordOperationError);
-      await attempt(() => _ref.read(foregroundUploadServiceProvider).cancel(), recordOperationError);
-      await attempt(() => _secureStorageService.delete(kSecuredPinCode), recordOperationError);
+      await attempt(() async {
+        final remaining = await _ref.read(backgroundUploadServiceProvider).cancel();
+        if (remaining != 0) throw StateError('background_backup_drain_failed');
+      }, recordOperationError);
+      if (operationError == null) {
+        await attempt(() => _ref.read(foregroundUploadServiceProvider).cancel(), recordOperationError);
+        await attempt(() => _secureStorageService.delete(kSecuredPinCode), recordOperationError);
 
-      while (true) {
-        final requestedIntent = _requestedTerminationIntent ?? _RemoteAuthenticationTerminationIntent.reauthenticate;
-        if (requestedIntent.priority >= _RemoteAuthenticationTerminationIntent.logout.priority && !sharesCancelled) {
-          await attempt(_cancelShares, recordOperationError);
-          sharesCancelled = true;
-        }
-        if (requestedIntent.priority >= _RemoteAuthenticationTerminationIntent.logout.priority &&
-            !remoteSessionInvalidated) {
-          await attempt(_authService.invalidateRemoteSession, recordOperationError);
-          remoteSessionInvalidated = true;
-        }
+        while (true) {
+          final requestedIntent = _requestedTerminationIntent ?? _RemoteAuthenticationTerminationIntent.reauthenticate;
+          if (requestedIntent.priority >= _RemoteAuthenticationTerminationIntent.logout.priority && !sharesCancelled) {
+            await attempt(_cancelShares, recordOperationError);
+            sharesCancelled = true;
+          }
+          if (requestedIntent.priority >= _RemoteAuthenticationTerminationIntent.logout.priority &&
+              !remoteSessionInvalidated) {
+            await attempt(_authService.invalidateRemoteSession, recordOperationError);
+            remoteSessionInvalidated = true;
+          }
 
-        if (requestedIntent == _RemoteAuthenticationTerminationIntent.forgetServer && !serverForgotten) {
-          if (!await attempt(_authService.forgetServer, recordCleanupError)) {
+          if (requestedIntent == _RemoteAuthenticationTerminationIntent.forgetServer && !serverForgotten) {
+            if (!await attempt(_authService.forgetServer, recordCleanupError)) {
+              break;
+            }
+            serverForgotten = true;
+            remoteAuthenticationCleared = true;
+          } else if (!remoteAuthenticationCleared) {
+            if (!await attempt(_authService.clearRemoteAuthentication, recordCleanupError)) {
+              break;
+            }
+            remoteAuthenticationCleared = true;
+          }
+
+          appliedIntent = requestedIntent;
+          final latestIntent = _requestedTerminationIntent ?? requestedIntent;
+          if (latestIntent.priority <= appliedIntent.priority) {
             break;
           }
-          serverForgotten = true;
-          remoteAuthenticationCleared = true;
-        } else if (!remoteAuthenticationCleared) {
-          if (!await attempt(_authService.clearRemoteAuthentication, recordCleanupError)) {
-            break;
-          }
-          remoteAuthenticationCleared = true;
-        }
-
-        appliedIntent = requestedIntent;
-        final latestIntent = _requestedTerminationIntent ?? requestedIntent;
-        if (latestIntent.priority <= appliedIntent.priority) {
-          break;
         }
       }
     } finally {

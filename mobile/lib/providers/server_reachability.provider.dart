@@ -30,7 +30,9 @@ import 'package:immich_mobile/infrastructure/adapters/reconciliation/server_reco
 import 'package:immich_mobile/providers/api.provider.dart';
 import 'package:immich_mobile/providers/app_settings.provider.dart';
 import 'package:immich_mobile/providers/background_sync.provider.dart';
-import 'package:immich_mobile/providers/backup/drift_backup.provider.dart';
+import 'package:immich_mobile/providers/backup/eager_backup_signal.provider.dart';
+import 'package:immich_mobile/providers/backup/eager_backup.provider.dart';
+import 'package:immich_mobile/domain/models/eager_backup.model.dart';
 import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
 import 'package:immich_mobile/providers/session_mutation.provider.dart';
 import 'package:immich_mobile/infrastructure/repositories/network.repository.dart';
@@ -139,7 +141,7 @@ final requestContextLeaseProvider = Provider<RequestContextLeasePort>((_) {
 final reconciliationProvider = Provider<ReconciliationPort>((ref) {
   final backgroundSync = ref.read(backgroundSyncProvider);
   final websocket = ref.read(websocketProvider.notifier);
-  final backup = ref.read(driftBackupProvider.notifier);
+  final eagerBackupSignals = ref.read(eagerBackupSignalProvider);
   final settings = ref.read(appSettingsServiceProvider);
   return ServerReconciliationAdapter(
     epochs: ref.read(sessionEpochControllerProvider),
@@ -154,16 +156,17 @@ final reconciliationProvider = Provider<ReconciliationPort>((ref) {
     disconnectWebsocket: websocket.disconnect,
     connectWebsocket: websocket.connect,
     syncRemote: backgroundSync.syncRemote,
-    hashAssets: backgroundSync.hashAssets,
+    hashAssets: () async => eagerBackupSignals.signal(EagerBackupTrigger.localTerminal),
     syncLinkedAlbums: backgroundSync.syncLinkedAlbum,
-    startBackup: backup.startForegroundBackup,
-    stopBackup: backup.stopForegroundBackup,
+    startBackup: (_) async => eagerBackupSignals.signal(EagerBackupTrigger.serverProofChanged),
+    stopBackup: () => eagerBackupSignals.signal(EagerBackupTrigger.serverProofChanged),
     cancelRemoteWork: backgroundSync.cancel,
     cancelLocalWork: backgroundSync.cancelLocal,
   );
 });
 
 final serverReachabilityCoordinatorProvider = Provider<ServerReachabilityCoordinator>((ref) {
+  ref.read(eagerBackupStartupProvider);
   final coordinator = ServerReachabilityCoordinator(
     epochs: ref.read(sessionEpochControllerProvider),
     connectivity: ref.read(connectivityMonitorProvider),

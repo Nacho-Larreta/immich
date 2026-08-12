@@ -137,6 +137,21 @@ void main() {
     });
   });
 
+  test('watchAllCounts emits truthful ready and processing transitions', () async {
+    final user = await ctx.newUser();
+    final album = await ctx.newLocalAlbum(backupSelection: BackupSelection.selected);
+    final emissions = <({int total, int remainder, int processing})>[];
+    final subscription = sut.watchAllCounts(user.id).listen(emissions.add);
+    await pumpEventQueue();
+
+    final processing = await ctx.newLocalAsset(checksumOption: const Option.none());
+    await ctx.newLocalAlbumAsset(albumId: album.id, assetId: processing.id);
+    await pumpEventQueue();
+
+    expect(emissions.last, (total: 1, remainder: 1, processing: 1));
+    await subscription.cancel();
+  });
+
   group('getCandidates', () {
     late String userId;
 

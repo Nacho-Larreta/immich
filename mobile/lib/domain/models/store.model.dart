@@ -99,7 +99,9 @@ enum StoreKey<T> {
 
   syncMigrationStatus<String>._(1013),
   serverEndpointSchemePolicy<String>._(1014),
-  authenticatedSessionReady<bool>._(1015);
+  authenticatedSessionReady<bool>._(1015),
+  backupExecutionLease<String>._(1016),
+  backupReconciliationQuarantine<String>._(1017);
 
   const StoreKey._(this.id);
   final int id;

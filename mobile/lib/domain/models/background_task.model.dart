@@ -1,21 +1,34 @@
+import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
+
 enum BackgroundTaskKind { localSync, hashAssets, remoteSync, cloudIds, linkedAlbums, websocketBatch, websocketEdit }
 
 final class BackgroundTaskContextBinding {
-  const BackgroundTaskContextBinding({required this.sessionEpoch, required this.nativeContextGeneration})
-    : assert(sessionEpoch >= 0),
-      assert(nativeContextGeneration >= 0);
+  const BackgroundTaskContextBinding({
+    required this.sessionEpoch,
+    required this.nativeContextGeneration,
+    this.apiEndpoint,
+    this.canonicalOrigin,
+    this.schemePolicy,
+  }) : assert(sessionEpoch >= 0),
+       assert(nativeContextGeneration >= 0);
 
   final int sessionEpoch;
   final int nativeContextGeneration;
+  final Uri? apiEndpoint;
+  final Uri? canonicalOrigin;
+  final EndpointSchemePolicy? schemePolicy;
 
   @override
   bool operator ==(Object other) =>
       other is BackgroundTaskContextBinding &&
       other.sessionEpoch == sessionEpoch &&
-      other.nativeContextGeneration == nativeContextGeneration;
+      other.nativeContextGeneration == nativeContextGeneration &&
+      other.apiEndpoint == apiEndpoint &&
+      other.canonicalOrigin == canonicalOrigin &&
+      other.schemePolicy == schemePolicy;
 
   @override
-  int get hashCode => Object.hash(sessionEpoch, nativeContextGeneration);
+  int get hashCode => Object.hash(sessionEpoch, nativeContextGeneration, apiEndpoint, canonicalOrigin, schemePolicy);
 }
 
 final class BackgroundTaskDescriptor {

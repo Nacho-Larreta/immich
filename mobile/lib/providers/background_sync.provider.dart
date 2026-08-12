@@ -1,12 +1,13 @@
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/models/background_task.model.dart';
+import 'package:immich_mobile/domain/models/backup_sync.model.dart';
 import 'package:immich_mobile/domain/utils/background_sync.dart';
 import 'package:immich_mobile/infrastructure/adapters/background_sync/isolate_background_task_runner.dart';
-import 'package:immich_mobile/providers/backup/drift_backup.provider.dart';
+import 'package:immich_mobile/providers/backup/backup_sync_error.provider.dart';
 import 'package:immich_mobile/providers/sync_status.provider.dart';
 import 'package:immich_mobile/providers/server_reachability.provider.dart';
 
-final backgroundSyncProvider = Provider<BackgroundSyncManager>((ref) {
+final Provider<BackgroundSyncManager> backgroundSyncProvider = Provider<BackgroundSyncManager>((ref) {
   final syncStatusNotifier = ref.read(syncStatusProvider.notifier);
 
   final manager = BackgroundSyncManager(
@@ -24,17 +25,11 @@ final backgroundSyncProvider = Provider<BackgroundSyncManager>((ref) {
     },
     onRemoteSyncStart: () {
       syncStatusNotifier.startRemoteSync();
-      final backupProvider = ref.read(driftBackupProvider.notifier);
-      if (backupProvider.mounted) {
-        backupProvider.updateError(BackupError.none);
-      }
+      ref.read(backupSyncErrorProvider.notifier).state = BackupError.none;
     },
     onRemoteSyncComplete: (isSuccess) {
       syncStatusNotifier.completeRemoteSync();
-      final backupProvider = ref.read(driftBackupProvider.notifier);
-      if (backupProvider.mounted) {
-        backupProvider.updateError(isSuccess == true ? BackupError.none : BackupError.syncFailed);
-      }
+      ref.read(backupSyncErrorProvider.notifier).state = isSuccess == true ? BackupError.none : BackupError.syncFailed;
     },
     onRemoteSyncError: syncStatusNotifier.errorRemoteSync,
     onRemoteSyncCancelled: syncStatusNotifier.cancelRemoteSync,
