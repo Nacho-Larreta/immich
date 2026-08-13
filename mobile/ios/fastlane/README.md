@@ -73,3 +73,34 @@ Do not put any key, password, tester email, certificate, or provisioning profile
 cd mobile/ios/fastlane
 PATH=/opt/homebrew/opt/ruby/bin:$PATH /opt/homebrew/opt/ruby/bin/bundle exec ruby -Itest -e 'Dir["test/*_test.rb"].sort.each { |file| require File.expand_path(file) }'
 ```
+
+## Private-fork release closure
+
+Treat a green archive as an intermediate artifact, not as release acceptance.
+Close a private iOS release only after all of these boundaries are independently
+verified:
+
+1. The Git worktree is clean and the intended commit is present on `origin/main`.
+2. Pigeon outputs are reproducible and scoped Dart, Swift and Fastlane contracts
+   pass from the release commit.
+3. Every embedded native asset is an `iphoneos` binary, has the expected Team ID,
+   and passes deep strict code-sign verification. Never reuse simulator-produced
+   native assets in a device archive.
+4. Install the Release build in place on the physical iPhone so persisted session
+   and local-library data participate in the smoke.
+5. Exercise cold launch, installed-session recovery, offline local media, login and
+   relogin, remote thumbnails/originals, sync/cloud actions, local and remote Share,
+   and eligible backup. Confirm the process remains alive and no new crash report
+   appears.
+6. Only then run the protected preflight, exact upload and finalizer phases. Keep
+   build, upload and finalization separate and resumable.
+
+Authenticated native work must remain bound to one immutable context identity:
+exact origin, session epoch and native generation. Context replacement fences and
+drains old HTTP, WebSocket, image, export and background work before admitting the
+new context. Local PhotoKit reads and local Share remain server-independent.
+
+Operationally, large DerivedData and temporary build outputs may live on an
+external volume, but CoreSimulator still consumes the system data volume. When
+that volume is exhausted, prefer the physical-device gate; do not report an iOS
+test as passing when its runner could not be installed.
