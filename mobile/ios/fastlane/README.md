@@ -104,3 +104,13 @@ Operationally, large DerivedData and temporary build outputs may live on an
 external volume, but CoreSimulator still consumes the system data volume. When
 that volume is exhausted, prefer the physical-device gate; do not report an iOS
 test as passing when its runner could not be installed.
+
+### Accepted baseline — 2026-08-13
+
+Nacho physically accepted the complete private-fork flow on the iPhone after the
+code baseline ending at `95ae65b05`: cold launch and installed-session recovery,
+offline local media, login and relogin, remote thumbnails/photos/videos, sync and
+cloud actions, local and remote Share, eager backup, and crash-free interactive
+use. The canonical iteration closed 13/13 findings with no failed or open item.
+The documentation commit that records these reusable gates is intentionally
+separate from that tested code baseline.
