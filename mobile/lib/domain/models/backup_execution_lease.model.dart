@@ -29,20 +29,80 @@ final class BackupTaskClaim {
 }
 
 final class ForegroundTransportClaim {
-  const ForegroundTransportClaim({
+  factory ForegroundTransportClaim.legacy({
+    required String activityId,
+    required String bindingDigest,
+    required int nativeGeneration,
+  }) => _validated(
+    activityId: activityId,
+    bindingDigest: bindingDigest,
+    nativeGeneration: nativeGeneration,
+    transportIncarnation: null,
+    claimSchemaVersion: legacySchemaVersion,
+  );
+
+  factory ForegroundTransportClaim.current({
+    required String activityId,
+    required String bindingDigest,
+    required int nativeGeneration,
+    required String transportIncarnation,
+  }) => _validated(
+    activityId: activityId,
+    bindingDigest: bindingDigest,
+    nativeGeneration: nativeGeneration,
+    transportIncarnation: transportIncarnation,
+    claimSchemaVersion: currentSchemaVersion,
+  );
+
+  const ForegroundTransportClaim._({
     required this.activityId,
     required this.bindingDigest,
     required this.nativeGeneration,
+    required this.transportIncarnation,
+    required this.claimSchemaVersion,
   });
+
+  static const legacySchemaVersion = 1;
+  static const currentSchemaVersion = 2;
 
   final String activityId;
   final String bindingDigest;
   final int nativeGeneration;
+  final String? transportIncarnation;
+  final int claimSchemaVersion;
+
+  bool get isLegacy => claimSchemaVersion == legacySchemaVersion && transportIncarnation == null;
+
+  static ForegroundTransportClaim _validated({
+    required String activityId,
+    required String bindingDigest,
+    required int nativeGeneration,
+    required String? transportIncarnation,
+    required int claimSchemaVersion,
+  }) {
+    if (activityId.isEmpty) throw ArgumentError.value(activityId, 'activityId', 'Must not be empty');
+    if (bindingDigest.isEmpty) throw ArgumentError.value(bindingDigest, 'bindingDigest', 'Must not be empty');
+    if (nativeGeneration < 0) {
+      throw ArgumentError.value(nativeGeneration, 'nativeGeneration', 'Must not be negative');
+    }
+    if (claimSchemaVersion == currentSchemaVersion && (transportIncarnation == null || transportIncarnation.isEmpty)) {
+      throw ArgumentError.value(transportIncarnation, 'transportIncarnation', 'Must not be empty');
+    }
+    return ForegroundTransportClaim._(
+      activityId: activityId,
+      bindingDigest: bindingDigest,
+      nativeGeneration: nativeGeneration,
+      transportIncarnation: transportIncarnation,
+      claimSchemaVersion: claimSchemaVersion,
+    );
+  }
 
   Map<String, Object> toJsonValue() => {
     'activityId': activityId,
     'bindingDigest': bindingDigest,
     'nativeGeneration': nativeGeneration,
+    if (!isLegacy) 'claimSchemaVersion': claimSchemaVersion,
+    if (transportIncarnation case final incarnation?) 'transportIncarnation': incarnation,
   };
 
   static ForegroundTransportClaim fromJsonValue(Object? source) {
@@ -50,14 +110,26 @@ final class ForegroundTransportClaim {
     final activityId = value['activityId'] as String;
     final bindingDigest = value['bindingDigest'] as String;
     final nativeGeneration = value['nativeGeneration'] as int;
-    if (activityId.isEmpty || bindingDigest.isEmpty || nativeGeneration < 0) {
+    final transportIncarnation = value['transportIncarnation'] as String?;
+    final claimSchemaVersion = value['claimSchemaVersion'] as int? ?? legacySchemaVersion;
+    final isLegacy = claimSchemaVersion == legacySchemaVersion && transportIncarnation == null;
+    final isCurrent =
+        claimSchemaVersion == currentSchemaVersion && transportIncarnation != null && transportIncarnation.isNotEmpty;
+    if (activityId.isEmpty || bindingDigest.isEmpty || nativeGeneration < 0 || (!isLegacy && !isCurrent)) {
       throw const FormatException('Invalid foreground transport claim');
     }
-    return ForegroundTransportClaim(
-      activityId: activityId,
-      bindingDigest: bindingDigest,
-      nativeGeneration: nativeGeneration,
-    );
+    return isLegacy
+        ? ForegroundTransportClaim.legacy(
+            activityId: activityId,
+            bindingDigest: bindingDigest,
+            nativeGeneration: nativeGeneration,
+          )
+        : ForegroundTransportClaim.current(
+            activityId: activityId,
+            bindingDigest: bindingDigest,
+            nativeGeneration: nativeGeneration,
+            transportIncarnation: transportIncarnation!,
+          );
   }
 
   @override
@@ -65,10 +137,20 @@ final class ForegroundTransportClaim {
       other is ForegroundTransportClaim &&
       other.activityId == activityId &&
       other.bindingDigest == bindingDigest &&
-      other.nativeGeneration == nativeGeneration;
+      other.nativeGeneration == nativeGeneration &&
+      other.transportIncarnation == transportIncarnation &&
+      other.claimSchemaVersion == claimSchemaVersion;
 
   @override
-  int get hashCode => Object.hash(activityId, bindingDigest, nativeGeneration);
+  int get hashCode =>
+      Object.hash(activityId, bindingDigest, nativeGeneration, transportIncarnation, claimSchemaVersion);
+}
+
+final class ForegroundTransportIdentity {
+  const ForegroundTransportIdentity({required this.incarnation, required this.generation});
+
+  final String incarnation;
+  final int generation;
 }
 
 final class BackupExecutionLease {

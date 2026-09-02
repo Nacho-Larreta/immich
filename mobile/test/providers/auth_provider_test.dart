@@ -410,6 +410,28 @@ void main() {
       );
     });
 
+    test('blocks requests and closes backup before session invalidation even when the drain fails', () async {
+      final events = <String>[];
+      final drainFailure = StateError('background_backup_drain_failed');
+      var backupStops = 0;
+      final auth = _LogoutFixture(
+        mutex: SessionMutationMutex(),
+        events: events,
+        stopBackup: () {
+          backupStops++;
+          events.add('backup.stop');
+          throw drainFailure;
+        },
+        invalidateSession: () async => events.add('session.invalidate'),
+      );
+
+      await expectLater(auth.notifier.logout(), throwsA(same(drainFailure)));
+
+      expect(backupStops, 1);
+      expect(events, containsAllInOrder(['network.block', 'backup.stop', 'session.invalidate']));
+      expect(events, containsAll(<String>['graph.purge', 'network.purge']));
+    });
+
     test('tombstone write failure blocks the context and starts no cancellation or remote work', () async {
       final failure = StateError('tombstone unavailable');
       var sideEffects = 0;
@@ -596,7 +618,10 @@ void main() {
         cachedSessionReader: reader,
         invalidateSession: () async {},
         cancelRemoteMedia: () async {},
-        stopBackup: () {},
+        stopBackup: () async {
+          final remaining = await backgroundUploads.cancel();
+          if (remaining != 0) throw StateError('background_backup_drain_failed');
+        },
         disconnectWebsocket: () {},
         persistSessionReadiness: (_) async {},
       );
@@ -650,7 +675,10 @@ void main() {
         cachedSessionReader: _authenticatedSessionReader(),
         invalidateSession: () async {},
         cancelRemoteMedia: () async {},
-        stopBackup: () {},
+        stopBackup: () async {
+          final remaining = await backgroundUploads.cancel();
+          if (remaining != 0) throw StateError('background_backup_drain_failed');
+        },
         disconnectWebsocket: () {},
         persistSessionReadiness: (_) async {},
       );
@@ -660,6 +688,7 @@ void main() {
 
       expect(requestContext.blocked, isTrue);
       expect(notifier.state.isAuthenticated, isTrue);
+      verify(backgroundUploads.cancel).called(1);
     });
 
     test('keeps requests blocked when API graph purge fails', () async {
@@ -1062,6 +1091,7 @@ final class _RecordingAuthApiGraph implements AuthApiGraphPort {
 final class _LogoutFixture {
   _LogoutFixture({
     required SessionMutationMutex mutex,
+    List<String>? events,
     AnonymousServerDiscoveryPort? anonymousServerDiscovery,
     ResolvedServerEndpointInstallerPort? serverEndpointInstaller,
     Uri? Function()? readConfiguredEndpoint,
@@ -1071,13 +1101,16 @@ final class _LogoutFixture {
     Future<void> Function()? suspendRemoteShares,
     Future<void> Function()? cancelShares,
     void Function()? activateShares,
-    void Function()? stopBackup,
+    FutureOr<void> Function()? stopBackup,
     void Function()? disconnectWebsocket,
     void Function(RemoteAuthenticationPhase)? publishRemoteAuthenticationPhase,
     Object? apiGraphPurgeError,
     Object? localSessionClearError,
     Future<void> Function(bool)? persistSessionReadiness,
   }) {
+    final operationEvents = events ?? <String>[];
+    requestContext = _RecordingAuthRequestContext(operationEvents);
+    apiGraph = _RecordingAuthApiGraph(operationEvents);
     apiGraph.purgeError = apiGraphPurgeError;
     when(() => secureStorage.delete(any())).thenAnswer((_) async {});
     when(authService.invalidateRemoteSession).thenAnswer((_) async => onRemoteLogout?.call());
@@ -1126,8 +1159,8 @@ final class _LogoutFixture {
   final backgroundUploads = _MockBackgroundUploadService();
   final foregroundUploads = _MockForegroundUploadService();
   final ref = _MockRef();
-  final requestContext = _RecordingAuthRequestContext(<String>[]);
-  final apiGraph = _RecordingAuthApiGraph(<String>[]);
+  late final _RecordingAuthRequestContext requestContext;
+  late final _RecordingAuthApiGraph apiGraph;
   late final AuthNotifier notifier;
 }
 

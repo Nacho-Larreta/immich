@@ -503,6 +503,205 @@ final class NetworkApiImplTests: XCTestCase {
     defer { Unmanaged<URLSession>.fromOpaque(UnsafeMutableRawPointer(bitPattern: Int(second.clientPointer))!).release() }
     XCTAssertEqual(second.schemePolicy, .registeredLocalHttp)
     XCTAssertEqual(second.generation, first.generation + 1)
+    XCTAssertEqual(second.transportIncarnation, first.transportIncarnation)
+  }
+
+  func testForegroundIdentityIsPointerFreeAndFullSnapshotRequiresTheExactIdentity() throws {
+    let api = NetworkApiImpl()
+    try api.replaceRequestContext(
+      headers: [:],
+      apiEndpoint: "https://photos.test/api",
+      canonicalOrigin: "https://photos.test",
+      schemePolicy: .httpsOnly,
+      token: "session-token",
+      sessionEpoch: 4
+    )
+
+    let identity = try api.getForegroundTransportIdentity()
+    XCTAssertTrue(identity.confirmed)
+    XCTAssertFalse(identity.incarnation.isEmpty)
+    XCTAssertNil(
+      try api.getRequestContextSnapshotForIdentity(
+        incarnation: identity.incarnation,
+        generation: identity.generation + 1
+      )
+    )
+
+    let exact = try XCTUnwrap(
+      api.getRequestContextSnapshotForIdentity(
+        incarnation: identity.incarnation,
+        generation: identity.generation
+      )
+    )
+    defer {
+      Unmanaged<URLSession>.fromOpaque(
+        UnsafeMutableRawPointer(bitPattern: Int(exact.clientPointer))!
+      ).release()
+    }
+    XCTAssertEqual(exact.transportIncarnation, identity.incarnation)
+    XCTAssertEqual(exact.generation, identity.generation)
+  }
+
+  func testLegacyForegroundClaimUsesRootBarrierAndPreservesTheActiveContext() throws {
+    let api = NetworkApiImpl()
+    try api.replaceRequestContext(
+      headers: ["X-Context": "session-b"],
+      apiEndpoint: "https://photos.test/api",
+      canonicalOrigin: "https://photos.test",
+      schemePolicy: .httpsOnly,
+      token: "session-b-token",
+      sessionEpoch: 9
+    )
+    let before = try api.getRequestContextSnapshot()
+    defer {
+      Unmanaged<URLSession>.fromOpaque(
+        UnsafeMutableRawPointer(bitPattern: Int(before.clientPointer))!
+      ).release()
+    }
+
+    let result = try api.retireForegroundTransports(
+      claims: [NetworkTransportClaimDescriptor(incarnation: nil, generation: before.generation - 1)]
+    )
+    let after = try api.getRequestContextSnapshot()
+    defer {
+      Unmanaged<URLSession>.fromOpaque(
+        UnsafeMutableRawPointer(bitPattern: Int(after.clientPointer))!
+      ).release()
+    }
+
+    XCTAssertEqual(result, .retired)
+    XCTAssertEqual(after.transportIncarnation, before.transportIncarnation)
+    XCTAssertEqual(after.generation, before.generation + 1)
+    XCTAssertTrue(after.confirmed)
+    XCTAssertEqual(after.sessionEpoch, 9)
+    XCTAssertEqual(after.canonicalOrigin, "https://photos.test")
+    XCTAssertNotEqual(after.clientPointer, before.clientPointer)
+  }
+
+  func testPriorGenerationFromTheSameIncarnationIsRetiredWithoutAnotherBarrier() throws {
+    let api = NetworkApiImpl()
+    try api.replaceRequestContext(
+      headers: [:],
+      apiEndpoint: "https://photos.test/api",
+      canonicalOrigin: "https://photos.test",
+      schemePolicy: .httpsOnly,
+      token: "session-a-token",
+      sessionEpoch: 1
+    )
+    let prior = try api.getRequestContextSnapshot()
+    defer {
+      Unmanaged<URLSession>.fromOpaque(
+        UnsafeMutableRawPointer(bitPattern: Int(prior.clientPointer))!
+      ).release()
+    }
+    try api.replaceRequestContext(
+      headers: [:],
+      apiEndpoint: "https://photos.test/api",
+      canonicalOrigin: "https://photos.test",
+      schemePolicy: .httpsOnly,
+      token: "session-b-token",
+      sessionEpoch: 2
+    )
+    URLSessionManager.overrideSessionInvalidationBarrierForTesting { false }
+    defer { URLSessionManager.overrideSessionInvalidationBarrierForTesting(nil) }
+
+    let result = try api.retireForegroundTransports(
+      claims: [
+        NetworkTransportClaimDescriptor(
+          incarnation: prior.transportIncarnation,
+          generation: prior.generation
+        )
+      ]
+    )
+
+    XCTAssertEqual(result, .retired)
+  }
+
+  func testFutureGenerationAndBarrierFailureNeverProduceRetirementProof() throws {
+    let api = NetworkApiImpl()
+    try api.replaceRequestContext(
+      headers: [:],
+      apiEndpoint: "https://photos.test/api",
+      canonicalOrigin: "https://photos.test",
+      schemePolicy: .httpsOnly,
+      token: "session-token",
+      sessionEpoch: 1
+    )
+    let current = try api.getRequestContextSnapshot()
+    defer {
+      Unmanaged<URLSession>.fromOpaque(
+        UnsafeMutableRawPointer(bitPattern: Int(current.clientPointer))!
+      ).release()
+    }
+
+    XCTAssertEqual(
+      try api.retireForegroundTransports(
+        claims: [
+          NetworkTransportClaimDescriptor(
+            incarnation: current.transportIncarnation,
+            generation: current.generation + 1
+          )
+        ]
+      ),
+      .temporarilyUnproven
+    )
+
+    URLSessionManager.overrideSessionInvalidationBarrierForTesting { false }
+    defer {
+      URLSessionManager.overrideSessionInvalidationBarrierForTesting(nil)
+      URLSessionManager.initializeBlockedRequestContext()
+    }
+    XCTAssertThrowsError(
+      try api.retireForegroundTransports(
+        claims: [NetworkTransportClaimDescriptor(incarnation: nil, generation: current.generation)]
+      )
+    ) { error in
+      guard case NetworkContextError.sessionInvalidationTimedOut = error else {
+        return XCTFail("Expected sessionInvalidationTimedOut, got \(error)")
+      }
+    }
+  }
+
+  func testRetirementBarrierRejectsAdmissionAndRetiresMultipleClaimsAtomically() throws {
+    let api = NetworkApiImpl()
+    let url = try XCTUnwrap(URL(string: "https://photos.test/api/assets"))
+    try api.replaceRequestContext(
+      headers: [:],
+      apiEndpoint: "https://photos.test/api",
+      canonicalOrigin: "https://photos.test",
+      schemePolicy: .httpsOnly,
+      token: "session-token",
+      sessionEpoch: 1
+    )
+    let current = try api.getRequestContextSnapshot()
+    defer {
+      Unmanaged<URLSession>.fromOpaque(
+        UnsafeMutableRawPointer(bitPattern: Int(current.clientPointer))!
+      ).release()
+    }
+    var barrierCalls = 0
+    var admittedDuringBarrier = true
+    URLSessionManager.overrideSessionInvalidationBarrierForTesting {
+      barrierCalls += 1
+      admittedDuringBarrier =
+        URLSessionManager.authorize(
+          url,
+          declaredOrigin: "https://photos.test"
+        ) != nil
+      return true
+    }
+    defer { URLSessionManager.overrideSessionInvalidationBarrierForTesting(nil) }
+
+    let result = try api.retireForegroundTransports(
+      claims: [
+        NetworkTransportClaimDescriptor(incarnation: nil, generation: current.generation),
+        NetworkTransportClaimDescriptor(incarnation: "previous-process", generation: 1),
+      ]
+    )
+
+    XCTAssertEqual(result, .retired)
+    XCTAssertEqual(barrierCalls, 1)
+    XCTAssertFalse(admittedDuringBarrier)
   }
 
   func testInvalidationTimeoutCancelsObserversAndNeverPublishesReplacementContext() throws {

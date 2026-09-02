@@ -162,6 +162,12 @@ enum NetworkEndpointSchemePolicy: Int {
   case registeredLocalHttp = 2
 }
 
+enum NetworkTransportRetirementStatus: Int {
+  case retired = 0
+  case temporarilyUnproven = 1
+  case unsupported = 2
+}
+
 /// Generated class from Pigeon that represents data sent in messages.
 struct ClientCertData: Hashable {
   var data: FlutterStandardTypedData
@@ -245,6 +251,83 @@ struct ClientCertPrompt: Hashable {
 }
 
 /// Generated class from Pigeon that represents data sent in messages.
+struct NetworkTransportIdentitySnapshot: Hashable {
+  var incarnation: String
+  var generation: Int64
+  var confirmed: Bool
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> NetworkTransportIdentitySnapshot? {
+    let incarnation = pigeonVar_list[0] as! String
+    let generation = pigeonVar_list[1] as! Int64
+    let confirmed = pigeonVar_list[2] as! Bool
+
+    return NetworkTransportIdentitySnapshot(
+      incarnation: incarnation,
+      generation: generation,
+      confirmed: confirmed
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      incarnation,
+      generation,
+      confirmed,
+    ]
+  }
+  static func == (lhs: NetworkTransportIdentitySnapshot, rhs: NetworkTransportIdentitySnapshot) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return deepEqualsNetwork(lhs.incarnation, rhs.incarnation) && deepEqualsNetwork(lhs.generation, rhs.generation) && deepEqualsNetwork(lhs.confirmed, rhs.confirmed)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("NetworkTransportIdentitySnapshot")
+    deepHashNetwork(value: incarnation, hasher: &hasher)
+    deepHashNetwork(value: generation, hasher: &hasher)
+    deepHashNetwork(value: confirmed, hasher: &hasher)
+  }
+}
+
+/// Generated class from Pigeon that represents data sent in messages.
+struct NetworkTransportClaimDescriptor: Hashable {
+  var incarnation: String? = nil
+  var generation: Int64
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> NetworkTransportClaimDescriptor? {
+    let incarnation: String? = nilOrValue(pigeonVar_list[0])
+    let generation = pigeonVar_list[1] as! Int64
+
+    return NetworkTransportClaimDescriptor(
+      incarnation: incarnation,
+      generation: generation
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      incarnation,
+      generation,
+    ]
+  }
+  static func == (lhs: NetworkTransportClaimDescriptor, rhs: NetworkTransportClaimDescriptor) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return deepEqualsNetwork(lhs.incarnation, rhs.incarnation) && deepEqualsNetwork(lhs.generation, rhs.generation)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("NetworkTransportClaimDescriptor")
+    deepHashNetwork(value: incarnation, hasher: &hasher)
+    deepHashNetwork(value: generation, hasher: &hasher)
+  }
+}
+
+/// Generated class from Pigeon that represents data sent in messages.
 struct NetworkRequestContextSnapshot: Hashable {
   var clientPointer: Int64
   var apiEndpoint: String? = nil
@@ -252,6 +335,7 @@ struct NetworkRequestContextSnapshot: Hashable {
   var schemePolicy: NetworkEndpointSchemePolicy? = nil
   var sessionEpoch: Int64
   var generation: Int64
+  var transportIncarnation: String
   var confirmed: Bool
 
 
@@ -263,7 +347,8 @@ struct NetworkRequestContextSnapshot: Hashable {
     let schemePolicy: NetworkEndpointSchemePolicy? = nilOrValue(pigeonVar_list[3])
     let sessionEpoch = pigeonVar_list[4] as! Int64
     let generation = pigeonVar_list[5] as! Int64
-    let confirmed = pigeonVar_list[6] as! Bool
+    let transportIncarnation = pigeonVar_list[6] as! String
+    let confirmed = pigeonVar_list[7] as! Bool
 
     return NetworkRequestContextSnapshot(
       clientPointer: clientPointer,
@@ -272,6 +357,7 @@ struct NetworkRequestContextSnapshot: Hashable {
       schemePolicy: schemePolicy,
       sessionEpoch: sessionEpoch,
       generation: generation,
+      transportIncarnation: transportIncarnation,
       confirmed: confirmed
     )
   }
@@ -283,6 +369,7 @@ struct NetworkRequestContextSnapshot: Hashable {
       schemePolicy,
       sessionEpoch,
       generation,
+      transportIncarnation,
       confirmed,
     ]
   }
@@ -290,7 +377,7 @@ struct NetworkRequestContextSnapshot: Hashable {
     if Swift.type(of: lhs) != Swift.type(of: rhs) {
       return false
     }
-    return deepEqualsNetwork(lhs.clientPointer, rhs.clientPointer) && deepEqualsNetwork(lhs.apiEndpoint, rhs.apiEndpoint) && deepEqualsNetwork(lhs.canonicalOrigin, rhs.canonicalOrigin) && deepEqualsNetwork(lhs.schemePolicy, rhs.schemePolicy) && deepEqualsNetwork(lhs.sessionEpoch, rhs.sessionEpoch) && deepEqualsNetwork(lhs.generation, rhs.generation) && deepEqualsNetwork(lhs.confirmed, rhs.confirmed)
+    return deepEqualsNetwork(lhs.clientPointer, rhs.clientPointer) && deepEqualsNetwork(lhs.apiEndpoint, rhs.apiEndpoint) && deepEqualsNetwork(lhs.canonicalOrigin, rhs.canonicalOrigin) && deepEqualsNetwork(lhs.schemePolicy, rhs.schemePolicy) && deepEqualsNetwork(lhs.sessionEpoch, rhs.sessionEpoch) && deepEqualsNetwork(lhs.generation, rhs.generation) && deepEqualsNetwork(lhs.transportIncarnation, rhs.transportIncarnation) && deepEqualsNetwork(lhs.confirmed, rhs.confirmed)
   }
 
   func hash(into hasher: inout Hasher) {
@@ -301,6 +388,7 @@ struct NetworkRequestContextSnapshot: Hashable {
     deepHashNetwork(value: schemePolicy, hasher: &hasher)
     deepHashNetwork(value: sessionEpoch, hasher: &hasher)
     deepHashNetwork(value: generation, hasher: &hasher)
+    deepHashNetwork(value: transportIncarnation, hasher: &hasher)
     deepHashNetwork(value: confirmed, hasher: &hasher)
   }
 }
@@ -315,10 +403,20 @@ private class NetworkPigeonCodecReader: FlutterStandardReader {
       }
       return nil
     case 130:
-      return ClientCertData.fromList(self.readValue() as! [Any?])
+      let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
+      if let enumResultAsInt = enumResultAsInt {
+        return NetworkTransportRetirementStatus(rawValue: enumResultAsInt)
+      }
+      return nil
     case 131:
-      return ClientCertPrompt.fromList(self.readValue() as! [Any?])
+      return ClientCertData.fromList(self.readValue() as! [Any?])
     case 132:
+      return ClientCertPrompt.fromList(self.readValue() as! [Any?])
+    case 133:
+      return NetworkTransportIdentitySnapshot.fromList(self.readValue() as! [Any?])
+    case 134:
+      return NetworkTransportClaimDescriptor.fromList(self.readValue() as! [Any?])
+    case 135:
       return NetworkRequestContextSnapshot.fromList(self.readValue() as! [Any?])
     default:
       return super.readValue(ofType: type)
@@ -331,14 +429,23 @@ private class NetworkPigeonCodecWriter: FlutterStandardWriter {
     if let value = value as? NetworkEndpointSchemePolicy {
       super.writeByte(129)
       super.writeValue(value.rawValue)
-    } else if let value = value as? ClientCertData {
+    } else if let value = value as? NetworkTransportRetirementStatus {
       super.writeByte(130)
-      super.writeValue(value.toList())
-    } else if let value = value as? ClientCertPrompt {
+      super.writeValue(value.rawValue)
+    } else if let value = value as? ClientCertData {
       super.writeByte(131)
       super.writeValue(value.toList())
-    } else if let value = value as? NetworkRequestContextSnapshot {
+    } else if let value = value as? ClientCertPrompt {
       super.writeByte(132)
+      super.writeValue(value.toList())
+    } else if let value = value as? NetworkTransportIdentitySnapshot {
+      super.writeByte(133)
+      super.writeValue(value.toList())
+    } else if let value = value as? NetworkTransportClaimDescriptor {
+      super.writeByte(134)
+      super.writeValue(value.toList())
+    } else if let value = value as? NetworkRequestContextSnapshot {
+      super.writeByte(135)
       super.writeValue(value.toList())
     } else {
       super.writeValue(value)
@@ -369,6 +476,9 @@ protocol NetworkApi {
   func hasCertificate() throws -> Bool
   func getClientPointer() throws -> Int64
   func getRequestContextSnapshot() throws -> NetworkRequestContextSnapshot
+  func getForegroundTransportIdentity() throws -> NetworkTransportIdentitySnapshot
+  func getRequestContextSnapshotForIdentity(incarnation: String, generation: Int64) throws -> NetworkRequestContextSnapshot?
+  func retireForegroundTransports(claims: [NetworkTransportClaimDescriptor]) throws -> NetworkTransportRetirementStatus
   func setRequestHeaders(headers: [String: String], serverUrls: [String], token: String?) throws
   func replaceRequestContext(headers: [String: String], apiEndpoint: String?, canonicalOrigin: String?, schemePolicy: NetworkEndpointSchemePolicy?, token: String?, sessionEpoch: Int64) throws
   func failClosedRequestContext() throws
@@ -467,6 +577,50 @@ class NetworkApiSetup {
       }
     } else {
       getRequestContextSnapshotChannel.setMessageHandler(nil)
+    }
+    let getForegroundTransportIdentityChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.immich_mobile.NetworkApi.getForegroundTransportIdentity\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      getForegroundTransportIdentityChannel.setMessageHandler { _, reply in
+        do {
+          let result = try api.getForegroundTransportIdentity()
+          reply(wrapResult(result))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      getForegroundTransportIdentityChannel.setMessageHandler(nil)
+    }
+    let getRequestContextSnapshotForIdentityChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.immich_mobile.NetworkApi.getRequestContextSnapshotForIdentity\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      getRequestContextSnapshotForIdentityChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let incarnationArg = args[0] as! String
+        let generationArg = args[1] as! Int64
+        do {
+          let result = try api.getRequestContextSnapshotForIdentity(incarnation: incarnationArg, generation: generationArg)
+          reply(wrapResult(result))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      getRequestContextSnapshotForIdentityChannel.setMessageHandler(nil)
+    }
+    let retireForegroundTransportsChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.immich_mobile.NetworkApi.retireForegroundTransports\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      retireForegroundTransportsChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let claimsArg = args[0] as! [NetworkTransportClaimDescriptor]
+        do {
+          let result = try api.retireForegroundTransports(claims: claimsArg)
+          reply(wrapResult(result))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      retireForegroundTransportsChannel.setMessageHandler(nil)
     }
     let setRequestHeadersChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.immich_mobile.NetworkApi.setRequestHeaders\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {

@@ -35,7 +35,6 @@ import 'package:immich_mobile/services/api.service.dart';
 import 'package:immich_mobile/services/auth.service.dart';
 import 'package:immich_mobile/services/foreground_upload.service.dart';
 import 'package:immich_mobile/services/secure_storage.service.dart';
-import 'package:immich_mobile/services/background_upload.service.dart';
 import 'package:immich_mobile/services/widget.service.dart';
 import 'package:immich_mobile/utils/hash.dart';
 
@@ -409,10 +408,10 @@ class AuthNotifier extends StateNotifier<AuthState> {
       }
     }
 
+    await invalidate(_stopBackup);
     await invalidate(_invalidateSession);
     await invalidate(_cancelRemoteMedia);
     await invalidate(() => remoteShareSuspension);
-    await invalidate(_stopBackup);
     await invalidate(_disconnectWebsocket);
     await _sessionMutationMutex.protect(_applyRequestedRemoteAuthenticationTermination);
     if (invalidationError != null) {
@@ -489,10 +488,6 @@ class AuthNotifier extends StateNotifier<AuthState> {
     var serverForgotten = false;
 
     try {
-      await attempt(() async {
-        final remaining = await _ref.read(backgroundUploadServiceProvider).cancel();
-        if (remaining != 0) throw StateError('background_backup_drain_failed');
-      }, recordOperationError);
       if (operationError == null) {
         await attempt(() => _ref.read(foregroundUploadServiceProvider).cancel(), recordOperationError);
         await attempt(() => _secureStorageService.delete(kSecuredPinCode), recordOperationError);

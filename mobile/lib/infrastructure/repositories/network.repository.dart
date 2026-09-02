@@ -6,6 +6,8 @@ import 'dart:io';
 import 'package:cupertino_http/cupertino_http.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:immich_mobile/domain/interfaces/backup_execution.interface.dart';
+import 'package:immich_mobile/domain/models/backup_execution_lease.model.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/domain/models/network_uri.model.dart';
@@ -27,6 +29,14 @@ typedef NativeRequestContextReplacement =
       int sessionEpoch,
     );
 typedef NativeRequestContextFailClosed = Future<void> Function();
+typedef NativeTransportIdentityReader = Future<NetworkTransportIdentitySnapshot> Function();
+typedef NativeForegroundTransportRetirer =
+    Future<NetworkTransportRetirementStatus> Function(List<NetworkTransportClaimDescriptor> claims);
+typedef NativeExactRequestContextSnapshotReader =
+    Future<NetworkRequestContextSnapshot?> Function(String incarnation, int generation);
+typedef NativeRequestContextSnapshotBinder =
+    void Function(NetworkRequestContextSnapshot snapshot, {required bool keepFence});
+typedef _ForegroundTransportAuthority = ({int revision, int generation, String incarnation});
 
 enum NetworkContextRole { rootWriter, attachedWorker }
 
@@ -68,6 +78,8 @@ class NetworkRepository {
   static int? _confirmedBlockedClearTransition;
   static EndpointSchemePolicy? _activeSchemePolicy;
   static int? _nativeGeneration;
+  static String? _nativeTransportIncarnation;
+  static var _dartAuthorityRevision = 0;
   static var _transportFenced = false;
   static NativeServerAccessEvidence _serverAccessEvidence = const NativeServerAccessEvidence(
     apiEndpoint: null,
@@ -117,6 +129,8 @@ class NetworkRepository {
     _activeFingerprint = null;
     _activeSchemePolicy = null;
     _nativeGeneration = null;
+    _nativeTransportIncarnation = null;
+    _dartAuthorityRevision = 0;
     _transportFenced = false;
     _serverAccessEvidence = const NativeServerAccessEvidence(
       apiEndpoint: null,
@@ -228,6 +242,7 @@ class NetworkRepository {
     }
     _clientPointer = clientPointer;
     _nativeGeneration = snapshot.generation;
+    _nativeTransportIncarnation = snapshot.transportIncarnation;
     _installNativeClient(nativeClient);
     _webSockets = NetworkWebSocketLifecycle();
     _transportFenced = keepFence;
@@ -294,6 +309,7 @@ class NetworkRepository {
   static void attachNativeSnapshotForTest(NetworkRequestContextSnapshot snapshot) {
     _contextRole = NetworkContextRole.attachedWorker;
     _nativeGeneration = snapshot.generation;
+    _nativeTransportIncarnation = snapshot.transportIncarnation;
     final transition = _blockForContextTransition();
     final descriptor = _validatedNativeDescriptor(snapshot);
     if (descriptor == null) return;
@@ -463,6 +479,113 @@ class NetworkRepository {
   static NativeServerAccessEvidence get serverAccessEvidence => _serverAccessEvidence;
   static bool get isAttachedWorker => _contextRole == NetworkContextRole.attachedWorker;
 
+  static Future<ForegroundTransportIdentity?> captureForegroundTransportIdentity() async {
+    return _captureForegroundTransportIdentity(networkApi.getForegroundTransportIdentity);
+  }
+
+  @visibleForTesting
+  static Future<ForegroundTransportIdentity?> captureForegroundTransportIdentityForTest({
+    required NativeTransportIdentityReader readIdentity,
+  }) => _captureForegroundTransportIdentity(readIdentity);
+
+  static Future<ForegroundTransportIdentity?> _captureForegroundTransportIdentity(
+    NativeTransportIdentityReader readIdentity,
+  ) async {
+    final authority = _foregroundTransportAuthority();
+    if (authority == null) return null;
+    final snapshot = await readIdentity();
+    if (!_isForegroundTransportAuthorityCurrent(authority) ||
+        !snapshot.confirmed ||
+        snapshot.generation != authority.generation ||
+        snapshot.incarnation != authority.incarnation) {
+      return null;
+    }
+    return ForegroundTransportIdentity(incarnation: snapshot.incarnation, generation: snapshot.generation);
+  }
+
+  static bool isForegroundTransportIdentityCurrent(ForegroundTransportIdentity identity) {
+    final authority = _foregroundTransportAuthority();
+    return authority != null &&
+        authority.generation == identity.generation &&
+        authority.incarnation == identity.incarnation;
+  }
+
+  static Future<ForegroundTransportRetirement> retireForegroundTransportClaims(
+    Set<ForegroundTransportClaim> claims,
+    Duration timeout,
+  ) => _retireForegroundTransportClaims(
+    claims,
+    timeout,
+    retireNativeTransports: networkApi.retireForegroundTransports,
+    readIdentity: networkApi.getForegroundTransportIdentity,
+    readExactSnapshot: networkApi.getRequestContextSnapshotForIdentity,
+    bindNativeSnapshot: _bindNativeSnapshot,
+  );
+
+  @visibleForTesting
+  static Future<ForegroundTransportRetirement> retireForegroundTransportClaimsForTest(
+    Set<ForegroundTransportClaim> claims,
+    Duration timeout, {
+    required NativeForegroundTransportRetirer retireNativeTransports,
+    required NativeTransportIdentityReader readIdentity,
+    required NativeExactRequestContextSnapshotReader readExactSnapshot,
+    required NativeRequestContextSnapshotBinder bindNativeSnapshot,
+  }) => _retireForegroundTransportClaims(
+    claims,
+    timeout,
+    retireNativeTransports: retireNativeTransports,
+    readIdentity: readIdentity,
+    readExactSnapshot: readExactSnapshot,
+    bindNativeSnapshot: bindNativeSnapshot,
+  );
+
+  static Future<ForegroundTransportRetirement> _retireForegroundTransportClaims(
+    Set<ForegroundTransportClaim> claims,
+    Duration timeout, {
+    required NativeForegroundTransportRetirer retireNativeTransports,
+    required NativeTransportIdentityReader readIdentity,
+    required NativeExactRequestContextSnapshotReader readExactSnapshot,
+    required NativeRequestContextSnapshotBinder bindNativeSnapshot,
+  }) async {
+    if (_contextRole != NetworkContextRole.rootWriter) return ForegroundTransportRetirement.unsupported;
+    if (claims.isEmpty) return ForegroundTransportRetirement.retired;
+    final descriptors = claims
+        .map(
+          (claim) => NetworkTransportClaimDescriptor(
+            incarnation: claim.transportIncarnation,
+            generation: claim.nativeGeneration,
+          ),
+        )
+        .toList(growable: false);
+    return _contextQueue.protect(() async {
+      final dartAuthority = _foregroundTransportAuthority();
+      final status = await retireNativeTransports(descriptors).timeout(timeout);
+      final retirement = _domainRetirement(status);
+      if (retirement != ForegroundTransportRetirement.retired) return retirement;
+      final identity = await readIdentity().timeout(timeout);
+      if (identity.incarnation.isEmpty || identity.generation < 0) {
+        return ForegroundTransportRetirement.temporarilyUnproven;
+      }
+      final snapshot = await readExactSnapshot(identity.incarnation, identity.generation).timeout(timeout);
+      if (snapshot == null || !_snapshotMatchesIdentity(snapshot, identity)) {
+        return ForegroundTransportRetirement.temporarilyUnproven;
+      }
+      final publishConfirmed =
+          identity.confirmed && dartAuthority != null && _isForegroundTransportAuthorityCurrent(dartAuthority);
+      bindNativeSnapshot(snapshot, keepFence: !publishConfirmed);
+      _serverAccessEvidence = NativeServerAccessEvidence(
+        apiEndpoint: snapshot.apiEndpoint == null ? null : Uri.parse(snapshot.apiEndpoint!),
+        canonicalOrigin: snapshot.canonicalOrigin == null ? null : Uri.parse(snapshot.canonicalOrigin!),
+        schemePolicy: snapshot.schemePolicy == null ? null : _fromNativeSchemePolicy(snapshot.schemePolicy!),
+        sessionEpoch: snapshot.sessionEpoch,
+        generation: snapshot.generation,
+        confirmed: publishConfirmed,
+        fenced: !publishConfirmed || _transportFenced,
+      );
+      return ForegroundTransportRetirement.retired;
+    });
+  }
+
   static Future<bool> fenceAndDrainCurrentTransport({
     required Uri canonicalOrigin,
     required int sessionEpoch,
@@ -605,6 +728,7 @@ class NetworkRepository {
   static http.Client get client => _client!;
 
   static int _blockForContextTransition() {
+    _dartAuthorityRevision++;
     _confirmedBlockedClearTransition = null;
     _serverAccessEvidence = NativeServerAccessEvidence(
       apiEndpoint: _serverAccessEvidence.apiEndpoint,
@@ -617,6 +741,44 @@ class NetworkRepository {
     );
     return _requestOriginGuard.block();
   }
+
+  static _ForegroundTransportAuthority? _foregroundTransportAuthority() {
+    final generation = _nativeGeneration;
+    final incarnation = _nativeTransportIncarnation;
+    final context = _requestOriginGuard.context;
+    final evidence = _serverAccessEvidence;
+    if (_contextRole != NetworkContextRole.rootWriter ||
+        generation == null ||
+        incarnation == null ||
+        incarnation.isEmpty ||
+        !context.nativeContextConfirmed ||
+        !evidence.confirmed ||
+        evidence.fenced ||
+        _transportFenced ||
+        evidence.generation != generation) {
+      return null;
+    }
+    return (revision: _dartAuthorityRevision, generation: generation, incarnation: incarnation);
+  }
+
+  static bool _isForegroundTransportAuthorityCurrent(_ForegroundTransportAuthority authority) {
+    final current = _foregroundTransportAuthority();
+    return current != null && current == authority;
+  }
+
+  static bool _snapshotMatchesIdentity(
+    NetworkRequestContextSnapshot snapshot,
+    NetworkTransportIdentitySnapshot identity,
+  ) =>
+      snapshot.transportIncarnation == identity.incarnation &&
+      snapshot.generation == identity.generation &&
+      snapshot.confirmed == identity.confirmed;
+
+  static ForegroundTransportRetirement _domainRetirement(NetworkTransportRetirementStatus status) => switch (status) {
+    NetworkTransportRetirementStatus.retired => ForegroundTransportRetirement.retired,
+    NetworkTransportRetirementStatus.temporarilyUnproven => ForegroundTransportRetirement.temporarilyUnproven,
+    NetworkTransportRetirementStatus.unsupported => ForegroundTransportRetirement.unsupported,
+  };
 
   static Future<void> _fenceAndDrainTransport() async {
     final client = _client;

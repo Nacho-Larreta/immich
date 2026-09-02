@@ -83,6 +83,18 @@ private class NetworkApiImpl : NetworkApi {
     return HttpClientManager.getRequestContextSnapshot()
   }
 
+  override fun getForegroundTransportIdentity(): NetworkTransportIdentitySnapshot =
+    HttpClientManager.getForegroundTransportIdentity()
+
+  override fun getRequestContextSnapshotForIdentity(
+    incarnation: String,
+    generation: Long,
+  ): NetworkRequestContextSnapshot? = HttpClientManager.getRequestContextSnapshotForIdentity(incarnation, generation)
+
+  override fun retireForegroundTransports(
+    claims: List<NetworkTransportClaimDescriptor>,
+  ): NetworkTransportRetirementStatus = NetworkTransportRetirementStatus.UNSUPPORTED
+
   override fun setRequestHeaders(headers: Map<String, String>, serverUrls: List<String>, token: String?) {
     HttpClientManager.setRequestHeaders(headers, serverUrls, token)
   }

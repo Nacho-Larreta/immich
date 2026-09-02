@@ -88,6 +88,8 @@ int _deepHash(Object? value) {
 
 enum NetworkEndpointSchemePolicy { httpsOnly, explicitlyApprovedHttp, registeredLocalHttp }
 
+enum NetworkTransportRetirementStatus { retired, temporarilyUnproven, unsupported }
+
 class ClientCertData {
   ClientCertData({required this.data, required this.password});
 
@@ -174,6 +176,88 @@ class ClientCertPrompt {
   int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
 }
 
+class NetworkTransportIdentitySnapshot {
+  NetworkTransportIdentitySnapshot({required this.incarnation, required this.generation, required this.confirmed});
+
+  String incarnation;
+
+  int generation;
+
+  bool confirmed;
+
+  List<Object?> _toList() {
+    return <Object?>[incarnation, generation, confirmed];
+  }
+
+  Object encode() {
+    return _toList();
+  }
+
+  static NetworkTransportIdentitySnapshot decode(Object result) {
+    result as List<Object?>;
+    return NetworkTransportIdentitySnapshot(
+      incarnation: result[0]! as String,
+      generation: result[1]! as int,
+      confirmed: result[2]! as bool,
+    );
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! NetworkTransportIdentitySnapshot || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(incarnation, other.incarnation) &&
+        _deepEquals(generation, other.generation) &&
+        _deepEquals(confirmed, other.confirmed);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+}
+
+class NetworkTransportClaimDescriptor {
+  NetworkTransportClaimDescriptor({this.incarnation, required this.generation});
+
+  String? incarnation;
+
+  int generation;
+
+  List<Object?> _toList() {
+    return <Object?>[incarnation, generation];
+  }
+
+  Object encode() {
+    return _toList();
+  }
+
+  static NetworkTransportClaimDescriptor decode(Object result) {
+    result as List<Object?>;
+    return NetworkTransportClaimDescriptor(incarnation: result[0] as String?, generation: result[1]! as int);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! NetworkTransportClaimDescriptor || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(incarnation, other.incarnation) && _deepEquals(generation, other.generation);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+}
+
 class NetworkRequestContextSnapshot {
   NetworkRequestContextSnapshot({
     required this.clientPointer,
@@ -182,6 +266,7 @@ class NetworkRequestContextSnapshot {
     this.schemePolicy,
     required this.sessionEpoch,
     required this.generation,
+    required this.transportIncarnation,
     required this.confirmed,
   });
 
@@ -197,10 +282,21 @@ class NetworkRequestContextSnapshot {
 
   int generation;
 
+  String transportIncarnation;
+
   bool confirmed;
 
   List<Object?> _toList() {
-    return <Object?>[clientPointer, apiEndpoint, canonicalOrigin, schemePolicy, sessionEpoch, generation, confirmed];
+    return <Object?>[
+      clientPointer,
+      apiEndpoint,
+      canonicalOrigin,
+      schemePolicy,
+      sessionEpoch,
+      generation,
+      transportIncarnation,
+      confirmed,
+    ];
   }
 
   Object encode() {
@@ -216,7 +312,8 @@ class NetworkRequestContextSnapshot {
       schemePolicy: result[3] as NetworkEndpointSchemePolicy?,
       sessionEpoch: result[4]! as int,
       generation: result[5]! as int,
-      confirmed: result[6]! as bool,
+      transportIncarnation: result[6]! as String,
+      confirmed: result[7]! as bool,
     );
   }
 
@@ -235,6 +332,7 @@ class NetworkRequestContextSnapshot {
         _deepEquals(schemePolicy, other.schemePolicy) &&
         _deepEquals(sessionEpoch, other.sessionEpoch) &&
         _deepEquals(generation, other.generation) &&
+        _deepEquals(transportIncarnation, other.transportIncarnation) &&
         _deepEquals(confirmed, other.confirmed);
   }
 
@@ -253,14 +351,23 @@ class _PigeonCodec extends StandardMessageCodec {
     } else if (value is NetworkEndpointSchemePolicy) {
       buffer.putUint8(129);
       writeValue(buffer, value.index);
-    } else if (value is ClientCertData) {
+    } else if (value is NetworkTransportRetirementStatus) {
       buffer.putUint8(130);
-      writeValue(buffer, value.encode());
-    } else if (value is ClientCertPrompt) {
+      writeValue(buffer, value.index);
+    } else if (value is ClientCertData) {
       buffer.putUint8(131);
       writeValue(buffer, value.encode());
-    } else if (value is NetworkRequestContextSnapshot) {
+    } else if (value is ClientCertPrompt) {
       buffer.putUint8(132);
+      writeValue(buffer, value.encode());
+    } else if (value is NetworkTransportIdentitySnapshot) {
+      buffer.putUint8(133);
+      writeValue(buffer, value.encode());
+    } else if (value is NetworkTransportClaimDescriptor) {
+      buffer.putUint8(134);
+      writeValue(buffer, value.encode());
+    } else if (value is NetworkRequestContextSnapshot) {
+      buffer.putUint8(135);
       writeValue(buffer, value.encode());
     } else {
       super.writeValue(buffer, value);
@@ -274,10 +381,17 @@ class _PigeonCodec extends StandardMessageCodec {
         final value = readValue(buffer) as int?;
         return value == null ? null : NetworkEndpointSchemePolicy.values[value];
       case 130:
-        return ClientCertData.decode(readValue(buffer)!);
+        final value = readValue(buffer) as int?;
+        return value == null ? null : NetworkTransportRetirementStatus.values[value];
       case 131:
-        return ClientCertPrompt.decode(readValue(buffer)!);
+        return ClientCertData.decode(readValue(buffer)!);
       case 132:
+        return ClientCertPrompt.decode(readValue(buffer)!);
+      case 133:
+        return NetworkTransportIdentitySnapshot.decode(readValue(buffer)!);
+      case 134:
+        return NetworkTransportClaimDescriptor.decode(readValue(buffer)!);
+      case 135:
         return NetworkRequestContextSnapshot.decode(readValue(buffer)!);
       default:
         return super.readValueOfType(type, buffer);
@@ -395,6 +509,68 @@ class NetworkApi {
       isNullValid: false,
     );
     return pigeonVar_replyValue! as NetworkRequestContextSnapshot;
+  }
+
+  Future<NetworkTransportIdentitySnapshot> getForegroundTransportIdentity() async {
+    final pigeonVar_channelName =
+        'dev.flutter.pigeon.immich_mobile.NetworkApi.getForegroundTransportIdentity$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(null);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    final Object? pigeonVar_replyValue = _extractReplyValueOrThrow(
+      pigeonVar_replyList,
+      pigeonVar_channelName,
+      isNullValid: false,
+    );
+    return pigeonVar_replyValue! as NetworkTransportIdentitySnapshot;
+  }
+
+  Future<NetworkRequestContextSnapshot?> getRequestContextSnapshotForIdentity(
+    String incarnation,
+    int generation,
+  ) async {
+    final pigeonVar_channelName =
+        'dev.flutter.pigeon.immich_mobile.NetworkApi.getRequestContextSnapshotForIdentity$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[incarnation, generation]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    final Object? pigeonVar_replyValue = _extractReplyValueOrThrow(
+      pigeonVar_replyList,
+      pigeonVar_channelName,
+      isNullValid: true,
+    );
+    return pigeonVar_replyValue as NetworkRequestContextSnapshot?;
+  }
+
+  Future<NetworkTransportRetirementStatus> retireForegroundTransports(
+    List<NetworkTransportClaimDescriptor> claims,
+  ) async {
+    final pigeonVar_channelName =
+        'dev.flutter.pigeon.immich_mobile.NetworkApi.retireForegroundTransports$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[claims]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    final Object? pigeonVar_replyValue = _extractReplyValueOrThrow(
+      pigeonVar_replyList,
+      pigeonVar_channelName,
+      isNullValid: false,
+    );
+    return pigeonVar_replyValue! as NetworkTransportRetirementStatus;
   }
 
   Future<void> setRequestHeaders(Map<String, String> headers, List<String> serverUrls, String? token) async {

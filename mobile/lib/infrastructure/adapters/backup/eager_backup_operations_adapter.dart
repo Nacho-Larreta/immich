@@ -79,7 +79,7 @@ final class EagerBackupOperationsAdapter implements EagerBackupOperationsPort {
     bool isPermitCurrent() => permitAlive && !cancellation.isCancelled && _bindings.isCurrent(binding);
 
     try {
-      activityClaim = await _arbiter.beginForegroundActivity(lease, nativeGeneration: binding.nativeGeneration);
+      activityClaim = await _arbiter.beginForegroundActivity(lease, expectedNativeGeneration: binding.nativeGeneration);
       if (activityClaim == null) throw const EagerBackupFailure.staleContext();
       heartbeat = Timer.periodic(_heartbeatInterval, (_) {
         if (renewalInFlight != null || !permitAlive) return;

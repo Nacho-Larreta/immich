@@ -204,6 +204,18 @@ enum class NetworkEndpointSchemePolicy(val raw: Int) {
   }
 }
 
+enum class NetworkTransportRetirementStatus(val raw: Int) {
+  RETIRED(0),
+  TEMPORARILY_UNPROVEN(1),
+  UNSUPPORTED(2);
+
+  companion object {
+    fun ofRaw(raw: Int): NetworkTransportRetirementStatus? {
+      return values().firstOrNull { it.raw == raw }
+    }
+  }
+}
+
 /** Generated class from Pigeon that represents data sent in messages. */
 data class ClientCertData (
   val data: ByteArray,
@@ -289,35 +301,23 @@ data class ClientCertPrompt (
 }
 
 /** Generated class from Pigeon that represents data sent in messages. */
-data class NetworkRequestContextSnapshot (
-  val clientPointer: Long,
-  val apiEndpoint: String? = null,
-  val canonicalOrigin: String? = null,
-  val schemePolicy: NetworkEndpointSchemePolicy? = null,
-  val sessionEpoch: Long,
+data class NetworkTransportIdentitySnapshot (
+  val incarnation: String,
   val generation: Long,
   val confirmed: Boolean
 )
  {
   companion object {
-    fun fromList(pigeonVar_list: List<Any?>): NetworkRequestContextSnapshot {
-      val clientPointer = pigeonVar_list[0] as Long
-      val apiEndpoint = pigeonVar_list[1] as String?
-      val canonicalOrigin = pigeonVar_list[2] as String?
-      val schemePolicy = pigeonVar_list[3] as NetworkEndpointSchemePolicy?
-      val sessionEpoch = pigeonVar_list[4] as Long
-      val generation = pigeonVar_list[5] as Long
-      val confirmed = pigeonVar_list[6] as Boolean
-      return NetworkRequestContextSnapshot(clientPointer, apiEndpoint, canonicalOrigin, schemePolicy, sessionEpoch, generation, confirmed)
+    fun fromList(pigeonVar_list: List<Any?>): NetworkTransportIdentitySnapshot {
+      val incarnation = pigeonVar_list[0] as String
+      val generation = pigeonVar_list[1] as Long
+      val confirmed = pigeonVar_list[2] as Boolean
+      return NetworkTransportIdentitySnapshot(incarnation, generation, confirmed)
     }
   }
   fun toList(): List<Any?> {
     return listOf(
-      clientPointer,
-      apiEndpoint,
-      canonicalOrigin,
-      schemePolicy,
-      sessionEpoch,
+      incarnation,
       generation,
       confirmed,
     )
@@ -329,8 +329,103 @@ data class NetworkRequestContextSnapshot (
     if (this === other) {
       return true
     }
+    val other = other as NetworkTransportIdentitySnapshot
+    return NetworkPigeonUtils.deepEquals(this.incarnation, other.incarnation) && NetworkPigeonUtils.deepEquals(this.generation, other.generation) && NetworkPigeonUtils.deepEquals(this.confirmed, other.confirmed)
+  }
+
+  override fun hashCode(): Int {
+    var result = javaClass.hashCode()
+    result = 31 * result + NetworkPigeonUtils.deepHash(this.incarnation)
+    result = 31 * result + NetworkPigeonUtils.deepHash(this.generation)
+    result = 31 * result + NetworkPigeonUtils.deepHash(this.confirmed)
+    return result
+  }
+}
+
+/** Generated class from Pigeon that represents data sent in messages. */
+data class NetworkTransportClaimDescriptor (
+  val incarnation: String? = null,
+  val generation: Long
+)
+ {
+  companion object {
+    fun fromList(pigeonVar_list: List<Any?>): NetworkTransportClaimDescriptor {
+      val incarnation = pigeonVar_list[0] as String?
+      val generation = pigeonVar_list[1] as Long
+      return NetworkTransportClaimDescriptor(incarnation, generation)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf(
+      incarnation,
+      generation,
+    )
+  }
+  override fun equals(other: Any?): Boolean {
+    if (other == null || other.javaClass != javaClass) {
+      return false
+    }
+    if (this === other) {
+      return true
+    }
+    val other = other as NetworkTransportClaimDescriptor
+    return NetworkPigeonUtils.deepEquals(this.incarnation, other.incarnation) && NetworkPigeonUtils.deepEquals(this.generation, other.generation)
+  }
+
+  override fun hashCode(): Int {
+    var result = javaClass.hashCode()
+    result = 31 * result + NetworkPigeonUtils.deepHash(this.incarnation)
+    result = 31 * result + NetworkPigeonUtils.deepHash(this.generation)
+    return result
+  }
+}
+
+/** Generated class from Pigeon that represents data sent in messages. */
+data class NetworkRequestContextSnapshot (
+  val clientPointer: Long,
+  val apiEndpoint: String? = null,
+  val canonicalOrigin: String? = null,
+  val schemePolicy: NetworkEndpointSchemePolicy? = null,
+  val sessionEpoch: Long,
+  val generation: Long,
+  val transportIncarnation: String,
+  val confirmed: Boolean
+)
+ {
+  companion object {
+    fun fromList(pigeonVar_list: List<Any?>): NetworkRequestContextSnapshot {
+      val clientPointer = pigeonVar_list[0] as Long
+      val apiEndpoint = pigeonVar_list[1] as String?
+      val canonicalOrigin = pigeonVar_list[2] as String?
+      val schemePolicy = pigeonVar_list[3] as NetworkEndpointSchemePolicy?
+      val sessionEpoch = pigeonVar_list[4] as Long
+      val generation = pigeonVar_list[5] as Long
+      val transportIncarnation = pigeonVar_list[6] as String
+      val confirmed = pigeonVar_list[7] as Boolean
+      return NetworkRequestContextSnapshot(clientPointer, apiEndpoint, canonicalOrigin, schemePolicy, sessionEpoch, generation, transportIncarnation, confirmed)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf(
+      clientPointer,
+      apiEndpoint,
+      canonicalOrigin,
+      schemePolicy,
+      sessionEpoch,
+      generation,
+      transportIncarnation,
+      confirmed,
+    )
+  }
+  override fun equals(other: Any?): Boolean {
+    if (other == null || other.javaClass != javaClass) {
+      return false
+    }
+    if (this === other) {
+      return true
+    }
     val other = other as NetworkRequestContextSnapshot
-    return NetworkPigeonUtils.deepEquals(this.clientPointer, other.clientPointer) && NetworkPigeonUtils.deepEquals(this.apiEndpoint, other.apiEndpoint) && NetworkPigeonUtils.deepEquals(this.canonicalOrigin, other.canonicalOrigin) && NetworkPigeonUtils.deepEquals(this.schemePolicy, other.schemePolicy) && NetworkPigeonUtils.deepEquals(this.sessionEpoch, other.sessionEpoch) && NetworkPigeonUtils.deepEquals(this.generation, other.generation) && NetworkPigeonUtils.deepEquals(this.confirmed, other.confirmed)
+    return NetworkPigeonUtils.deepEquals(this.clientPointer, other.clientPointer) && NetworkPigeonUtils.deepEquals(this.apiEndpoint, other.apiEndpoint) && NetworkPigeonUtils.deepEquals(this.canonicalOrigin, other.canonicalOrigin) && NetworkPigeonUtils.deepEquals(this.schemePolicy, other.schemePolicy) && NetworkPigeonUtils.deepEquals(this.sessionEpoch, other.sessionEpoch) && NetworkPigeonUtils.deepEquals(this.generation, other.generation) && NetworkPigeonUtils.deepEquals(this.transportIncarnation, other.transportIncarnation) && NetworkPigeonUtils.deepEquals(this.confirmed, other.confirmed)
   }
 
   override fun hashCode(): Int {
@@ -341,6 +436,7 @@ data class NetworkRequestContextSnapshot (
     result = 31 * result + NetworkPigeonUtils.deepHash(this.schemePolicy)
     result = 31 * result + NetworkPigeonUtils.deepHash(this.sessionEpoch)
     result = 31 * result + NetworkPigeonUtils.deepHash(this.generation)
+    result = 31 * result + NetworkPigeonUtils.deepHash(this.transportIncarnation)
     result = 31 * result + NetworkPigeonUtils.deepHash(this.confirmed)
     return result
   }
@@ -354,16 +450,31 @@ private open class NetworkPigeonCodec : StandardMessageCodec() {
         }
       }
       130.toByte() -> {
-        return (readValue(buffer) as? List<Any?>)?.let {
-          ClientCertData.fromList(it)
+        return (readValue(buffer) as Long?)?.let {
+          NetworkTransportRetirementStatus.ofRaw(it.toInt())
         }
       }
       131.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          ClientCertPrompt.fromList(it)
+          ClientCertData.fromList(it)
         }
       }
       132.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          ClientCertPrompt.fromList(it)
+        }
+      }
+      133.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          NetworkTransportIdentitySnapshot.fromList(it)
+        }
+      }
+      134.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          NetworkTransportClaimDescriptor.fromList(it)
+        }
+      }
+      135.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
           NetworkRequestContextSnapshot.fromList(it)
         }
@@ -377,16 +488,28 @@ private open class NetworkPigeonCodec : StandardMessageCodec() {
         stream.write(129)
         writeValue(stream, value.raw.toLong())
       }
-      is ClientCertData -> {
+      is NetworkTransportRetirementStatus -> {
         stream.write(130)
-        writeValue(stream, value.toList())
+        writeValue(stream, value.raw.toLong())
       }
-      is ClientCertPrompt -> {
+      is ClientCertData -> {
         stream.write(131)
         writeValue(stream, value.toList())
       }
-      is NetworkRequestContextSnapshot -> {
+      is ClientCertPrompt -> {
         stream.write(132)
+        writeValue(stream, value.toList())
+      }
+      is NetworkTransportIdentitySnapshot -> {
+        stream.write(133)
+        writeValue(stream, value.toList())
+      }
+      is NetworkTransportClaimDescriptor -> {
+        stream.write(134)
+        writeValue(stream, value.toList())
+      }
+      is NetworkRequestContextSnapshot -> {
+        stream.write(135)
         writeValue(stream, value.toList())
       }
       else -> super.writeValue(stream, value)
@@ -403,6 +526,9 @@ interface NetworkApi {
   fun hasCertificate(): Boolean
   fun getClientPointer(): Long
   fun getRequestContextSnapshot(): NetworkRequestContextSnapshot
+  fun getForegroundTransportIdentity(): NetworkTransportIdentitySnapshot
+  fun getRequestContextSnapshotForIdentity(incarnation: String, generation: Long): NetworkRequestContextSnapshot?
+  fun retireForegroundTransports(claims: List<NetworkTransportClaimDescriptor>): NetworkTransportRetirementStatus
   fun setRequestHeaders(headers: Map<String, String>, serverUrls: List<String>, token: String?)
   fun replaceRequestContext(headers: Map<String, String>, apiEndpoint: String?, canonicalOrigin: String?, schemePolicy: NetworkEndpointSchemePolicy?, token: String?, sessionEpoch: Long)
   fun failClosedRequestContext()
@@ -507,6 +633,56 @@ interface NetworkApi {
           channel.setMessageHandler { _, reply ->
             val wrapped: List<Any?> = try {
               listOf(api.getRequestContextSnapshot())
+            } catch (exception: Throwable) {
+              NetworkPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.immich_mobile.NetworkApi.getForegroundTransportIdentity$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { _, reply ->
+            val wrapped: List<Any?> = try {
+              listOf(api.getForegroundTransportIdentity())
+            } catch (exception: Throwable) {
+              NetworkPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.immich_mobile.NetworkApi.getRequestContextSnapshotForIdentity$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val incarnationArg = args[0] as String
+            val generationArg = args[1] as Long
+            val wrapped: List<Any?> = try {
+              listOf(api.getRequestContextSnapshotForIdentity(incarnationArg, generationArg))
+            } catch (exception: Throwable) {
+              NetworkPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.immich_mobile.NetworkApi.retireForegroundTransports$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val claimsArg = args[0] as List<NetworkTransportClaimDescriptor>
+            val wrapped: List<Any?> = try {
+              listOf(api.retireForegroundTransports(claimsArg))
             } catch (exception: Throwable) {
               NetworkPigeonUtils.wrapError(exception)
             }

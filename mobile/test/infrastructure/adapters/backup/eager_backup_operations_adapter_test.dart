@@ -26,11 +26,28 @@ class _MockUploads extends Mock implements ForegroundUploadService {}
 
 class _MockBindings extends Mock implements BackupRunBindingSourcePort {}
 
+final class _ForegroundFence implements ForegroundTransportFencePort {
+  const _ForegroundFence();
+
+  @override
+  Future<ForegroundTransportIdentity?> captureIdentity() async =>
+      const ForegroundTransportIdentity(incarnation: 'root-process', generation: 3);
+
+  @override
+  bool isIdentityCurrent(ForegroundTransportIdentity identity, {required String bindingDigest}) => true;
+
+  @override
+  Future<ForegroundTransportRetirement> retireClaims(
+    Set<ForegroundTransportClaim> claims, {
+    required Duration timeout,
+  }) async => ForegroundTransportRetirement.retired;
+}
+
 void main() {
   setUpAll(() {
     registerFallbackValue(_lease('fallback'));
     registerFallbackValue(
-      const ForegroundTransportClaim(activityId: 'fallback', bindingDigest: 'fallback', nativeGeneration: 0),
+      ForegroundTransportClaim.legacy(activityId: 'fallback', bindingDigest: 'fallback', nativeGeneration: 0),
     );
     registerFallbackValue(Completer<void>());
     registerFallbackValue(const UploadCallbacks());
@@ -102,7 +119,12 @@ void main() {
       backups: backups,
       synchronization: synchronization,
       uploads: uploads,
-      arbiter: BackupExecutionArbiter(leases: leases, tasks: tasks, tokenFactory: () => 'run-token'),
+      arbiter: BackupExecutionArbiter(
+        leases: leases,
+        tasks: tasks,
+        foregroundFence: const _ForegroundFence(),
+        tokenFactory: () => 'run-token',
+      ),
       bindings: bindings,
       heartbeatInterval: const Duration(hours: 1),
     );

@@ -210,7 +210,7 @@ BackupExecutionLease _lease(BackupRunBinding binding) => BackupExecutionLease(
   activityRevision: 1,
   callbacksInFlight: 0,
   foregroundActivityClaims: {
-    ForegroundTransportClaim(
+    ForegroundTransportClaim.legacy(
       activityId: 'foreground-run',
       bindingDigest: binding.digest,
       nativeGeneration: binding.nativeGeneration,

@@ -182,6 +182,7 @@ class URLSessionManager: NSObject {
   private static var activeAuthCookieValues: [AuthCookie: String] = [:]
   private static var activeHeaders: [String: String] = [:]
   private static var sensitiveHeaderNames: Set<String> = ["authorization", "cookie"]
+  private static let transportIncarnation = UUID().uuidString
   private static var requestContextRevision: UInt64 = 0
   private static var requestContextSessionEpoch: Int64 = 0
   private static var requestContextConfirmed = false
@@ -323,6 +324,7 @@ class URLSessionManager: NSObject {
     schemePolicy: NetworkEndpointSchemePolicy?,
     sessionEpoch: Int64,
     generation: UInt64,
+    transportIncarnation: String,
     confirmed: Bool
   ) {
     let manager = shared
@@ -336,10 +338,117 @@ class URLSessionManager: NSObject {
           activeSchemePolicy,
           requestContextSessionEpoch,
           requestContextRevision,
+          transportIncarnation,
           requestContextConfirmed && !isReplacingRequestContext
         )
       }
     }
+  }
+
+  static func foregroundTransportIdentity() -> (
+    incarnation: String,
+    generation: UInt64,
+    confirmed: Bool
+  ) {
+    withRequestContextLock {
+      (
+        transportIncarnation,
+        requestContextRevision,
+        requestContextConfirmed && !isReplacingRequestContext
+      )
+    }
+  }
+
+  static func requestContextSnapshot(
+    forTransportIncarnation expectedIncarnation: String,
+    generation expectedGeneration: Int64
+  ) -> (
+    clientPointer: UnsafeMutableRawPointer,
+    apiEndpoint: String?,
+    canonicalOrigin: String?,
+    schemePolicy: NetworkEndpointSchemePolicy?,
+    sessionEpoch: Int64,
+    generation: UInt64,
+    transportIncarnation: String,
+    confirmed: Bool
+  )? {
+    guard expectedGeneration >= 0, let generation = UInt64(exactly: expectedGeneration) else {
+      return nil
+    }
+    let manager = shared
+    return sessionTransitionLock.withLock {
+      withRequestContextLock {
+        guard
+          transportIncarnation == expectedIncarnation,
+          requestContextRevision == generation
+        else {
+          return nil
+        }
+        return (
+          retainedPointer(to: manager.session),
+          activeApiEndpoint,
+          activeCanonicalOrigins.first?.string,
+          activeSchemePolicy,
+          requestContextSessionEpoch,
+          requestContextRevision,
+          transportIncarnation,
+          requestContextConfirmed && !isReplacingRequestContext
+        )
+      }
+    }
+  }
+
+  static func retireForegroundTransports(
+    claims: [NetworkTransportClaimDescriptor]
+  ) throws -> NetworkTransportRetirementStatus {
+    guard !claims.isEmpty else { return .retired }
+    let identity = withRequestContextLock {
+      (incarnation: transportIncarnation, generation: requestContextRevision)
+    }
+    for claim in claims {
+      guard claim.generation >= 0, let generation = UInt64(exactly: claim.generation) else {
+        return .temporarilyUnproven
+      }
+      if claim.incarnation == identity.incarnation && generation > identity.generation {
+        return .temporarilyUnproven
+      }
+    }
+    let alreadyRetired = claims.allSatisfy { claim in
+      guard
+        claim.incarnation == identity.incarnation,
+        let generation = UInt64(exactly: claim.generation)
+      else { return false }
+      return generation < identity.generation
+    }
+    if alreadyRetired { return .retired }
+
+    let active = withRequestContextLock {
+      (
+        headers: activeHeaders,
+        apiEndpoint: activeApiEndpoint,
+        origins: activeCanonicalOrigins,
+        schemePolicy: activeSchemePolicy,
+        token: activeAuthCookieValues[.accessToken],
+        sessionEpoch: requestContextSessionEpoch,
+        confirmed: requestContextConfirmed && !isReplacingRequestContext
+      )
+    }
+    do {
+      try transitionRequestContext(
+        headers: active.headers,
+        apiEndpoint: active.apiEndpoint,
+        origins: active.origins,
+        schemePolicy: active.schemePolicy,
+        token: active.token,
+        sessionEpoch: active.sessionEpoch,
+        confirmed: active.confirmed,
+        forceTransportReplacement: true,
+        expectedGeneration: identity.generation
+      )
+    } catch NetworkContextError.requestContextChangedDuringRetirement {
+      return .temporarilyUnproven
+    }
+    return .retired
   }
 
   static func requestContextIdentity() -> (sessionEpoch: Int64, generation: Int64) {
@@ -688,11 +797,19 @@ class URLSessionManager: NSObject {
     schemePolicy: NetworkEndpointSchemePolicy? = nil,
     token: String?,
     sessionEpoch: Int64,
-    confirmed: Bool = true
+    confirmed: Bool = true,
+    forceTransportReplacement: Bool = false,
+    expectedGeneration: UInt64? = nil
   ) throws {
     var shouldNotify = false
     do {
       try sessionTransitionLock.withLock {
+        if let expectedGeneration {
+          let generation = withRequestContextLock { requestContextRevision }
+          guard generation == expectedGeneration else {
+            throw NetworkContextError.requestContextChangedDuringRetirement
+          }
+        }
         let matchesActiveContext = withRequestContextLock {
           requestContextMatchesLocked(
             headers: headers,
@@ -704,7 +821,7 @@ class URLSessionManager: NSObject {
             confirmed: confirmed
           )
         }
-        if matchesActiveContext {
+        if matchesActiveContext && !forceTransportReplacement {
           return
         }
 
@@ -1139,6 +1256,7 @@ enum NetworkContextError: Error {
   case headersWithoutOrigin
   case multipleOriginsNotAllowed
   case sessionInvalidationTimedOut
+  case requestContextChangedDuringRetirement
 }
 
 class URLSessionManagerDelegate: NSObject, URLSessionTaskDelegate, URLSessionWebSocketDelegate {

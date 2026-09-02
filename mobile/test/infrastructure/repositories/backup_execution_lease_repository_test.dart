@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:drift/drift.dart' hide isNull, isNotNull;
@@ -34,6 +35,54 @@ void main() {
     await secondDb.close();
     await firstDb.close();
     await directory.delete(recursive: true);
+  });
+
+  test('schema-7 lease round-trips both legacy and native-incarnation foreground claims', () {
+    final now = DateTime.utc(2026, 9, 2, 18);
+    final legacy = ForegroundTransportClaim.legacy(
+      activityId: 'legacy-claim',
+      bindingDigest: 'binding-digest',
+      nativeGeneration: 7,
+    );
+    final current = ForegroundTransportClaim.current(
+      activityId: 'current-claim',
+      bindingDigest: 'binding-digest',
+      nativeGeneration: 9,
+      transportIncarnation: 'root-process',
+    );
+    final lease = _lease('claim-schema', now).copyWith(foregroundActivityClaims: {legacy, current});
+
+    final encoded = lease.toJson();
+    final json = jsonDecode(encoded) as Map<String, dynamic>;
+    final claims = (json['foregroundActivityClaims'] as List<dynamic>).cast<Map<String, dynamic>>();
+
+    expect(json['schemaVersion'], BackupExecutionLease.schemaVersion);
+    expect(claims.singleWhere((claim) => claim['activityId'] == 'legacy-claim')['claimSchemaVersion'], isNull);
+    expect(
+      claims.singleWhere((claim) => claim['activityId'] == 'current-claim'),
+      containsPair('claimSchemaVersion', ForegroundTransportClaim.currentSchemaVersion),
+    );
+    expect(BackupExecutionLease.tryParse(encoded), lease);
+  });
+
+  test('foreground claim factories reject incomplete schema-2 identities by construction', () {
+    expect(
+      () => ForegroundTransportClaim.current(
+        activityId: 'current-claim',
+        bindingDigest: 'binding-digest',
+        nativeGeneration: 9,
+        transportIncarnation: '',
+      ),
+      throwsArgumentError,
+    );
+
+    final legacy = ForegroundTransportClaim.legacy(
+      activityId: 'legacy-claim',
+      bindingDigest: 'binding-digest',
+      nativeGeneration: 7,
+    );
+    expect(legacy.isLegacy, isTrue);
+    expect(legacy.claimSchemaVersion, ForegroundTransportClaim.legacySchemaVersion);
   });
 
   test('two connections race and exactly one acquires', () async {
@@ -89,7 +138,7 @@ void main() {
       await second.beginForegroundActivityForOwner(
         runToken: lease.runToken,
         bindingDigest: lease.bindingDigest,
-        claim: ForegroundTransportClaim(
+        claim: ForegroundTransportClaim.legacy(
           activityId: 'denied-foreground',
           bindingDigest: lease.bindingDigest,
           nativeGeneration: 1,
@@ -357,7 +406,7 @@ void main() {
   test('expired closing recovery clears the exact orphan snapshot in one CAS transition', () async {
     final now = DateTime.utc(2026, 9, 2, 13);
     const taskClaim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'opaque-orphan');
-    const foregroundClaim = ForegroundTransportClaim(
+    final foregroundClaim = ForegroundTransportClaim.legacy(
       activityId: 'opaque-foreground',
       bindingDigest: 'binding-digest',
       nativeGeneration: 7,
@@ -474,7 +523,7 @@ void main() {
       first.beginForegroundActivityForOwner(
         runToken: expired.runToken,
         bindingDigest: expired.bindingDigest,
-        claim: const ForegroundTransportClaim(
+        claim: ForegroundTransportClaim.legacy(
           activityId: 'opaque-transport',
           bindingDigest: 'binding-digest',
           nativeGeneration: 7,

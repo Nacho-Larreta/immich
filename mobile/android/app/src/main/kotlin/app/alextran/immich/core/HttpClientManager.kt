@@ -45,6 +45,7 @@ import java.security.Principal
 import java.security.PrivateKey
 import java.security.cert.X509Certificate
 import java.util.Locale
+import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -170,6 +171,7 @@ object HttpClientManager {
   private var activeApiEndpoint: String? = null
   private var activeSchemePolicy: NetworkEndpointSchemePolicy? = null
   private var requestContextFingerprint: RequestContextFingerprint? = null
+  private val transportIncarnation = UUID.randomUUID().toString()
   private var requestContextGeneration = 0L
   private var requestContextTransitionEpoch = 0L
   private var requestContextConfirmed = false
@@ -335,6 +337,36 @@ object HttpClientManager {
         schemePolicy = activeSchemePolicy,
         sessionEpoch = requestContextSessionEpoch,
         generation = requestContextGeneration,
+        transportIncarnation = transportIncarnation,
+        confirmed = requestContextConfirmed && !requestContextReplacing,
+      )
+    }
+
+  fun getForegroundTransportIdentity(): NetworkTransportIdentitySnapshot =
+    synchronized(this) {
+      NetworkTransportIdentitySnapshot(
+        incarnation = transportIncarnation,
+        generation = requestContextGeneration,
+        confirmed = requestContextConfirmed && !requestContextReplacing,
+      )
+    }
+
+  fun getRequestContextSnapshotForIdentity(
+    incarnation: String,
+    generation: Long,
+  ): NetworkRequestContextSnapshot? =
+    synchronized(this) {
+      if (incarnation != transportIncarnation || generation != requestContextGeneration) {
+        return@synchronized null
+      }
+      NetworkRequestContextSnapshot(
+        clientPointer = getClientPointer(),
+        apiEndpoint = activeApiEndpoint,
+        canonicalOrigin = activeOrigins.singleOrNull()?.asString(),
+        schemePolicy = activeSchemePolicy,
+        sessionEpoch = requestContextSessionEpoch,
+        generation = requestContextGeneration,
+        transportIncarnation = transportIncarnation,
         confirmed = requestContextConfirmed && !requestContextReplacing,
       )
     }

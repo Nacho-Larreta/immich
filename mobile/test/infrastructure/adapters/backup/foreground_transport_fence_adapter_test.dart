@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:immich_mobile/domain/interfaces/backup_execution.interface.dart';
 import 'package:immich_mobile/domain/interfaces/backup_run_binding.interface.dart';
 import 'package:immich_mobile/domain/models/backup_execution_lease.model.dart';
 import 'package:immich_mobile/domain/models/backup_run_binding.model.dart';
@@ -7,33 +8,88 @@ import 'package:immich_mobile/infrastructure/adapters/backup/foreground_transpor
 import 'package:immich_mobile/infrastructure/repositories/network.repository.dart';
 
 void main() {
-  test('rejects session, endpoint, and native-generation mutations before root transport fencing', () async {
-    final original = _binding();
-    final originalClaim = ForegroundTransportClaim(
-      activityId: 'foreground-activity',
-      bindingDigest: original.digest,
-      nativeGeneration: original.nativeGeneration,
+  test('retires a persisted legacy claim after the authenticated session was replaced', () async {
+    final previous = _binding(sessionEpoch: 3, nativeGeneration: 7);
+    final current = _binding(sessionEpoch: 4, nativeGeneration: 9);
+    final claim = ForegroundTransportClaim.legacy(
+      activityId: 'persisted-session-a',
+      bindingDigest: previous.digest,
+      nativeGeneration: previous.nativeGeneration,
     );
-    final changedNative = _binding(nativeGeneration: original.nativeGeneration + 1);
-    final cases = [
-      (binding: _binding(sessionEpoch: original.sessionEpoch + 1), claim: originalClaim),
-      (binding: _binding(host: 'other.example'), claim: originalClaim),
-      (
-        binding: changedNative,
-        claim: ForegroundTransportClaim(
-          activityId: 'foreground-activity',
-          bindingDigest: changedNative.digest,
-          nativeGeneration: original.nativeGeneration,
-        ),
-      ),
-    ];
+    Set<ForegroundTransportClaim>? retiredClaims;
+    final adapter = ForegroundTransportFenceAdapter(
+      _BindingSource(current),
+      retireClaims: (claims, _) async {
+        retiredClaims = claims;
+        return ForegroundTransportRetirement.retired;
+      },
+    );
+
+    final retired = await adapter.retireClaims({claim}, timeout: const Duration(seconds: 1));
+
+    expect(retired, ForegroundTransportRetirement.retired);
+    expect(retiredClaims, {claim});
+  });
+
+  test('issues a claim identity only when native authority matches the current binding generation', () async {
+    const identity = ForegroundTransportIdentity(incarnation: 'root-process', generation: 7);
+    final matching = ForegroundTransportFenceAdapter(_BindingSource(_binding()), readIdentity: () async => identity);
+    final stale = ForegroundTransportFenceAdapter(
+      _BindingSource(_binding(nativeGeneration: 8)),
+      readIdentity: () async => identity,
+    );
+
+    expect(await matching.captureIdentity(), identity);
+    expect(await stale.captureIdentity(), isNull);
+  });
+
+  test('rejects an identity when the binding changes while native authority is awaited', () async {
+    const identity = ForegroundTransportIdentity(incarnation: 'root-process', generation: 7);
+    final source = _MutableBindingSource(_binding());
+    final adapter = ForegroundTransportFenceAdapter(
+      source,
+      readIdentity: () async {
+        source.binding = _binding(sessionEpoch: 4, nativeGeneration: 8);
+        return identity;
+      },
+    );
+
+    expect(await adapter.captureIdentity(), isNull);
+  });
+
+  test('preserves a non-positive native retirement result without treating mismatch as success', () async {
+    final adapter = ForegroundTransportFenceAdapter(
+      _BindingSource(_binding()),
+      retireClaims: (_, _) async => ForegroundTransportRetirement.temporarilyUnproven,
+    );
+    final claim = ForegroundTransportClaim.current(
+      activityId: 'aba-claim',
+      bindingDigest: 'different-session',
+      nativeGeneration: 7,
+      transportIncarnation: 'previous-process',
+    );
+
+    expect(
+      await adapter.retireClaims({claim}, timeout: const Duration(seconds: 1)),
+      ForegroundTransportRetirement.temporarilyUnproven,
+    );
+  });
+
+  test('attached worker cannot issue or retire foreground transport claims', () async {
     NetworkRepository.setContextRoleForTest(NetworkContextRole.attachedWorker);
+    final claim = ForegroundTransportClaim.current(
+      activityId: 'attached-worker-claim',
+      bindingDigest: 'binding',
+      nativeGeneration: 7,
+      transportIncarnation: 'attached-process',
+    );
 
     try {
-      for (final testCase in cases) {
-        final adapter = ForegroundTransportFenceAdapter(_BindingSource(testCase.binding));
-        expect(await adapter.fenceAndDrain(testCase.claim), isFalse);
-      }
+      expect(await NetworkRepository.captureForegroundTransportIdentity(), isNull);
+      expect(
+        await NetworkRepository.retireForegroundTransportClaims({claim}, const Duration(seconds: 1)),
+        ForegroundTransportRetirement.unsupported,
+      );
     } finally {
       NetworkRepository.setContextRoleForTest(NetworkContextRole.rootWriter);
     }
@@ -59,6 +115,18 @@ final class _BindingSource implements BackupRunBindingSourcePort {
   const _BindingSource(this.binding);
 
   final BackupRunBinding binding;
+
+  @override
+  BackupRunBinding capture() => binding;
+
+  @override
+  bool isCurrent(BackupRunBinding binding) => binding == this.binding;
+}
+
+final class _MutableBindingSource implements BackupRunBindingSourcePort {
+  _MutableBindingSource(this.binding);
+
+  BackupRunBinding binding;
 
   @override
   BackupRunBinding capture() => binding;

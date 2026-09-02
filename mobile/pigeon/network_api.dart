@@ -18,6 +18,23 @@ class ClientCertPrompt {
 
 enum NetworkEndpointSchemePolicy { httpsOnly, explicitlyApprovedHttp, registeredLocalHttp }
 
+enum NetworkTransportRetirementStatus { retired, temporarilyUnproven, unsupported }
+
+class NetworkTransportIdentitySnapshot {
+  String incarnation;
+  int generation;
+  bool confirmed;
+
+  NetworkTransportIdentitySnapshot(this.incarnation, this.generation, this.confirmed);
+}
+
+class NetworkTransportClaimDescriptor {
+  String? incarnation;
+  int generation;
+
+  NetworkTransportClaimDescriptor(this.incarnation, this.generation);
+}
+
 class NetworkRequestContextSnapshot {
   int clientPointer;
   String? apiEndpoint;
@@ -25,6 +42,7 @@ class NetworkRequestContextSnapshot {
   NetworkEndpointSchemePolicy? schemePolicy;
   int sessionEpoch;
   int generation;
+  String transportIncarnation;
   bool confirmed;
 
   NetworkRequestContextSnapshot(
@@ -34,6 +52,7 @@ class NetworkRequestContextSnapshot {
     this.schemePolicy,
     this.sessionEpoch,
     this.generation,
+    this.transportIncarnation,
     this.confirmed,
   );
 }
@@ -65,6 +84,12 @@ abstract class NetworkApi {
   int getClientPointer();
 
   NetworkRequestContextSnapshot getRequestContextSnapshot();
+
+  NetworkTransportIdentitySnapshot getForegroundTransportIdentity();
+
+  NetworkRequestContextSnapshot? getRequestContextSnapshotForIdentity(String incarnation, int generation);
+
+  NetworkTransportRetirementStatus retireForegroundTransports(List<NetworkTransportClaimDescriptor> claims);
 
   void setRequestHeaders(Map<String, String> headers, List<String> serverUrls, String? token);
 

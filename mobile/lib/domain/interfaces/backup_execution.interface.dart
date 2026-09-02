@@ -123,8 +123,14 @@ abstract interface class BackupTaskRegistryPort {
   Future<bool> cancelAndDrain(Set<BackupTaskGroup> groups);
 }
 
+enum ForegroundTransportRetirement { retired, temporarilyUnproven, unsupported }
+
 abstract interface class ForegroundTransportFencePort {
-  Future<bool> fenceAndDrain(ForegroundTransportClaim claim);
+  Future<ForegroundTransportIdentity?> captureIdentity();
+
+  bool isIdentityCurrent(ForegroundTransportIdentity identity, {required String bindingDigest});
+
+  Future<ForegroundTransportRetirement> retireClaims(Set<ForegroundTransportClaim> claims, {required Duration timeout});
 }
 
 final class BackupCallbackPermit {

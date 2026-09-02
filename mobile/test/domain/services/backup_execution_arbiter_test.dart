@@ -238,7 +238,7 @@ void main() {
     final now = DateTime.utc(2026, 8, 11, 12);
     final lease = _lease('foreground', 'same', now.subtract(const Duration(minutes: 2))).copyWith(
       foregroundActivityClaims: {
-        const ForegroundTransportClaim(activityId: 'opaque-transport', bindingDigest: 'same', nativeGeneration: 7),
+        ForegroundTransportClaim.legacy(activityId: 'opaque-transport', bindingDigest: 'same', nativeGeneration: 7),
       },
     );
     final leases = _Leases(existing: lease);
@@ -252,7 +252,11 @@ void main() {
 
   test('expired foreground claim transfers only after exact native fence and drain acknowledgement', () async {
     final now = DateTime.utc(2026, 8, 11, 12);
-    const claim = ForegroundTransportClaim(activityId: 'opaque-transport', bindingDigest: 'same', nativeGeneration: 7);
+    final claim = ForegroundTransportClaim.legacy(
+      activityId: 'opaque-transport',
+      bindingDigest: 'same',
+      nativeGeneration: 7,
+    );
     final lease = _lease(
       'foreground',
       'same',
@@ -332,7 +336,7 @@ void main() {
 
   test('disable recovers an expired same-owner closing lease after Q1, yield, Q2, and exact fences', () async {
     final now = DateTime.utc(2026, 9, 2, 13);
-    const foregroundClaim = ForegroundTransportClaim(
+    final foregroundClaim = ForegroundTransportClaim.legacy(
       activityId: 'foreground-transport',
       bindingDigest: 'same',
       nativeGeneration: 7,
@@ -367,7 +371,7 @@ void main() {
 
   test('disable keeps expired closing lease and claims when an exact foreground fence is rejected', () async {
     final now = DateTime.utc(2026, 9, 2, 13);
-    const claim = ForegroundTransportClaim(
+    final claim = ForegroundTransportClaim.legacy(
       activityId: 'rejected-transport',
       bindingDigest: 'same',
       nativeGeneration: 7,
@@ -399,12 +403,12 @@ void main() {
 
   test('expired recovery fences every exact foreground claim before one full-snapshot CAS', () async {
     final now = DateTime.utc(2026, 9, 2, 13);
-    const firstClaim = ForegroundTransportClaim(
+    final firstClaim = ForegroundTransportClaim.legacy(
       activityId: 'first-transport',
       bindingDigest: 'same',
       nativeGeneration: 7,
     );
-    const secondClaim = ForegroundTransportClaim(
+    final secondClaim = ForegroundTransportClaim.legacy(
       activityId: 'second-transport',
       bindingDigest: 'same',
       nativeGeneration: 7,
@@ -434,7 +438,11 @@ void main() {
 
   test('disable never orphan-recovers a non-expired closing lease', () async {
     final now = DateTime.utc(2026, 9, 2, 13);
-    const claim = ForegroundTransportClaim(activityId: 'live-transport', bindingDigest: 'same', nativeGeneration: 7);
+    final claim = ForegroundTransportClaim.legacy(
+      activityId: 'live-transport',
+      bindingDigest: 'same',
+      nativeGeneration: 7,
+    );
     final lease = _lease(
       'foreground',
       'same',
@@ -557,7 +565,7 @@ void main() {
 
   test('callback activity appearing while a foreground fence awaits makes recovery fail closed', () async {
     final now = DateTime.utc(2026, 9, 2, 13);
-    const foregroundClaim = ForegroundTransportClaim(
+    final foregroundClaim = ForegroundTransportClaim.legacy(
       activityId: 'foreground-transport',
       bindingDigest: 'same',
       nativeGeneration: 7,
@@ -595,6 +603,227 @@ void main() {
     expect(leases.existing?.callbackClaims, {callbackClaim});
     expect(leases.releaseCalls, 0);
   });
+
+  test('new foreground claims carry the root native transport incarnation', () async {
+    final now = DateTime.utc(2026, 9, 2, 18);
+    final lease = _lease('foreground', 'same', now);
+    final leases = _Leases(existing: lease);
+    final fence = _Fence(acknowledged: true);
+    final arbiter = BackupExecutionArbiter(leases: leases, tasks: _Registry(), foregroundFence: fence);
+
+    final claim = await arbiter.beginForegroundActivity(lease, expectedNativeGeneration: 7);
+
+    expect(claim?.transportIncarnation, 'current-process');
+    expect(claim?.claimSchemaVersion, ForegroundTransportClaim.currentSchemaVersion);
+    expect(leases.existing?.foregroundActivityClaims, {claim});
+  });
+
+  test('native identity generation mismatch rejects a foreground claim before persistence', () async {
+    final now = DateTime.utc(2026, 9, 2, 18);
+    final lease = _lease('foreground', 'same', now);
+    final leases = _Leases(existing: lease);
+    final arbiter = BackupExecutionArbiter(
+      leases: leases,
+      tasks: _Registry(),
+      foregroundFence: _Fence(acknowledged: true),
+    );
+
+    expect(await arbiter.beginForegroundActivity(lease, expectedNativeGeneration: 8), isNull);
+    expect(leases.existing, lease);
+  });
+
+  test('foreground admission rolls back its durable claim when authority blocks during the claim CAS', () async {
+    final now = DateTime.utc(2026, 9, 2, 18);
+    final lease = _lease('foreground', 'same', now);
+    final fence = _Fence(acknowledged: true);
+    final leases = _Leases(existing: lease, afterBeginForeground: () => fence.identityCurrent = false);
+    final arbiter = BackupExecutionArbiter(leases: leases, tasks: _Registry(), foregroundFence: fence);
+
+    expect(await arbiter.beginForegroundActivity(lease, expectedNativeGeneration: 7), isNull);
+    expect(leases.existing?.foregroundActivityClaims, isEmpty);
+  });
+
+  for (final scenario in [
+    (name: 'binding mismatch without proof', incarnation: null),
+    (name: 'transport incarnation ABA', incarnation: 'previous-process'),
+  ]) {
+    test('${scenario.name} preserves the expired closing lease', () async {
+      final now = DateTime.utc(2026, 9, 2, 18);
+      final claim = scenario.incarnation == null
+          ? ForegroundTransportClaim.legacy(
+              activityId: 'stale-foreground',
+              bindingDigest: 'session-a-binding',
+              nativeGeneration: 7,
+            )
+          : ForegroundTransportClaim.current(
+              activityId: 'stale-foreground',
+              bindingDigest: 'session-a-binding',
+              nativeGeneration: 7,
+              transportIncarnation: scenario.incarnation!,
+            );
+      final lease = _lease(
+        'session-a',
+        'session-a-binding',
+        now.subtract(const Duration(minutes: 2)),
+      ).copyWith(state: BackupExecutionState.closing, foregroundActivityClaims: {claim});
+      final leases = _Leases(existing: lease);
+      final fence = _Fence(acknowledged: false);
+      final arbiter = BackupExecutionArbiter(
+        leases: leases,
+        tasks: _Registry()..snapshotSequence = [const [], const []],
+        foregroundFence: fence,
+        callbackFence: BackupCallbackFence(),
+        clock: () => now,
+      );
+
+      expect(await arbiter.disableAndDrain(runToken: lease.runToken, bindingDigest: lease.bindingDigest), isFalse);
+      expect(leases.existing, lease);
+      expect(leases.recoverExactCalls, 0);
+    });
+  }
+
+  test('native retirement timeout preserves every durable claim', () async {
+    final now = DateTime.utc(2026, 9, 2, 18);
+    final claim = ForegroundTransportClaim.legacy(
+      activityId: 'timed-out-claim',
+      bindingDigest: 'same',
+      nativeGeneration: 7,
+    );
+    final lease = _lease(
+      'foreground',
+      'same',
+      now.subtract(const Duration(minutes: 2)),
+    ).copyWith(state: BackupExecutionState.closing, foregroundActivityClaims: {claim});
+    final leases = _Leases(existing: lease);
+    final fence = _Fence(
+      acknowledged: false,
+      retirementAction: (_) async => throw TimeoutException('native retirement'),
+    );
+    final arbiter = BackupExecutionArbiter(
+      leases: leases,
+      tasks: _Registry()..snapshotSequence = [const [], const []],
+      foregroundFence: fence,
+      callbackFence: BackupCallbackFence(),
+      clock: () => now,
+    );
+
+    await expectLater(
+      arbiter.disableAndDrain(runToken: lease.runToken, bindingDigest: lease.bindingDigest),
+      throwsA(isA<TimeoutException>()),
+    );
+    expect(leases.existing, lease);
+    expect(leases.recoverExactCalls, 0);
+  });
+
+  test('full-snapshot CAS race after positive native proof preserves the raced lease', () async {
+    final now = DateTime.utc(2026, 9, 2, 18);
+    final claim = ForegroundTransportClaim.legacy(
+      activityId: 'cas-race-claim',
+      bindingDigest: 'same',
+      nativeGeneration: 7,
+    );
+    final lease = _lease(
+      'foreground',
+      'same',
+      now.subtract(const Duration(minutes: 2)),
+    ).copyWith(state: BackupExecutionState.closing, foregroundActivityClaims: {claim});
+    var raced = false;
+    final leases = _Leases(
+      existing: lease,
+      beforeRecover: (leases) {
+        if (raced) return;
+        raced = true;
+        final current = leases.existing!;
+        leases.existing = current.copyWith(activityRevision: current.activityRevision + 1);
+      },
+    );
+    final fence = _Fence(acknowledged: true);
+    final arbiter = BackupExecutionArbiter(
+      leases: leases,
+      tasks: _Registry()..snapshotSequence = [const [], const []],
+      foregroundFence: fence,
+      callbackFence: BackupCallbackFence(),
+      clock: () => now,
+    );
+
+    expect(await arbiter.disableAndDrain(runToken: lease.runToken, bindingDigest: lease.bindingDigest), isFalse);
+    expect(leases.existing?.activityRevision, lease.activityRevision + 1);
+    expect(leases.existing?.foregroundActivityClaims, {claim});
+    expect(leases.releaseCalls, 0);
+
+    expect(await arbiter.disableAndDrain(runToken: lease.runToken, bindingDigest: lease.bindingDigest), isTrue);
+    expect(leases.existing, isNull);
+    expect(fence.retirementCalls, 2);
+  });
+
+  test('new foreground admission is rejected while the native retirement barrier is open', () async {
+    final now = DateTime.utc(2026, 9, 2, 18);
+    final claim = ForegroundTransportClaim.legacy(
+      activityId: 'persisted-claim',
+      bindingDigest: 'same',
+      nativeGeneration: 7,
+    );
+    final lease = _lease(
+      'foreground',
+      'same',
+      now.subtract(const Duration(minutes: 2)),
+    ).copyWith(state: BackupExecutionState.closing, foregroundActivityClaims: {claim});
+    final leases = _Leases(existing: lease);
+    final barrierStarted = Completer<void>();
+    final releaseBarrier = Completer<void>();
+    final fence = _Fence(
+      acknowledged: true,
+      retirementAction: (_) async {
+        barrierStarted.complete();
+        await releaseBarrier.future;
+        return ForegroundTransportRetirement.retired;
+      },
+    );
+    final arbiter = BackupExecutionArbiter(
+      leases: leases,
+      tasks: _Registry()..snapshotSequence = [const [], const []],
+      foregroundFence: fence,
+      callbackFence: BackupCallbackFence(),
+      clock: () => now,
+    );
+
+    final draining = arbiter.disableAndDrain(runToken: lease.runToken, bindingDigest: lease.bindingDigest);
+    await barrierStarted.future;
+    expect(await arbiter.beginForegroundActivity(lease, expectedNativeGeneration: 7), isNull);
+    releaseBarrier.complete();
+    expect(await draining, isTrue);
+  });
+
+  test('multi-claim retirement is all-or-nothing and runs one native barrier', () async {
+    final now = DateTime.utc(2026, 9, 2, 18);
+    final legacy = ForegroundTransportClaim.legacy(activityId: 'legacy', bindingDigest: 'same', nativeGeneration: 6);
+    final current = ForegroundTransportClaim.current(
+      activityId: 'current',
+      bindingDigest: 'same',
+      nativeGeneration: 7,
+      transportIncarnation: 'current-process',
+    );
+    final lease = _lease(
+      'foreground',
+      'same',
+      now.subtract(const Duration(minutes: 2)),
+    ).copyWith(state: BackupExecutionState.closing, foregroundActivityClaims: {legacy, current});
+    final leases = _Leases(existing: lease);
+    final fence = _Fence(acknowledged: false);
+    final arbiter = BackupExecutionArbiter(
+      leases: leases,
+      tasks: _Registry()..snapshotSequence = [const [], const []],
+      foregroundFence: fence,
+      callbackFence: BackupCallbackFence(),
+      clock: () => now,
+    );
+
+    expect(await arbiter.disableAndDrain(runToken: lease.runToken, bindingDigest: lease.bindingDigest), isFalse);
+    expect(fence.retirementCalls, 1);
+    expect(fence.claims.toSet(), {legacy, current});
+    expect(leases.existing?.foregroundActivityClaims, {legacy, current});
+    expect(leases.recoverExactCalls, 0);
+  });
 }
 
 BackupTaskSnapshot _active(String token, String binding, {BackupTaskGroup group = BackupTaskGroup.primary}) =>
@@ -615,9 +844,11 @@ BackupExecutionLease _lease(String token, String binding, DateTime now) => Backu
 );
 
 final class _Leases implements BackupExecutionLeasePort {
-  _Leases({this.existing, List<String>? events}) : events = events ?? [];
+  _Leases({this.existing, List<String>? events, this.beforeRecover, this.afterBeginForeground}) : events = events ?? [];
   BackupExecutionLease? existing;
   final List<String> events;
+  final void Function(_Leases leases)? beforeRecover;
+  final void Function()? afterBeginForeground;
   int acquireCalls = 0;
   int releaseCalls = 0;
   int recoverExactCalls = 0;
@@ -745,6 +976,7 @@ final class _Leases implements BackupExecutionLeasePort {
     required Set<BackupTaskClaim> activeClaims,
   }) async {
     recoverExactCalls++;
+    beforeRecover?.call(this);
     final current = existing;
     if (current != expected || expected.state != BackupExecutionState.closing) return null;
     existing = expected.copyWith(
@@ -776,10 +1008,12 @@ final class _Leases implements BackupExecutionLeasePort {
   }) async {
     final current = existing;
     if (current == null || current.runToken != runToken || current.bindingDigest != bindingDigest) return null;
+    if (current.state == BackupExecutionState.closing) return null;
     existing = current.copyWith(
       foregroundActivityClaims: {...current.foregroundActivityClaims, claim},
       activityRevision: current.activityRevision + 1,
     );
+    afterBeginForeground?.call();
     return existing;
   }
 
@@ -818,20 +1052,44 @@ final class _Leases implements BackupExecutionLeasePort {
   }
 }
 
+typedef _RetirementAction = Future<ForegroundTransportRetirement> Function(Set<ForegroundTransportClaim> claims);
+
 final class _Fence implements ForegroundTransportFencePort {
-  _Fence({required this.acknowledged, List<String>? events, this.onFence}) : events = events ?? [];
+  _Fence({required this.acknowledged, List<String>? events, this.onFence, this.retirementAction})
+    : events = events ?? [];
 
   bool acknowledged;
   final List<String> events;
   final void Function(ForegroundTransportClaim claim)? onFence;
+  final _RetirementAction? retirementAction;
+  final ForegroundTransportIdentity identity = const ForegroundTransportIdentity(
+    incarnation: 'current-process',
+    generation: 7,
+  );
   final List<ForegroundTransportClaim> claims = [];
+  int retirementCalls = 0;
+  bool identityCurrent = true;
 
   @override
-  Future<bool> fenceAndDrain(ForegroundTransportClaim claim) async {
-    claims.add(claim);
-    events.add('fence-${claim.activityId}');
-    onFence?.call(claim);
-    return acknowledged;
+  Future<ForegroundTransportIdentity?> captureIdentity() async => identity;
+
+  @override
+  bool isIdentityCurrent(ForegroundTransportIdentity expected, {required String bindingDigest}) =>
+      identityCurrent && expected == identity && bindingDigest == 'same';
+
+  @override
+  Future<ForegroundTransportRetirement> retireClaims(
+    Set<ForegroundTransportClaim> requestedClaims, {
+    required Duration timeout,
+  }) async {
+    retirementCalls++;
+    claims.addAll(requestedClaims);
+    for (final claim in requestedClaims) {
+      events.add('fence-${claim.activityId}');
+      onFence?.call(claim);
+    }
+    if (retirementAction case final action?) return action(requestedClaims);
+    return acknowledged ? ForegroundTransportRetirement.retired : ForegroundTransportRetirement.temporarilyUnproven;
   }
 }
 

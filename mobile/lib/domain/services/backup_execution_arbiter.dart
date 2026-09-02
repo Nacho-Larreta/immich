@@ -141,11 +141,13 @@ final class BackupExecutionArbiter implements BackgroundBackupAdmissionPort {
     if (current != expected || current!.hasDurableActivity) return false;
     final firstTasks = await _activeTasks();
     if (firstTasks.isNotEmpty) return false;
+    if (await _leases.read() != expected) return false;
     await Future<void>.delayed(Duration.zero);
     final afterDrain = await _leases.read();
     if (afterDrain != expected || afterDrain!.hasDurableActivity) return false;
     final secondTasks = await _activeTasks();
     if (secondTasks.isNotEmpty) return false;
+    if (await _leases.read() != expected) return false;
     return _leases.releaseExact(expected);
   }
 
@@ -173,19 +175,36 @@ final class BackupExecutionArbiter implements BackgroundBackupAdmissionPort {
 
   Future<ForegroundTransportClaim?> beginForegroundActivity(
     BackupExecutionLease owner, {
-    required int nativeGeneration,
+    required int expectedNativeGeneration,
   }) async {
-    final claim = ForegroundTransportClaim(
+    final identity = await _foregroundFence.captureIdentity();
+    if (identity == null ||
+        identity.generation != expectedNativeGeneration ||
+        !_foregroundFence.isIdentityCurrent(identity, bindingDigest: owner.bindingDigest)) {
+      return null;
+    }
+    final claim = ForegroundTransportClaim.current(
       activityId: _tokenFactory(),
       bindingDigest: owner.bindingDigest,
-      nativeGeneration: nativeGeneration,
+      nativeGeneration: identity.generation,
+      transportIncarnation: identity.incarnation,
     );
     final claimed = await _leases.beginForegroundActivityForOwner(
       runToken: owner.runToken,
       bindingDigest: owner.bindingDigest,
       claim: claim,
     );
-    return claimed == null ? null : claim;
+    if (claimed == null) return null;
+    if (_foregroundFence.isIdentityCurrent(identity, bindingDigest: owner.bindingDigest)) return claim;
+    final rolledBack = await _leases.endForegroundActivityForOwner(
+      runToken: owner.runToken,
+      bindingDigest: owner.bindingDigest,
+      claim: claim,
+    );
+    if (rolledBack == null) {
+      throw StateError('Foreground transport authority changed and its durable claim could not be rolled back');
+    }
+    return null;
   }
 
   Future<bool> endForegroundActivity(BackupExecutionLease owner, ForegroundTransportClaim claim) async {
@@ -271,7 +290,9 @@ final class BackupExecutionArbiter implements BackgroundBackupAdmissionPort {
   }) async {
     final q1 = await _activeTasks();
     if (q1.isNotEmpty) return false;
+    if (await _leases.read() != expected) return false;
     await Future<void>.delayed(Duration.zero);
+    if (await _leases.read() != expected) return false;
     final q2 = await _activeTasks();
     if (q2.isNotEmpty) return false;
     if (await _leases.read() != expected) return false;
@@ -284,8 +305,9 @@ final class BackupExecutionArbiter implements BackgroundBackupAdmissionPort {
     }
     if (await _leases.read() != expected) return false;
     final foregroundClaims = expected.foregroundActivityClaims;
-    for (final claim in foregroundClaims) {
-      if (!await _foregroundFence.fenceAndDrain(claim)) return false;
+    if (foregroundClaims.isNotEmpty) {
+      final retirement = await _foregroundFence.retireClaims(foregroundClaims, timeout: timeout);
+      if (retirement != ForegroundTransportRetirement.retired) return false;
     }
     if (await _leases.read() != expected) return false;
     final recovered = await _leases.recoverExpiredClosingExact(expected: expected, activeClaims: const {});
@@ -325,7 +347,16 @@ final class _RejectingForegroundTransportFence implements ForegroundTransportFen
   const _RejectingForegroundTransportFence();
 
   @override
-  Future<bool> fenceAndDrain(ForegroundTransportClaim claim) async => false;
+  Future<ForegroundTransportIdentity?> captureIdentity() async => null;
+
+  @override
+  bool isIdentityCurrent(ForegroundTransportIdentity identity, {required String bindingDigest}) => false;
+
+  @override
+  Future<ForegroundTransportRetirement> retireClaims(
+    Set<ForegroundTransportClaim> claims, {
+    required Duration timeout,
+  }) async => ForegroundTransportRetirement.unsupported;
 }
 
 final class _RejectingBackupCallbackFence implements BackupCallbackFencePort {

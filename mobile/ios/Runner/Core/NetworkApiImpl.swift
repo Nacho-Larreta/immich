@@ -70,8 +70,46 @@ class NetworkApiImpl: NetworkApi {
       schemePolicy: snapshot.schemePolicy,
       sessionEpoch: snapshot.sessionEpoch,
       generation: Int64(bitPattern: snapshot.generation),
+      transportIncarnation: snapshot.transportIncarnation,
       confirmed: snapshot.confirmed
     )
+  }
+
+  func getForegroundTransportIdentity() throws -> NetworkTransportIdentitySnapshot {
+    let identity = URLSessionManager.foregroundTransportIdentity()
+    return NetworkTransportIdentitySnapshot(
+      incarnation: identity.incarnation,
+      generation: Int64(bitPattern: identity.generation),
+      confirmed: identity.confirmed
+    )
+  }
+
+  func getRequestContextSnapshotForIdentity(
+    incarnation: String,
+    generation: Int64
+  ) throws -> NetworkRequestContextSnapshot? {
+    guard
+      let snapshot = URLSessionManager.requestContextSnapshot(
+        forTransportIncarnation: incarnation,
+        generation: generation
+      )
+    else { return nil }
+    return NetworkRequestContextSnapshot(
+      clientPointer: Int64(Int(bitPattern: snapshot.clientPointer)),
+      apiEndpoint: snapshot.apiEndpoint,
+      canonicalOrigin: snapshot.canonicalOrigin,
+      schemePolicy: snapshot.schemePolicy,
+      sessionEpoch: snapshot.sessionEpoch,
+      generation: Int64(bitPattern: snapshot.generation),
+      transportIncarnation: snapshot.transportIncarnation,
+      confirmed: snapshot.confirmed
+    )
+  }
+
+  func retireForegroundTransports(
+    claims: [NetworkTransportClaimDescriptor]
+  ) throws -> NetworkTransportRetirementStatus {
+    try URLSessionManager.retireForegroundTransports(claims: claims)
   }
   
   func setRequestHeaders(headers: [String : String], serverUrls: [String], token: String?) throws {

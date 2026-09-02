@@ -1,8 +1,12 @@
+import 'dart:async';
+
 import 'package:drift/drift.dart' hide isNull;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart';
 import 'package:http/testing.dart';
+import 'package:immich_mobile/domain/interfaces/backup_execution.interface.dart';
+import 'package:immich_mobile/domain/models/backup_execution_lease.model.dart';
 import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/services/store.service.dart';
@@ -135,6 +139,7 @@ void main() {
         schemePolicy: NetworkEndpointSchemePolicy.registeredLocalHttp,
         sessionEpoch: 4,
         generation: 8,
+        transportIncarnation: 'attached-process',
         confirmed: true,
       ),
     );
@@ -348,6 +353,108 @@ void main() {
     expect(anonymousPaths, ['/api/auth/login']);
     expect(authenticatedPaths, ['/api/users/me']);
   });
+
+  test('foreground identity capture fails closed when Dart authority blocks during native proof', () async {
+    await _storeSession(endpoint: 'https://photos.test/api', policy: EndpointSchemePolicy.httpsOnly, ready: true);
+    NetworkRepository.attachNativeSnapshotForTest(_httpsNativeSnapshot());
+    NetworkRepository.setContextRoleForTest(NetworkContextRole.rootWriter);
+    final readStarted = Completer<void>();
+    final releaseRead = Completer<void>();
+
+    final capture = NetworkRepository.captureForegroundTransportIdentityForTest(
+      readIdentity: () async {
+        readStarted.complete();
+        await releaseRead.future;
+        return NetworkTransportIdentitySnapshot(incarnation: 'root-process', generation: 8, confirmed: true);
+      },
+    );
+    await readStarted.future;
+    NetworkRepository.blockRequests();
+    releaseRead.complete();
+
+    expect(await capture, isNull);
+  });
+
+  test('foreground retirement completes exact rebind before a queued purge can mutate native context', () async {
+    final events = <String>[];
+    final retirementStarted = Completer<void>();
+    final releaseRetirement = Completer<void>();
+    final claim = ForegroundTransportClaim.legacy(
+      activityId: 'legacy-claim',
+      bindingDigest: 'binding-digest',
+      nativeGeneration: 7,
+    );
+
+    final retirement = NetworkRepository.retireForegroundTransportClaimsForTest(
+      {claim},
+      const Duration(seconds: 1),
+      retireNativeTransports: (_) async {
+        events.add('retirement.start');
+        retirementStarted.complete();
+        await releaseRetirement.future;
+        events.add('retirement.end');
+        return NetworkTransportRetirementStatus.retired;
+      },
+      readIdentity: () async {
+        events.add('retirement.identity');
+        return NetworkTransportIdentitySnapshot(incarnation: 'root-process', generation: 9, confirmed: true);
+      },
+      readExactSnapshot: (incarnation, generation) async {
+        events.add('retirement.snapshot:$incarnation:$generation');
+        return _httpsNativeSnapshot(generation: generation);
+      },
+      bindNativeSnapshot: (snapshot, {required keepFence}) {
+        events.add('retirement.bind:$keepFence:${snapshot.generation}');
+      },
+    );
+    await retirementStarted.future;
+    final purge = NetworkRepository.purgeRequestContextForTest(
+      drainTransport: () async => events.add('purge.drain'),
+      replaceNativeContext: (headers, endpoint, origin, policy, token, sessionEpoch) async {
+        events.add('purge.replace');
+      },
+      bindNativeClient: () async => events.add('purge.bind'),
+      failClosedNativeContext: () async => events.add('purge.failClosed'),
+    );
+    await pumpEventQueue();
+
+    expect(events, ['retirement.start']);
+    releaseRetirement.complete();
+    expect(await retirement, ForegroundTransportRetirement.retired);
+    await purge;
+    expect(events, [
+      'retirement.start',
+      'retirement.end',
+      'retirement.identity',
+      'retirement.snapshot:root-process:9',
+      'retirement.bind:true:9',
+      'purge.drain',
+      'purge.replace',
+      'purge.bind',
+    ]);
+  });
+
+  test('foreground retirement rejects a full snapshot that misses the proven native identity', () async {
+    final claim = ForegroundTransportClaim.legacy(
+      activityId: 'legacy-claim',
+      bindingDigest: 'binding-digest',
+      nativeGeneration: 7,
+    );
+    var bindCalls = 0;
+
+    final result = await NetworkRepository.retireForegroundTransportClaimsForTest(
+      {claim},
+      const Duration(seconds: 1),
+      retireNativeTransports: (_) async => NetworkTransportRetirementStatus.retired,
+      readIdentity: () async =>
+          NetworkTransportIdentitySnapshot(incarnation: 'root-process', generation: 9, confirmed: true),
+      readExactSnapshot: (_, _) async => _httpsNativeSnapshot(generation: 10),
+      bindNativeSnapshot: (_, {required keepFence}) => bindCalls++,
+    );
+
+    expect(result, ForegroundTransportRetirement.temporarilyUnproven);
+    expect(bindCalls, 0);
+  });
 }
 
 NetworkRequestContextSnapshot _explicitHttpNativeSnapshot() => NetworkRequestContextSnapshot(
@@ -357,6 +464,18 @@ NetworkRequestContextSnapshot _explicitHttpNativeSnapshot() => NetworkRequestCon
   schemePolicy: NetworkEndpointSchemePolicy.explicitlyApprovedHttp,
   sessionEpoch: 4,
   generation: 8,
+  transportIncarnation: 'root-process',
+  confirmed: true,
+);
+
+NetworkRequestContextSnapshot _httpsNativeSnapshot({int generation = 8}) => NetworkRequestContextSnapshot(
+  clientPointer: 1,
+  apiEndpoint: 'https://photos.test/api',
+  canonicalOrigin: 'https://photos.test',
+  schemePolicy: NetworkEndpointSchemePolicy.httpsOnly,
+  sessionEpoch: 4,
+  generation: generation,
+  transportIncarnation: 'root-process',
   confirmed: true,
 );
 
