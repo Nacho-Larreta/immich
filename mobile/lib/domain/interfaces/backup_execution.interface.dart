@@ -95,9 +95,8 @@ abstract interface class BackupExecutionLeasePort {
     required Set<BackupTaskClaim> activeClaims,
   });
 
-  Future<BackupExecutionLease?> recoverOrphanClaimsForOwner({
-    required String runToken,
-    required String bindingDigest,
+  Future<BackupExecutionLease?> recoverExpiredClosingExact({
+    required BackupExecutionLease expected,
     required Set<BackupTaskClaim> activeClaims,
   });
 
@@ -114,12 +113,6 @@ abstract interface class BackupExecutionLeasePort {
     required String bindingDigest,
     required ForegroundTransportClaim claim,
   });
-
-  Future<BackupExecutionLease?> clearForegroundActivitiesForOwner({
-    required String runToken,
-    required String bindingDigest,
-    required Set<ForegroundTransportClaim> expectedClaims,
-  });
 }
 
 abstract interface class BackupTaskRegistryPort {
@@ -132,4 +125,20 @@ abstract interface class BackupTaskRegistryPort {
 
 abstract interface class ForegroundTransportFencePort {
   Future<bool> fenceAndDrain(ForegroundTransportClaim claim);
+}
+
+final class BackupCallbackPermit {
+  const BackupCallbackPermit({required this.runToken, required this.bindingDigest, required this.permitId});
+
+  final String runToken;
+  final String bindingDigest;
+  final int permitId;
+}
+
+abstract interface class BackupCallbackFencePort {
+  BackupCallbackPermit? tryBegin({required String runToken, required String bindingDigest});
+
+  void end(BackupCallbackPermit permit);
+
+  Future<bool> fenceAndDrain({required String runToken, required String bindingDigest, required Duration timeout});
 }

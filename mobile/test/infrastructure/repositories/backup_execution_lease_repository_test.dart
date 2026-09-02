@@ -354,6 +354,56 @@ void main() {
     );
   });
 
+  test('expired closing recovery clears the exact orphan snapshot in one CAS transition', () async {
+    final now = DateTime.utc(2026, 9, 2, 13);
+    const taskClaim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'opaque-orphan');
+    const foregroundClaim = ForegroundTransportClaim(
+      activityId: 'opaque-foreground',
+      bindingDigest: 'binding-digest',
+      nativeGeneration: 7,
+    );
+    final expected = _lease('expired-closing', now.subtract(const Duration(minutes: 2))).copyWith(
+      state: BackupExecutionState.closing,
+      callbacksInFlight: 1,
+      outstandingClaims: {taskClaim},
+      callbackClaims: {taskClaim},
+      foregroundActivityClaims: {foregroundClaim},
+    );
+    expect(await first.acquire(expected, now), isTrue);
+
+    final recovered = await first.recoverExpiredClosingExact(expected: expected, activeClaims: const {});
+
+    expect(recovered?.callbacksInFlight, 0);
+    expect(recovered?.outstandingClaims, isEmpty);
+    expect(recovered?.callbackClaims, isEmpty);
+    expect(recovered?.foregroundActivityClaims, isEmpty);
+    expect(recovered?.activityRevision, expected.activityRevision + 1);
+    expect(await second.read(), recovered);
+  });
+
+  test('expired closing recovery CAS miss preserves callback activity from another connection', () async {
+    final now = DateTime.utc(2026, 9, 2, 13);
+    const originalClaim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'opaque-original');
+    const newClaim = BackupTaskClaim(group: BackupTaskGroup.livePhoto, taskId: 'opaque-new');
+    final expected = _lease('expired-closing-race', now.subtract(const Duration(minutes: 2))).copyWith(
+      state: BackupExecutionState.closing,
+      callbacksInFlight: 1,
+      outstandingClaims: {originalClaim},
+      callbackClaims: {originalClaim},
+    );
+    expect(await first.acquire(expected, now), isTrue);
+    final raced = expected.copyWith(
+      callbacksInFlight: 2,
+      outstandingClaims: {originalClaim, newClaim},
+      callbackClaims: {originalClaim, newClaim},
+      activityRevision: expected.activityRevision + 1,
+    );
+    expect(await second.replaceExact(expected: expected, replacement: raced), isTrue);
+
+    expect(await first.recoverExpiredClosingExact(expected: expected, activeClaims: const {}), isNull);
+    expect(await first.read(), raced);
+  });
+
   test('closing and begin enqueue race across two connections and exactly one wins', () async {
     final now = DateTime.utc(2026, 8, 11, 12);
     final acquired = _lease('concurrent-run', now);

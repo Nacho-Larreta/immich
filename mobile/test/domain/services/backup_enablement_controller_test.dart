@@ -70,9 +70,9 @@ void main() {
     expect(controller.state, const BackupEnablementState.disabled());
   });
 
-  test('ON is rejected while disabling and after a failed drain', () async {
+  test('ON is busy while disabling and recovers a failed drain before enabling', () async {
     final pendingDrain = Completer<bool>();
-    final port = _EnablementPort(enabled: true, drainResult: pendingDrain.future);
+    final port = _EnablementPort(enabled: true, drainResult: pendingDrain.future, drainResults: [true]);
     final controller = BackupEnablementController(port, initiallyEnabled: port.enabled);
     addTearDown(controller.dispose);
 
@@ -82,9 +82,79 @@ void main() {
     pendingDrain.complete(false);
     await disabling;
 
-    expect(await controller.enable(), BackupEnablementResult.drainRequired);
+    port.drainResult = null;
+    expect(await controller.enable(), BackupEnablementResult.applied);
+    expect(port.enabled, isTrue);
+    expect(
+      port.events,
+      containsAllInOrder(['fail-drain', 'begin-disable', 'stop-eager', 'drain', 'complete-drain', 'enable', 'signal']),
+    );
+    expect(controller.state, const BackupEnablementState.enabled());
+  });
+
+  test('failed ON recovery remains OFF and never reaches enableFromDrained', () async {
+    final port = _EnablementPort(enabled: true, drainResults: [false, false]);
+    final controller = BackupEnablementController(port, initiallyEnabled: port.enabled);
+    addTearDown(controller.dispose);
+    await controller.disable();
+    port.events.clear();
+
+    expect(await controller.enable(), BackupEnablementResult.drainFailed);
+
     expect(port.enabled, isFalse);
-    expect(port.events.where((event) => event == 'enable'), isEmpty);
+    expect(port.events, ['begin-disable', 'stop-eager', 'drain', 'fail-drain', 'report-drain-failed']);
+    expect(controller.state, const BackupEnablementState.drainFailed());
+  });
+
+  test('failed enableFromDrained after ON recovery remains OFF', () async {
+    final port = _EnablementPort(enabled: true, drainResults: [false, true], enableResult: false);
+    final controller = BackupEnablementController(port, initiallyEnabled: port.enabled);
+    addTearDown(controller.dispose);
+    await controller.disable();
+
+    expect(await controller.enable(), BackupEnablementResult.drainRequired);
+
+    expect(port.enabled, isFalse);
+    expect(controller.state, const BackupEnablementState.drainFailed());
+  });
+
+  test('enable CAS miss remains retryable and the next serialized ON safely drains again', () async {
+    final port = _EnablementPort(enabled: true, drainResults: [false, true, true], enableResults: [false, true]);
+    final controller = BackupEnablementController(port, initiallyEnabled: port.enabled);
+    addTearDown(controller.dispose);
+    await controller.disable();
+
+    expect(await controller.enable(), BackupEnablementResult.drainRequired);
+    expect(controller.state, const BackupEnablementState.drainFailed());
+
+    final retry = controller.enable();
+    expect(await controller.enable(), BackupEnablementResult.busy);
+    expect(await retry, BackupEnablementResult.applied);
+
+    expect(port.enabled, isTrue);
+    expect(port.drainCalls, 3);
+    expect(port.events.where((event) => event == 'enable'), hasLength(2));
+    expect(controller.state, const BackupEnablementState.enabled());
+  });
+
+  test('concurrent ON taps share one serialized failed-drain recovery', () async {
+    final retryDrain = Completer<bool>();
+    final port = _EnablementPort(enabled: true, drainResults: [false]);
+    final controller = BackupEnablementController(port, initiallyEnabled: port.enabled);
+    addTearDown(controller.dispose);
+    await controller.disable();
+    port.drainResult = retryDrain.future;
+    port.events.clear();
+
+    final first = controller.enable();
+    final second = controller.enable();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(await second, BackupEnablementResult.busy);
+    expect(port.drainCalls, 2);
+    retryDrain.complete(true);
+    expect(await first, BackupEnablementResult.applied);
+    expect(port.events.where((event) => event == 'enable'), hasLength(1));
   });
 
   test('stale drained controller cannot enable after a newer disable generation', () async {
@@ -97,7 +167,7 @@ void main() {
 
     expect(await controller.enable(), BackupEnablementResult.drainRequired);
     expect(port.enabled, isFalse);
-    expect(controller.state, const BackupEnablementState.disabled());
+    expect(controller.state, const BackupEnablementState.drainFailed());
   });
 
   test('late completion after dispose does not publish state', () async {
@@ -119,14 +189,22 @@ void main() {
 }
 
 final class _EnablementPort implements BackupEnablementPort {
-  _EnablementPort({required this.enabled, Future<bool>? drainResult, List<bool>? drainResults, this.beginDisableError})
-    : _drainResult = drainResult,
-      _drainResults = List.of(drainResults ?? const []);
+  _EnablementPort({
+    required this.enabled,
+    this.drainResult,
+    List<bool>? drainResults,
+    this.beginDisableError,
+    this.enableResult = true,
+    List<bool>? enableResults,
+  }) : _drainResults = List.of(drainResults ?? const []),
+       _enableResults = List.of(enableResults ?? const []);
 
   bool enabled;
-  final Future<bool>? _drainResult;
+  Future<bool>? drainResult;
   final List<bool> _drainResults;
   final Object? beginDisableError;
+  final bool enableResult;
+  final List<bool> _enableResults;
   final List<String> events = [];
   int drainCalls = 0;
   int generation = 0;
@@ -160,7 +238,7 @@ final class _EnablementPort implements BackupEnablementPort {
   Future<bool> drain() {
     events.add('drain');
     drainCalls++;
-    return _drainResult ?? Future.value(_drainResults.removeAt(0));
+    return drainResult ?? Future.value(_drainResults.removeAt(0));
   }
 
   @override
@@ -170,6 +248,8 @@ final class _EnablementPort implements BackupEnablementPort {
         disabledDrained.phase != DurableBackupEnablementPhase.disabledDrained) {
       return false;
     }
+    final result = _enableResults.isEmpty ? enableResult : _enableResults.removeAt(0);
+    if (!result) return false;
     enabled = true;
     generation++;
     return true;

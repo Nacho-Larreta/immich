@@ -27,12 +27,14 @@ final class BackupExecutionArbiter implements BackgroundBackupAdmissionPort {
     required BackupExecutionLeasePort leases,
     required BackupTaskRegistryPort tasks,
     ForegroundTransportFencePort? foregroundFence,
+    BackupCallbackFencePort? callbackFence,
     DateTime Function()? clock,
     String Function()? tokenFactory,
     Duration leaseDuration = const Duration(minutes: 2),
   }) : _leases = leases,
        _tasks = tasks,
        _foregroundFence = foregroundFence ?? const _RejectingForegroundTransportFence(),
+       _callbackFence = callbackFence ?? const _RejectingBackupCallbackFence(),
        _clock = clock ?? DateTime.now,
        _tokenFactory = tokenFactory ?? _secureToken,
        _leaseDuration = leaseDuration;
@@ -42,6 +44,7 @@ final class BackupExecutionArbiter implements BackgroundBackupAdmissionPort {
   final BackupExecutionLeasePort _leases;
   final BackupTaskRegistryPort _tasks;
   final ForegroundTransportFencePort _foregroundFence;
+  final BackupCallbackFencePort _callbackFence;
   final DateTime Function() _clock;
   final String Function() _tokenFactory;
   final Duration _leaseDuration;
@@ -219,8 +222,14 @@ final class BackupExecutionArbiter implements BackgroundBackupAdmissionPort {
     required Duration timeout,
   }) async {
     await _tasks.ready;
+    final observed = await _leases.read();
     final closing = await _leases.beginClosingForOwner(runToken: runToken, bindingDigest: bindingDigest);
     if (closing == null) return false;
+    final resumesExpiredClosing =
+        observed == closing && closing.state == BackupExecutionState.closing && closing.isExpiredAt(_clock());
+    if (resumesExpiredClosing) {
+      return _recoverExpiredClosing(closing, timeout: timeout);
+    }
     const pollInterval = Duration(milliseconds: 20);
     final maxPolls = max(1, (timeout.inMicroseconds / pollInterval.inMicroseconds).ceil());
     for (var poll = 0; poll < maxPolls; poll++) {
@@ -256,33 +265,30 @@ final class BackupExecutionArbiter implements BackgroundBackupAdmissionPort {
     return disableAndDrain(runToken: expected.runToken, bindingDigest: expected.bindingDigest);
   }
 
-  Future<bool> _recoverExpiredClosing(BackupExecutionLease expected) async {
+  Future<bool> _recoverExpiredClosing(
+    BackupExecutionLease expected, {
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
     final q1 = await _activeTasks();
     if (q1.isNotEmpty) return false;
     await Future<void>.delayed(Duration.zero);
     final q2 = await _activeTasks();
     if (q2.isNotEmpty) return false;
-    var current = await _leases.read();
-    if (current == null || current.runToken != expected.runToken || current.bindingDigest != expected.bindingDigest) {
+    if (await _leases.read() != expected) return false;
+    if (!await _callbackFence.fenceAndDrain(
+      runToken: expected.runToken,
+      bindingDigest: expected.bindingDigest,
+      timeout: timeout,
+    )) {
       return false;
     }
-    final foregroundClaims = current.foregroundActivityClaims;
+    if (await _leases.read() != expected) return false;
+    final foregroundClaims = expected.foregroundActivityClaims;
     for (final claim in foregroundClaims) {
       if (!await _foregroundFence.fenceAndDrain(claim)) return false;
     }
-    if (foregroundClaims.isNotEmpty) {
-      current = await _leases.clearForegroundActivitiesForOwner(
-        runToken: current.runToken,
-        bindingDigest: current.bindingDigest,
-        expectedClaims: foregroundClaims,
-      );
-      if (current == null) return false;
-    }
-    final recovered = await _leases.recoverOrphanClaimsForOwner(
-      runToken: expected.runToken,
-      bindingDigest: expected.bindingDigest,
-      activeClaims: const {},
-    );
+    if (await _leases.read() != expected) return false;
+    final recovered = await _leases.recoverExpiredClosingExact(expected: expected, activeClaims: const {});
     if (recovered == null || recovered.hasDurableActivity) return false;
     return releaseWhenQuiescent(recovered);
   }
@@ -320,6 +326,23 @@ final class _RejectingForegroundTransportFence implements ForegroundTransportFen
 
   @override
   Future<bool> fenceAndDrain(ForegroundTransportClaim claim) async => false;
+}
+
+final class _RejectingBackupCallbackFence implements BackupCallbackFencePort {
+  const _RejectingBackupCallbackFence();
+
+  @override
+  void end(BackupCallbackPermit permit) {}
+
+  @override
+  Future<bool> fenceAndDrain({
+    required String runToken,
+    required String bindingDigest,
+    required Duration timeout,
+  }) async => false;
+
+  @override
+  BackupCallbackPermit? tryBegin({required String runToken, required String bindingDigest}) => null;
 }
 
 sealed class _TaskOwnership {

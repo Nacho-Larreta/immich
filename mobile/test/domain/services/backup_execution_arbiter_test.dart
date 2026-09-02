@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:immich_mobile/domain/interfaces/backup_execution.interface.dart';
 import 'package:immich_mobile/domain/models/backup_execution_lease.model.dart';
 import 'package:immich_mobile/domain/models/backup_reconciliation_quarantine.model.dart';
+import 'package:immich_mobile/domain/services/backup_callback_fence.dart';
 import 'package:immich_mobile/domain/services/backup_execution_arbiter.dart';
 
 void main() {
@@ -169,7 +170,12 @@ void main() {
     final now = DateTime.utc(2026, 8, 11, 12);
     final lease = _lease('foreground', 'same', now);
     final leases = _Leases(existing: lease);
-    final arbiter = BackupExecutionArbiter(leases: leases, tasks: _Registry(), clock: () => now);
+    final arbiter = BackupExecutionArbiter(
+      leases: leases,
+      tasks: _Registry(),
+      callbackFence: BackupCallbackFence(),
+      clock: () => now,
+    );
 
     final renewed = await arbiter.renewCurrent(runToken: 'foreground', bindingDigest: 'same');
 
@@ -203,7 +209,12 @@ void main() {
     final now = DateTime.utc(2026, 8, 11, 12);
     final lease = _lease('background', 'same', now.subtract(const Duration(minutes: 2))).copyWith(callbacksInFlight: 1);
     final leases = _Leases(existing: lease);
-    final arbiter = BackupExecutionArbiter(leases: leases, tasks: _Registry(), clock: () => now);
+    final arbiter = BackupExecutionArbiter(
+      leases: leases,
+      tasks: _Registry(),
+      callbackFence: BackupCallbackFence(),
+      clock: () => now,
+    );
 
     final admission = await arbiter.acquireForeground(bindingDigest: 'same');
 
@@ -253,6 +264,7 @@ void main() {
       leases: leases,
       tasks: _Registry(),
       foregroundFence: fence,
+      callbackFence: BackupCallbackFence(),
       clock: () => now,
       tokenFactory: () => 'replacement',
     );
@@ -291,6 +303,7 @@ void main() {
     final arbiter = BackupExecutionArbiter(
       leases: leases,
       tasks: registry,
+      callbackFence: BackupCallbackFence(),
       clock: () => now,
       tokenFactory: () => 'replacement',
     );
@@ -316,6 +329,272 @@ void main() {
     expect(results, [isTrue, isTrue]);
     expect(registry.cancelAndDrainCalls, 1);
   });
+
+  test('disable recovers an expired same-owner closing lease after Q1, yield, Q2, and exact fences', () async {
+    final now = DateTime.utc(2026, 9, 2, 13);
+    const foregroundClaim = ForegroundTransportClaim(
+      activityId: 'foreground-transport',
+      bindingDigest: 'same',
+      nativeGeneration: 7,
+    );
+    final lease = _lease('foreground', 'same', now.subtract(const Duration(minutes: 2))).copyWith(
+      state: BackupExecutionState.closing,
+      callbacksInFlight: 1,
+      outstandingClaims: {const BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'orphan')},
+      foregroundActivityClaims: {foregroundClaim},
+    );
+    final events = <String>[];
+    final leases = _Leases(existing: lease, events: events);
+    final registry = _Registry(events: events)..snapshotSequence = [const [], const [], const [], const []];
+    final fence = _Fence(acknowledged: true, events: events);
+    final arbiter = BackupExecutionArbiter(
+      leases: leases,
+      tasks: registry,
+      foregroundFence: fence,
+      callbackFence: BackupCallbackFence(),
+      clock: () => now,
+    );
+
+    final drained = await arbiter.disableAndDrain(runToken: lease.runToken, bindingDigest: lease.bindingDigest);
+
+    expect(drained, isTrue);
+    expect(fence.claims, [foregroundClaim]);
+    expect(leases.recoverExactCalls, 1);
+    expect(leases.releasedLeases.single.hasDurableActivity, isFalse);
+    expect(events.take(2), ['snapshot-1', 'snapshot-2']);
+    expect(leases.existing, isNull);
+  });
+
+  test('disable keeps expired closing lease and claims when an exact foreground fence is rejected', () async {
+    final now = DateTime.utc(2026, 9, 2, 13);
+    const claim = ForegroundTransportClaim(
+      activityId: 'rejected-transport',
+      bindingDigest: 'same',
+      nativeGeneration: 7,
+    );
+    final lease = _lease(
+      'foreground',
+      'same',
+      now.subtract(const Duration(minutes: 2)),
+    ).copyWith(state: BackupExecutionState.closing, callbacksInFlight: 1, foregroundActivityClaims: {claim});
+    final leases = _Leases(existing: lease);
+    final fence = _Fence(acknowledged: false);
+    final arbiter = BackupExecutionArbiter(
+      leases: leases,
+      tasks: _Registry()..snapshotSequence = [const [], const []],
+      foregroundFence: fence,
+      callbackFence: BackupCallbackFence(),
+      clock: () => now,
+    );
+
+    final drained = await arbiter.disableAndDrain(runToken: lease.runToken, bindingDigest: lease.bindingDigest);
+
+    expect(drained, isFalse);
+    expect(fence.claims, [claim]);
+    expect(leases.existing?.foregroundActivityClaims, {claim});
+    expect(leases.existing?.callbacksInFlight, 1);
+    expect(leases.recoverExactCalls, 0);
+    expect(leases.releaseCalls, 0);
+  });
+
+  test('expired recovery fences every exact foreground claim before one full-snapshot CAS', () async {
+    final now = DateTime.utc(2026, 9, 2, 13);
+    const firstClaim = ForegroundTransportClaim(
+      activityId: 'first-transport',
+      bindingDigest: 'same',
+      nativeGeneration: 7,
+    );
+    const secondClaim = ForegroundTransportClaim(
+      activityId: 'second-transport',
+      bindingDigest: 'same',
+      nativeGeneration: 7,
+    );
+    final lease = _lease(
+      'foreground',
+      'same',
+      now.subtract(const Duration(minutes: 2)),
+    ).copyWith(state: BackupExecutionState.closing, foregroundActivityClaims: {firstClaim, secondClaim});
+    final leases = _Leases(existing: lease);
+    final fence = _Fence(acknowledged: true);
+    final arbiter = BackupExecutionArbiter(
+      leases: leases,
+      tasks: _Registry()..snapshotSequence = [const [], const [], const [], const []],
+      foregroundFence: fence,
+      callbackFence: BackupCallbackFence(),
+      clock: () => now,
+    );
+
+    final drained = await arbiter.disableAndDrain(runToken: lease.runToken, bindingDigest: lease.bindingDigest);
+
+    expect(drained, isTrue);
+    expect(fence.claims, [firstClaim, secondClaim]);
+    expect(leases.recoverExactCalls, 1);
+    expect(leases.existing, isNull);
+  });
+
+  test('disable never orphan-recovers a non-expired closing lease', () async {
+    final now = DateTime.utc(2026, 9, 2, 13);
+    const claim = ForegroundTransportClaim(activityId: 'live-transport', bindingDigest: 'same', nativeGeneration: 7);
+    final lease = _lease(
+      'foreground',
+      'same',
+      now,
+    ).copyWith(state: BackupExecutionState.closing, foregroundActivityClaims: {claim});
+    final leases = _Leases(existing: lease);
+    final fence = _Fence(acknowledged: true);
+    final arbiter = BackupExecutionArbiter(
+      leases: leases,
+      tasks: _Registry(),
+      foregroundFence: fence,
+      clock: () => now,
+    );
+
+    final drained = await arbiter.disableAndDrain(
+      runToken: lease.runToken,
+      bindingDigest: lease.bindingDigest,
+      timeout: const Duration(milliseconds: 1),
+    );
+
+    expect(drained, isFalse);
+    expect(fence.claims, isEmpty);
+    expect(leases.recoverExactCalls, 0);
+    expect(leases.releaseCalls, 0);
+  });
+
+  test('disable does not classify a newly closing expired lease as an orphan', () async {
+    final now = DateTime.utc(2026, 9, 2, 13);
+    final lease = _lease('foreground', 'same', now.subtract(const Duration(minutes: 2)));
+    final leases = _Leases(existing: lease);
+    final registry = _Registry();
+    final arbiter = BackupExecutionArbiter(leases: leases, tasks: registry, clock: () => now);
+
+    final drained = await arbiter.disableAndDrain(runToken: lease.runToken, bindingDigest: lease.bindingDigest);
+
+    expect(drained, isTrue);
+    expect(registry.cancelAndDrainCalls, 1);
+    expect(leases.recoverExactCalls, 0);
+  });
+
+  test('disable fails closed when native work appears in Q2', () async {
+    final now = DateTime.utc(2026, 9, 2, 13);
+    final lease = _lease(
+      'foreground',
+      'same',
+      now.subtract(const Duration(minutes: 2)),
+    ).copyWith(state: BackupExecutionState.closing, callbacksInFlight: 1);
+    final registry = _Registry()
+      ..snapshotSequence = [
+        const [],
+        [_active('foreground', 'same')],
+      ];
+    final leases = _Leases(existing: lease);
+    final arbiter = BackupExecutionArbiter(leases: leases, tasks: registry, clock: () => now);
+
+    final drained = await arbiter.disableAndDrain(runToken: lease.runToken, bindingDigest: lease.bindingDigest);
+
+    expect(drained, isFalse);
+    expect(registry.snapshotCalls, 2);
+    expect(leases.existing, lease);
+    expect(leases.recoverExactCalls, 0);
+    expect(leases.releaseCalls, 0);
+  });
+
+  test('expired recovery never clears a callback that is live in the current Dart isolate', () async {
+    final now = DateTime.utc(2026, 9, 2, 13);
+    const callbackClaim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'live-callback');
+    final lease = _lease('foreground', 'same', now.subtract(const Duration(minutes: 2))).copyWith(
+      state: BackupExecutionState.closing,
+      callbacksInFlight: 1,
+      outstandingClaims: {callbackClaim},
+      callbackClaims: {callbackClaim},
+    );
+    final leases = _Leases(existing: lease);
+    final callbackFence = BackupCallbackFence();
+    final permit = callbackFence.tryBegin(runToken: lease.runToken, bindingDigest: lease.bindingDigest);
+    expect(permit, isNotNull);
+    final arbiter = BackupExecutionArbiter(
+      leases: leases,
+      tasks: _Registry()..snapshotSequence = [const [], const []],
+      callbackFence: callbackFence,
+      clock: () => now,
+    );
+
+    final drained = await arbiter.disableAndDrain(
+      runToken: lease.runToken,
+      bindingDigest: lease.bindingDigest,
+      timeout: const Duration(milliseconds: 1),
+    );
+
+    expect(drained, isFalse);
+    expect(leases.existing?.callbacksInFlight, 1);
+    expect(leases.existing?.callbackClaims, {callbackClaim});
+    expect(leases.releaseCalls, 0);
+    callbackFence.end(permit!);
+  });
+
+  test('expired callback recovery fails closed without a same-isolate callback fence capability', () async {
+    final now = DateTime.utc(2026, 9, 2, 13);
+    const callbackClaim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'unsupported-callback');
+    final lease = _lease('background', 'same', now.subtract(const Duration(minutes: 2))).copyWith(
+      state: BackupExecutionState.closing,
+      callbacksInFlight: 1,
+      outstandingClaims: {callbackClaim},
+      callbackClaims: {callbackClaim},
+    );
+    final leases = _Leases(existing: lease);
+    final arbiter = BackupExecutionArbiter(
+      leases: leases,
+      tasks: _Registry()..snapshotSequence = [const [], const []],
+      clock: () => now,
+    );
+
+    final drained = await arbiter.disableAndDrain(runToken: lease.runToken, bindingDigest: lease.bindingDigest);
+
+    expect(drained, isFalse);
+    expect(leases.existing, lease);
+    expect(leases.recoverExactCalls, 0);
+  });
+
+  test('callback activity appearing while a foreground fence awaits makes recovery fail closed', () async {
+    final now = DateTime.utc(2026, 9, 2, 13);
+    const foregroundClaim = ForegroundTransportClaim(
+      activityId: 'foreground-transport',
+      bindingDigest: 'same',
+      nativeGeneration: 7,
+    );
+    const callbackClaim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'new-callback');
+    final lease = _lease(
+      'foreground',
+      'same',
+      now.subtract(const Duration(minutes: 2)),
+    ).copyWith(state: BackupExecutionState.closing, foregroundActivityClaims: {foregroundClaim});
+    final leases = _Leases(existing: lease);
+    final fence = _Fence(
+      acknowledged: true,
+      onFence: (_) {
+        final current = leases.existing!;
+        leases.existing = current.copyWith(
+          callbacksInFlight: 1,
+          callbackClaims: {callbackClaim},
+          activityRevision: current.activityRevision + 1,
+        );
+      },
+    );
+    final arbiter = BackupExecutionArbiter(
+      leases: leases,
+      tasks: _Registry()..snapshotSequence = [const [], const []],
+      foregroundFence: fence,
+      callbackFence: BackupCallbackFence(),
+      clock: () => now,
+    );
+
+    final drained = await arbiter.disableAndDrain(runToken: lease.runToken, bindingDigest: lease.bindingDigest);
+
+    expect(drained, isFalse);
+    expect(leases.existing?.callbacksInFlight, 1);
+    expect(leases.existing?.callbackClaims, {callbackClaim});
+    expect(leases.releaseCalls, 0);
+  });
 }
 
 BackupTaskSnapshot _active(String token, String binding, {BackupTaskGroup group = BackupTaskGroup.primary}) =>
@@ -336,10 +615,13 @@ BackupExecutionLease _lease(String token, String binding, DateTime now) => Backu
 );
 
 final class _Leases implements BackupExecutionLeasePort {
-  _Leases({this.existing});
+  _Leases({this.existing, List<String>? events}) : events = events ?? [];
   BackupExecutionLease? existing;
+  final List<String> events;
   int acquireCalls = 0;
   int releaseCalls = 0;
+  int recoverExactCalls = 0;
+  final List<BackupExecutionLease> releasedLeases = [];
 
   @override
   Future<bool> acquire(BackupExecutionLease candidate, DateTime now) async {
@@ -458,19 +740,21 @@ final class _Leases implements BackupExecutionLeasePort {
   }
 
   @override
-  Future<BackupExecutionLease?> recoverOrphanClaimsForOwner({
-    required String runToken,
-    required String bindingDigest,
+  Future<BackupExecutionLease?> recoverExpiredClosingExact({
+    required BackupExecutionLease expected,
     required Set<BackupTaskClaim> activeClaims,
   }) async {
+    recoverExactCalls++;
     final current = existing;
-    if (current == null || current.runToken != runToken || current.bindingDigest != bindingDigest) return null;
-    existing = current.copyWith(
+    if (current != expected || expected.state != BackupExecutionState.closing) return null;
+    existing = expected.copyWith(
       outstandingClaims: activeClaims,
       enqueueClaims: const {},
       terminalTombstones: const {},
       callbacksInFlight: 0,
-      activityRevision: current.activityRevision + 1,
+      callbackClaims: const {},
+      foregroundActivityClaims: const {},
+      activityRevision: expected.activityRevision + 1,
     );
     return existing;
   }
@@ -479,6 +763,7 @@ final class _Leases implements BackupExecutionLeasePort {
   Future<BackupExecutionLease?> beginClosingForOwner({required String runToken, required String bindingDigest}) async {
     final current = existing;
     if (current == null || current.runToken != runToken || current.bindingDigest != bindingDigest) return null;
+    if (current.state == BackupExecutionState.closing) return current;
     existing = current.copyWith(state: BackupExecutionState.closing, activityRevision: current.activityRevision + 1);
     return existing;
   }
@@ -514,29 +799,12 @@ final class _Leases implements BackupExecutionLeasePort {
   }
 
   @override
-  Future<BackupExecutionLease?> clearForegroundActivitiesForOwner({
-    required String runToken,
-    required String bindingDigest,
-    required Set<ForegroundTransportClaim> expectedClaims,
-  }) async {
-    final current = existing;
-    if (current == null ||
-        current.runToken != runToken ||
-        current.bindingDigest != bindingDigest ||
-        current.foregroundActivityClaims.length != expectedClaims.length ||
-        !current.foregroundActivityClaims.containsAll(expectedClaims)) {
-      return null;
-    }
-    existing = current.copyWith(foregroundActivityClaims: const {}, activityRevision: current.activityRevision + 1);
-    return existing;
-  }
-
-  @override
   Future<BackupExecutionLease?> read() async => existing;
 
   @override
   Future<bool> releaseExact(BackupExecutionLease expected) async {
     releaseCalls++;
+    releasedLeases.add(expected);
     if (existing != expected) return false;
     existing = null;
     return true;
@@ -551,22 +819,29 @@ final class _Leases implements BackupExecutionLeasePort {
 }
 
 final class _Fence implements ForegroundTransportFencePort {
-  _Fence({required this.acknowledged});
+  _Fence({required this.acknowledged, List<String>? events, this.onFence}) : events = events ?? [];
 
   bool acknowledged;
+  final List<String> events;
+  final void Function(ForegroundTransportClaim claim)? onFence;
   final List<ForegroundTransportClaim> claims = [];
 
   @override
   Future<bool> fenceAndDrain(ForegroundTransportClaim claim) async {
     claims.add(claim);
+    events.add('fence-${claim.activityId}');
+    onFence?.call(claim);
     return acknowledged;
   }
 }
 
 final class _Registry implements BackupTaskRegistryPort {
-  _Registry({Completer<void>? ready}) : _ready = ready ?? (Completer<void>()..complete());
+  _Registry({Completer<void>? ready, List<String>? events})
+    : _ready = ready ?? (Completer<void>()..complete()),
+      events = events ?? [];
 
   final Completer<void> _ready;
+  final List<String> events;
   List<BackupTaskSnapshot> snapshots = [];
   List<List<BackupTaskSnapshot>> snapshotSequence = [];
   int snapshotCalls = 0;
@@ -581,6 +856,7 @@ final class _Registry implements BackupTaskRegistryPort {
   @override
   Future<List<BackupTaskSnapshot>> snapshot(Set<BackupTaskGroup> groups) async {
     snapshotCalls++;
+    events.add('snapshot-$snapshotCalls');
     requestedGroups = groups;
     if (snapshotSequence.isNotEmpty) return snapshotSequence.removeAt(0);
     return snapshots;

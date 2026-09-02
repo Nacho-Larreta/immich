@@ -62,13 +62,16 @@ final class BackupEnablementController {
 
   Future<BackupEnablementResult> enable() {
     if (_operation != null) return Future.value(BackupEnablementResult.busy);
-    if (_state.status == BackupEnablementStatus.drainFailed || _state.status == BackupEnablementStatus.disabling) {
+    if (_state.status == BackupEnablementStatus.disabling) {
       return Future.value(BackupEnablementResult.drainRequired);
     }
     if (_state.status == BackupEnablementStatus.enabled) {
       return Future.value(BackupEnablementResult.alreadyApplied);
     }
-    return _start(target: true, operation: _enable);
+    return _start(
+      target: true,
+      operation: _state.status == BackupEnablementStatus.drainFailed ? _retryDrainAndEnable : _enable,
+    );
   }
 
   Future<BackupEnablementResult> retryDrain() {
@@ -122,6 +125,12 @@ final class BackupEnablementController {
     return _drain(disabling);
   }
 
+  Future<BackupEnablementResult> _retryDrainAndEnable() async {
+    final drainResult = await _retryDrain();
+    if (drainResult != BackupEnablementResult.applied) return drainResult;
+    return _enable();
+  }
+
   Future<BackupEnablementResult> _drain(DurableBackupEnablementState disabling) async {
     try {
       if (!await _port.drain()) {
@@ -159,7 +168,7 @@ final class BackupEnablementController {
     try {
       if (!await _port.enableFromDrained(drained)) {
         _drainedState = null;
-        _publish(const BackupEnablementState.disabled());
+        _publish(const BackupEnablementState.drainFailed());
         return BackupEnablementResult.drainRequired;
       }
     } on Object {

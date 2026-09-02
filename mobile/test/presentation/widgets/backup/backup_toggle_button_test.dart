@@ -88,6 +88,46 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(port.drainCalls, 0);
   });
+
+  testWidgets('drain failure keeps the ON switch available and reflects serialized recovery result', (tester) async {
+    final retryDrain = Completer<bool>();
+    final port = _EnablementPort(Future.value(false), subsequentDrainResults: [retryDrain.future]);
+    final controller = BackupEnablementController(port, initiallyEnabled: true);
+    addTearDown(controller.dispose);
+    final drift = DriftBackupNotifier(
+      _ForegroundUploads(),
+      _BackgroundUploads(),
+      UploadSpeedManager(),
+      BackupExecutionArbiter(leases: _Leases(), tasks: _Registry()),
+      _Bindings(),
+      port,
+    );
+
+    await tester.pumpWidget(_harness(controller, drift));
+    await tester.pump();
+    await tester.tap(find.byType(InkWell));
+    await tester.pumpAndSettle();
+
+    final failedSwitch = tester.widget<Switch>(find.byKey(const ValueKey('backup-enablement-switch')));
+    expect(failedSwitch.value, isFalse);
+    expect(failedSwitch.onChanged, isNotNull);
+
+    await tester.tap(find.byKey(const ValueKey('backup-enablement-switch')));
+    await tester.pump();
+
+    final busySwitch = tester.widget<Switch>(find.byKey(const ValueKey('backup-enablement-switch')));
+    expect(busySwitch.value, isFalse);
+    expect(busySwitch.onChanged, isNull);
+    expect(port.drainCalls, 2);
+    expect(port.enableCalls, 0);
+
+    retryDrain.complete(true);
+    await tester.pumpAndSettle();
+
+    expect(tester.widget<Switch>(find.byKey(const ValueKey('backup-enablement-switch'))).value, isTrue);
+    expect(port.enableCalls, 1);
+    expect(tester.takeException(), isNull);
+  });
 }
 
 Widget _harness(BackupEnablementController controller, DriftBackupNotifier drift) => ProviderScope(
@@ -114,11 +154,14 @@ Widget _harness(BackupEnablementController controller, DriftBackupNotifier drift
 );
 
 final class _EnablementPort implements BackupEnablementPort, BackupEnablementAuthorityPort {
-  _EnablementPort(this.drainResult, {this.beginDisableError});
+  _EnablementPort(this.drainResult, {this.beginDisableError, List<Future<bool>> subsequentDrainResults = const []})
+    : _subsequentDrainResults = List.of(subsequentDrainResults);
 
   final Future<bool> drainResult;
+  final List<Future<bool>> _subsequentDrainResults;
   final Object? beginDisableError;
   int drainCalls = 0;
+  int enableCalls = 0;
 
   @override
   Future<DurableBackupEnablementState> initialize(bool legacyEnabled) async {
@@ -147,11 +190,14 @@ final class _EnablementPort implements BackupEnablementPort, BackupEnablementAut
   @override
   Future<bool> drain() {
     drainCalls++;
-    return drainResult;
+    return drainCalls == 1 ? drainResult : _subsequentDrainResults.removeAt(0);
   }
 
   @override
-  Future<bool> enableFromDrained(DurableBackupEnablementState disabledDrained) async => true;
+  Future<bool> enableFromDrained(DurableBackupEnablementState disabledDrained) async {
+    enableCalls++;
+    return true;
+  }
 
   @override
   Future<bool> failDrain(DurableBackupEnablementState disabling) async => true;

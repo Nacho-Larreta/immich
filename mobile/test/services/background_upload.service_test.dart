@@ -16,6 +16,7 @@ import 'package:immich_mobile/domain/models/backup_reconciliation_quarantine.mod
 import 'package:immich_mobile/domain/models/backup_run_binding.model.dart';
 import 'package:immich_mobile/domain/models/endpoint_probe.model.dart';
 import 'package:immich_mobile/domain/models/server_reachability.model.dart';
+import 'package:immich_mobile/domain/services/backup_callback_fence.dart';
 import 'package:immich_mobile/domain/services/backup_execution_arbiter.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/services/store.service.dart';
@@ -490,6 +491,45 @@ void main() {
 
       verifyNever(() => mockLocalAssetRepository.getById(any()));
       expect(leases.events, ['begin']);
+    });
+
+    test('owned callback holds the shared recovery fence before its first repository await', () async {
+      final begin = Completer<BackupExecutionLease?>();
+      final leases = _LeasePort(begin: begin.future);
+      final callbackFence = BackupCallbackFence();
+      final ownedService = BackgroundUploadService(
+        mockUploadRepository,
+        mockStorageRepository,
+        mockLocalAssetRepository,
+        mockBackupRepository,
+        mockAppSettingsService,
+        mockAssetMediaRepository,
+        leasePort: leases,
+        callbackFence: callbackFence,
+      );
+      addTearDown(ownedService.dispose);
+
+      final callback = ownedService.handleOwnedStatusForTest(_completeOwnedUpdate());
+      await pumpEventQueue();
+
+      expect(
+        await callbackFence.fenceAndDrain(
+          runToken: 'run-token',
+          bindingDigest: 'binding-digest',
+          timeout: const Duration(milliseconds: 1),
+        ),
+        isFalse,
+      );
+      begin.complete(null);
+      await callback;
+      expect(
+        await callbackFence.fenceAndDrain(
+          runToken: 'run-token',
+          bindingDigest: 'binding-digest',
+          timeout: const Duration(milliseconds: 1),
+        ),
+        isTrue,
+      );
     });
 
     test('owned enqueue without native revision is rejected before durable or plugin side effects', () async {
@@ -1368,9 +1408,8 @@ final class _LeasePort implements BackupExecutionLeasePort {
   }) async => existing = (existing ?? _lease()).copyWith(outstandingClaims: activeClaims, activityRevision: 4);
 
   @override
-  Future<BackupExecutionLease?> recoverOrphanClaimsForOwner({
-    required String runToken,
-    required String bindingDigest,
+  Future<BackupExecutionLease?> recoverExpiredClosingExact({
+    required BackupExecutionLease expected,
     required Set<BackupTaskClaim> activeClaims,
   }) async => _lease().copyWith(outstandingClaims: activeClaims, activityRevision: 4);
 
@@ -1392,13 +1431,6 @@ final class _LeasePort implements BackupExecutionLeasePort {
     required String runToken,
     required String bindingDigest,
     required ForegroundTransportClaim claim,
-  }) => throw UnimplementedError();
-
-  @override
-  Future<BackupExecutionLease?> clearForegroundActivitiesForOwner({
-    required String runToken,
-    required String bindingDigest,
-    required Set<ForegroundTransportClaim> expectedClaims,
   }) => throw UnimplementedError();
 
   @override

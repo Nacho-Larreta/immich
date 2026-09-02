@@ -417,35 +417,35 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
   }
 
   @override
-  Future<BackupExecutionLease?> recoverOrphanClaimsForOwner({
-    required String runToken,
-    required String bindingDigest,
+  Future<BackupExecutionLease?> recoverExpiredClosingExact({
+    required BackupExecutionLease expected,
     required Set<BackupTaskClaim> activeClaims,
-  }) => _transitionForTask(
-    runToken: runToken,
-    bindingDigest: bindingDigest,
-    replacement: (lease) {
-      if (lease.state != BackupExecutionState.closing) return null;
-      final outstanding = activeClaims;
-      final enqueue = lease.enqueueClaims.difference(activeClaims);
-      final tombstones = activeClaims.isEmpty ? const <BackupTaskClaim>{} : lease.terminalTombstones;
-      if (_sameClaims(outstanding, lease.outstandingClaims) &&
-          _sameClaims(enqueue, lease.enqueueClaims) &&
-          _sameClaims(tombstones, lease.terminalTombstones) &&
-          lease.callbackClaims.isEmpty &&
-          lease.callbacksInFlight == 0) {
-        return lease;
-      }
-      return lease.copyWith(
+  }) {
+    if (expected.state != BackupExecutionState.closing) return Future.value();
+    final outstanding = activeClaims;
+    final enqueue = expected.enqueueClaims.difference(activeClaims);
+    final tombstones = activeClaims.isEmpty ? const <BackupTaskClaim>{} : expected.terminalTombstones;
+    final alreadyRecovered =
+        _sameClaims(outstanding, expected.outstandingClaims) &&
+        _sameClaims(enqueue, expected.enqueueClaims) &&
+        _sameClaims(tombstones, expected.terminalTombstones) &&
+        expected.callbackClaims.isEmpty &&
+        expected.callbacksInFlight == 0 &&
+        expected.foregroundActivityClaims.isEmpty;
+    if (alreadyRecovered) return Future.value(expected);
+    return _transition(
+      expected,
+      expected.copyWith(
         outstandingClaims: outstanding,
         enqueueClaims: enqueue,
         terminalTombstones: tombstones,
         callbacksInFlight: 0,
         callbackClaims: const {},
-        activityRevision: lease.activityRevision + 1,
-      );
-    },
-  );
+        foregroundActivityClaims: const {},
+        activityRevision: expected.activityRevision + 1,
+      ),
+    );
+  }
 
   @override
   Future<BackupExecutionLease?> beginClosingForOwner({required String runToken, required String bindingDigest}) =>
@@ -490,23 +490,6 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
         foregroundActivityClaims: {...lease.foregroundActivityClaims}..remove(claim),
         activityRevision: lease.activityRevision + 1,
       );
-    },
-  );
-
-  @override
-  Future<BackupExecutionLease?> clearForegroundActivitiesForOwner({
-    required String runToken,
-    required String bindingDigest,
-    required Set<ForegroundTransportClaim> expectedClaims,
-  }) => _transitionForTask(
-    runToken: runToken,
-    bindingDigest: bindingDigest,
-    replacement: (lease) {
-      if (lease.state != BackupExecutionState.closing || !_sameClaims(lease.foregroundActivityClaims, expectedClaims)) {
-        return null;
-      }
-      if (lease.foregroundActivityClaims.isEmpty) return lease;
-      return lease.copyWith(foregroundActivityClaims: const {}, activityRevision: lease.activityRevision + 1);
     },
   );
 

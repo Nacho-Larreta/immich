@@ -17,6 +17,7 @@ import 'package:immich_mobile/domain/models/backup_candidate_key.model.dart';
 import 'package:immich_mobile/domain/models/backup_reconciliation_quarantine.model.dart';
 import 'package:immich_mobile/domain/models/backup_run_binding.model.dart';
 import 'package:immich_mobile/domain/services/backup_execution_arbiter.dart';
+import 'package:immich_mobile/domain/services/backup_callback_fence.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/extensions/platform_extensions.dart';
 import 'package:immich_mobile/infrastructure/repositories/backup.repository.dart';
@@ -71,6 +72,7 @@ final Provider<BackgroundUploadService> backgroundUploadServiceProvider = Provid
     ref.watch(assetMediaRepositoryProvider),
     leasePort: ref.watch(backupExecutionLeaseProvider),
     arbiter: ref.watch(backupExecutionArbiterProvider),
+    callbackFence: ref.watch(backupCallbackFenceProvider),
     resolveBinding: (metadata, task) => _resolveOwnedTaskBinding(ref, metadata, task),
     canContinueOwnedUpload: canContinueOwnedUpload,
     onOwnedTerminal: (success) => ref
@@ -390,6 +392,7 @@ class BackgroundUploadService {
     this._assetMediaRepository, {
     BackupExecutionLeasePort? leasePort,
     BackupExecutionArbiter? arbiter,
+    BackupCallbackFencePort? callbackFence,
     String Function()? taskIdFactory,
     BackupRunBinding? Function(UploadTaskMetadata metadata, Task task)? validateBinding,
     BackupRunBindingResolution Function(UploadTaskMetadata metadata, Task task)? resolveBinding,
@@ -402,6 +405,7 @@ class BackgroundUploadService {
     Future<void> Function(Duration delay)? completedTaskRecheckDelay,
   }) : _leasePort = leasePort,
        _arbiter = arbiter,
+       _callbackFence = callbackFence ?? BackupCallbackFence(),
        _taskIdFactory = taskIdFactory ?? _opaqueTaskId,
        _resolveBinding =
            resolveBinding ??
@@ -431,6 +435,7 @@ class BackgroundUploadService {
   final AssetMediaRepository _assetMediaRepository;
   final BackupExecutionLeasePort? _leasePort;
   final BackupExecutionArbiter? _arbiter;
+  final BackupCallbackFencePort _callbackFence;
   final String Function() _taskIdFactory;
   final BackupRunBindingResolution Function(UploadTaskMetadata metadata, Task task) _resolveBinding;
   final Future<bool> Function(BackupRunBinding binding) _canContinueOwnedUpload;
@@ -833,24 +838,21 @@ class BackgroundUploadService {
     if (metadata == null) return;
     final ownership = metadata.ownership!;
     final taskClaim = _claimForTask(update.task);
-    final claim = await _leasePort?.beginCallbackForTask(
-      runToken: ownership.runToken,
-      bindingDigest: ownership.bindingDigest,
-      claim: taskClaim,
-    );
-    if (claim == null) return;
-    final binding = _resolveBinding(metadata, update.task).binding;
-    if (binding == null) {
-      await _leasePort?.endCallbackForTask(
+    final permit = _callbackFence.tryBegin(runToken: ownership.runToken, bindingDigest: ownership.bindingDigest);
+    if (permit == null) return;
+    var callbackClaimed = false;
+    var terminalSucceeded = false;
+    BackupRunBinding? pendingReconciliation;
+    try {
+      final claim = await _leasePort?.beginCallbackForTask(
         runToken: ownership.runToken,
         bindingDigest: ownership.bindingDigest,
         claim: taskClaim,
       );
-      return;
-    }
-    var terminalSucceeded = false;
-    BackupRunBinding? pendingReconciliation;
-    try {
+      if (claim == null) return;
+      callbackClaimed = true;
+      final binding = _resolveBinding(metadata, update.task).binding;
+      if (binding == null) return;
       if (!_taskStatusController.isClosed) _taskStatusController.add(update);
       final terminalConfirmed = await _handleTaskStatusUpdate(update, metadata, binding);
       var reconciled = true;
@@ -873,26 +875,32 @@ class BackgroundUploadService {
       }
       terminalSucceeded = update.status == TaskStatus.complete && terminalConfirmed && reconciled;
     } finally {
-      final ended = await _leasePort?.endCallbackForTask(
-        runToken: ownership.runToken,
-        bindingDigest: ownership.bindingDigest,
-        claim: taskClaim,
-      );
-      if (ended != null) {
-        await _arbiter?.releaseCurrentWhenQuiescent(
-          runToken: ownership.runToken,
-          bindingDigest: ownership.bindingDigest,
-        );
-      }
-      if (_isTerminal(update.status)) {
-        if (pendingReconciliation != null) {
-          _onReconciliationPending?.call();
-          _scheduleReconciliation(taskClaim, ownership, pendingReconciliation, update.task);
-        } else if (update.status == TaskStatus.complete && !terminalSucceeded) {
-          _onReconciliationBlocked?.call();
-        } else {
-          _onOwnedTerminal?.call(terminalSucceeded);
+      try {
+        if (callbackClaimed) {
+          final ended = await _leasePort?.endCallbackForTask(
+            runToken: ownership.runToken,
+            bindingDigest: ownership.bindingDigest,
+            claim: taskClaim,
+          );
+          if (ended != null) {
+            await _arbiter?.releaseCurrentWhenQuiescent(
+              runToken: ownership.runToken,
+              bindingDigest: ownership.bindingDigest,
+            );
+          }
         }
+        if (callbackClaimed && _isTerminal(update.status)) {
+          if (pendingReconciliation != null) {
+            _onReconciliationPending?.call();
+            _scheduleReconciliation(taskClaim, ownership, pendingReconciliation, update.task);
+          } else if (update.status == TaskStatus.complete && !terminalSucceeded) {
+            _onReconciliationBlocked?.call();
+          } else {
+            _onOwnedTerminal?.call(terminalSucceeded);
+          }
+        }
+      } finally {
+        _callbackFence.end(permit);
       }
     }
   }

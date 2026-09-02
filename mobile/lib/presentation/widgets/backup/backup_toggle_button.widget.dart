@@ -59,7 +59,7 @@ class BackupToggleButtonState extends ConsumerState<BackupToggleButton> with Sin
     final enablement = ref.watch(backupEnablementStateProvider).valueOrNull ?? controller.state;
 
     final isProcessing = uploadTasks.isNotEmpty || isSyncing || iCloudProgress.isNotEmpty;
-    final controlsEnabled = !enablement.isBusy && enablement.status != BackupEnablementStatus.drainFailed;
+    final controlsEnabled = !enablement.isBusy;
 
     return AnimatedBuilder(
       animation: _animationController,
