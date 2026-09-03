@@ -12,6 +12,8 @@ class TestFlightReleaseGuardTest < Minitest::Test
     :build_number,
     :group_name,
     :tester_emails,
+    :allow_intentional_build_gap,
+    :intentional_build_gap_reason,
     keyword_init: true
   )
 
@@ -138,7 +140,9 @@ class TestFlightReleaseGuardTest < Minitest::Test
       previous_build_number: "41",
       build_number: "42",
       group_name: @group.name,
-      tester_emails: @users.map(&:email)
+      tester_emails: @users.map(&:email),
+      allow_intentional_build_gap: false,
+      intentional_build_gap_reason: nil
     )
     @clock = FakeClock.new
     @sleeper = FakeSleeper.new(@clock)
@@ -162,6 +166,38 @@ class TestFlightReleaseGuardTest < Minitest::Test
 
     assert_equal 2, result.eligible_tester_count
     refute_respond_to @testers.first, :state
+  end
+
+  def test_preflight_rejects_a_build_gap_by_default
+    configure_build_gap(allow: false)
+    guard, = guard_with([build(number: "243")])
+
+    assert_raises(TestFlightReleaseGuard::PreflightFailure) { guard.preflight(@release) }
+  end
+
+  def test_preflight_rejects_an_enabled_build_gap_without_a_reason
+    configure_build_gap(allow: true)
+    guard, = guard_with([build(number: "243")])
+
+    assert_raises(TestFlightReleaseGuard::PreflightFailure) { guard.preflight(@release) }
+  end
+
+  def test_preflight_accepts_only_the_audited_gap_with_exact_remote_243_and_free_target_245
+    configure_build_gap(allow: true, reason: "244 was a local device build")
+    guard, = guard_with([build(number: "243")])
+
+    result = guard.preflight(@release)
+
+    assert_equal "243", result.remote_latest_build_number
+
+    [
+      [build(number: "244")],
+      [build(number: "243"), build(number: "245")]
+    ].each do |remote_builds|
+      drifted_guard, gateway = guard_with([remote_builds.first])
+      gateway.build_snapshots = [remote_builds]
+      assert_raises(TestFlightReleaseGuard::PreflightFailure) { drifted_guard.preflight(@release) }
+    end
   end
 
   def test_preflight_fails_closed_on_ambiguous_or_drifted_remote_state
@@ -334,6 +370,13 @@ class TestFlightReleaseGuardTest < Minitest::Test
   end
 
   private
+
+  def configure_build_gap(allow:, reason: nil)
+    @release.previous_build_number = "243"
+    @release.build_number = "245"
+    @release.allow_intentional_build_gap = allow
+    @release.intentional_build_gap_reason = reason
+  end
 
   def guard_with(builds)
     gateway = FakeGateway.new(app: @app, group: @group, users: @users, testers: @testers, builds: builds)
