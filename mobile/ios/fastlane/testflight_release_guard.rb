@@ -139,7 +139,9 @@ module TestFlightReleaseGuard
     def validate_build_expectation!(release)
       ReleaseBuildGuard.validate!(
         previous_build: release.previous_build_number,
-        build: release.build_number
+        build: release.build_number,
+        allow_intentional_gap: release.allow_intentional_build_gap,
+        intentional_gap_reason: release.intentional_build_gap_reason
       )
     rescue ReleaseBuildGuard::InvalidExpectation => error
       raise PreflightFailure, error.message

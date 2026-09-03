@@ -96,6 +96,8 @@ module TestFlightReleaseConfiguration
                 :version,
                 :previous_build_number,
                 :build_number,
+                :allow_intentional_build_gap,
+                :intentional_build_gap_reason,
                 :ipa_path
 
     def self.from_env(env, bundle_id:)
@@ -131,6 +133,8 @@ module TestFlightReleaseConfiguration
         version: values.fetch("EXPECTED_VERSION"),
         previous_build_number: values.fetch("EXPECTED_PREVIOUS_BUILD_NUMBER"),
         build_number: values.fetch("EXPECTED_BUILD_NUMBER"),
+        allow_intentional_build_gap: env["TESTFLIGHT_ALLOW_INTENTIONAL_BUILD_GAP"] == "true",
+        intentional_build_gap_reason: env["TESTFLIGHT_INTENTIONAL_BUILD_GAP_REASON"],
         ipa_path: values.fetch("IPA_PATH")
       )
     end
