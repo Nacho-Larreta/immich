@@ -71,7 +71,7 @@ module ProductionBuildPlan
         result[name] = required(env, name)
       end
       validate_version(values.fetch("EXPECTED_VERSION"))
-      validate_build_numbers(values)
+      validate_build_numbers(values, env)
       ipa_path = validate_destination(values.fetch("IPA_PATH"), name: "IPA_PATH", extension: ".ipa")
       archive_path = validate_destination(
         values.fetch("ARCHIVE_PATH"),
@@ -156,10 +156,12 @@ module ProductionBuildPlan
         raise InvalidPlan, "EXPECTED_VERSION must be a canonical three-part semantic version"
       end
 
-      def validate_build_numbers(values)
+      def validate_build_numbers(values, env)
         ReleaseBuildGuard.validate!(
           previous_build: values.fetch("EXPECTED_PREVIOUS_BUILD_NUMBER"),
-          build: values.fetch("EXPECTED_BUILD_NUMBER")
+          build: values.fetch("EXPECTED_BUILD_NUMBER"),
+          allow_intentional_gap: env["TESTFLIGHT_ALLOW_INTENTIONAL_BUILD_GAP"] == "true",
+          intentional_gap_reason: env["TESTFLIGHT_INTENTIONAL_BUILD_GAP_REASON"]
         )
       rescue ReleaseBuildGuard::InvalidExpectation => error
         raise InvalidPlan, error.message

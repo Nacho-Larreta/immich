@@ -46,6 +46,20 @@ class ReleaseBuildGuardTest < Minitest::Test
     end
   end
 
+  def test_allows_a_non_consecutive_build_only_with_explicit_flag_and_reason
+    assert_nil ReleaseBuildGuard.validate!(
+      previous_build: "243", build: "245", allow_intentional_gap: true, intentional_gap_reason: "244 local-only"
+    )
+    assert_raises(ReleaseBuildGuard::InvalidExpectation) do
+      ReleaseBuildGuard.validate!(previous_build: "243", build: "245", allow_intentional_gap: true)
+    end
+    assert_raises(ReleaseBuildGuard::InvalidExpectation) do
+      ReleaseBuildGuard.validate!(
+        previous_build: "41", build: "43", allow_intentional_gap: true, intentional_gap_reason: "unrelated"
+      )
+    end
+  end
+
   private
 
   def assert_invalid_build_number(name, value)

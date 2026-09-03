@@ -114,7 +114,9 @@ module TestFlightReleaseConfiguration
       begin
         ReleaseBuildGuard.validate!(
           previous_build: values.fetch("EXPECTED_PREVIOUS_BUILD_NUMBER"),
-          build: values.fetch("EXPECTED_BUILD_NUMBER")
+          build: values.fetch("EXPECTED_BUILD_NUMBER"),
+          allow_intentional_gap: env["TESTFLIGHT_ALLOW_INTENTIONAL_BUILD_GAP"] == "true",
+          intentional_gap_reason: env["TESTFLIGHT_INTENTIONAL_BUILD_GAP_REASON"]
         )
       rescue ReleaseBuildGuard::InvalidExpectation => error
         raise InvalidConfiguration, error.message
