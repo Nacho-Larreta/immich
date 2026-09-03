@@ -8,8 +8,10 @@ import 'package:immich_mobile/domain/models/album/local_album.model.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/backup_sync.model.dart';
 import 'package:immich_mobile/domain/models/backup_enablement.model.dart';
+import 'package:immich_mobile/domain/models/eager_backup.model.dart';
 import 'package:immich_mobile/domain/interfaces/backup_run_binding.interface.dart';
 import 'package:immich_mobile/domain/interfaces/backup_enablement.interface.dart';
+import 'package:immich_mobile/domain/interfaces/eager_backup.interface.dart';
 import 'package:immich_mobile/domain/services/backup_execution_arbiter.dart';
 import 'package:immich_mobile/providers/backup/backup_execution.provider.dart';
 import 'package:immich_mobile/providers/backup/backup_enablement.provider.dart';
@@ -118,6 +120,7 @@ class DriftBackupState {
   final Map<String, DriftUploadStatus> uploadItems;
 
   final Map<String, double> iCloudDownloadProgress;
+  final EagerBackgroundUploadSnapshot? backgroundUploadSnapshot;
 
   const DriftBackupState({
     required this.totalCount,
@@ -128,6 +131,7 @@ class DriftBackupState {
     this.error = BackupError.none,
     required this.uploadItems,
     this.iCloudDownloadProgress = const {},
+    this.backgroundUploadSnapshot,
   });
 
   DriftBackupState copyWith({
@@ -139,6 +143,8 @@ class DriftBackupState {
     BackupError? error,
     Map<String, DriftUploadStatus>? uploadItems,
     Map<String, double>? iCloudDownloadProgress,
+    EagerBackgroundUploadSnapshot? backgroundUploadSnapshot,
+    bool clearBackgroundUploadSnapshot = false,
   }) {
     return DriftBackupState(
       totalCount: totalCount ?? this.totalCount,
@@ -149,6 +155,9 @@ class DriftBackupState {
       error: error ?? this.error,
       uploadItems: uploadItems ?? this.uploadItems,
       iCloudDownloadProgress: iCloudDownloadProgress ?? this.iCloudDownloadProgress,
+      backgroundUploadSnapshot: clearBackgroundUploadSnapshot
+          ? null
+          : backgroundUploadSnapshot ?? this.backgroundUploadSnapshot,
     );
   }
 
@@ -171,7 +180,8 @@ class DriftBackupState {
         other.isSyncing == isSyncing &&
         other.error == error &&
         mapEquals(other.iCloudDownloadProgress, iCloudDownloadProgress) &&
-        mapEquals(other.uploadItems, uploadItems);
+        mapEquals(other.uploadItems, uploadItems) &&
+        other.backgroundUploadSnapshot == backgroundUploadSnapshot;
   }
 
   @override
@@ -183,7 +193,8 @@ class DriftBackupState {
         isSyncing.hashCode ^
         error.hashCode ^
         uploadItems.hashCode ^
-        iCloudDownloadProgress.hashCode;
+        iCloudDownloadProgress.hashCode ^
+        backgroundUploadSnapshot.hashCode;
   }
 }
 
@@ -201,25 +212,27 @@ final StateNotifierProvider<DriftBackupNotifier, DriftBackupState> driftBackupPr
       return notifier;
     });
 
-class DriftBackupNotifier extends StateNotifier<DriftBackupState> {
+class DriftBackupNotifier extends StateNotifier<DriftBackupState> implements EagerBackupActivityProjectionPort {
   DriftBackupNotifier(
     this._foregroundUploadService,
     this._backgroundUploadService,
     this._uploadSpeedManager,
     this._arbiter,
     this._bindings,
-    this._enablementAuthority,
-  ) : super(
-        const DriftBackupState(
-          totalCount: 0,
-          backupCount: 0,
-          remainderCount: 0,
-          processingCount: 0,
-          isSyncing: false,
-          uploadItems: {},
-          error: BackupError.none,
-        ),
-      );
+    this._enablementAuthority, {
+    Duration backgroundOwnerTimeout = const Duration(seconds: 30),
+  }) : _backgroundOwnerTimeout = backgroundOwnerTimeout,
+       super(
+         const DriftBackupState(
+           totalCount: 0,
+           backupCount: 0,
+           remainderCount: 0,
+           processingCount: 0,
+           isSyncing: false,
+           uploadItems: {},
+           error: BackupError.none,
+         ),
+       );
 
   final ForegroundUploadService _foregroundUploadService;
   final BackgroundUploadService _backgroundUploadService;
@@ -227,6 +240,7 @@ class DriftBackupNotifier extends StateNotifier<DriftBackupState> {
   final BackgroundBackupAdmissionPort _arbiter;
   final BackupRunBindingSourcePort _bindings;
   final BackupEnablementAuthorityPort _enablementAuthority;
+  final Duration _backgroundOwnerTimeout;
   Completer<void>? _cancelToken;
 
   final _logger = Logger("DriftBackupNotifier");
@@ -275,13 +289,45 @@ class DriftBackupNotifier extends StateNotifier<DriftBackupState> {
     state = state.copyWith(isSyncing: isSyncing);
   }
 
+  @override
+  void presentBackgroundSnapshot(EagerBackgroundUploadSnapshot snapshot) {
+    if (!mounted) return;
+    state = state.copyWith(isSyncing: snapshot.activeCount > 0, backgroundUploadSnapshot: snapshot);
+  }
+
+  @override
+  void presentActivity(BackupUploadActivity activity) {
+    if (!mounted) return;
+    switch (activity.kind) {
+      case BackupUploadActivityKind.status:
+        return;
+      case BackupUploadActivityKind.progress:
+        final totalBytes = activity.totalBytes ?? 0;
+        final bytes = totalBytes == 0 ? 0 : ((activity.progress ?? 0) * totalBytes).round();
+        _handleForegroundBackupProgress(
+          activity.localAssetId,
+          activity.filename ?? '',
+          bytes,
+          totalBytes,
+          progressOverride: activity.progress,
+          requiresActiveForegroundRun: false,
+        );
+      case BackupUploadActivityKind.success:
+        _handleForegroundBackupSuccess(activity.localAssetId, '');
+      case BackupUploadActivityKind.iCloudProgress:
+        _handleICloudProgress(activity.localAssetId, activity.progress ?? 0);
+      case BackupUploadActivityKind.error:
+        _handleForegroundBackupError(activity.localAssetId, activity.error ?? 'background_upload_failed');
+    }
+  }
+
   Future<void> startForegroundBackup(String userId) {
     // Cancel any existing backup before starting a new one
     if (_cancelToken != null) {
       stopForegroundBackup();
     }
 
-    state = state.copyWith(error: BackupError.none);
+    state = state.copyWith(error: BackupError.none, clearBackgroundUploadSnapshot: true);
 
     final runToken = Completer<void>();
     _cancelToken = runToken;
@@ -325,12 +371,16 @@ class DriftBackupNotifier extends StateNotifier<DriftBackupState> {
     }
   }
 
-  void _handleForegroundBackupProgress(String localAssetId, String filename, int bytes, int totalBytes) {
-    if (_cancelToken == null) {
-      return;
-    }
-
-    final progress = totalBytes > 0 ? bytes / totalBytes : 0.0;
+  void _handleForegroundBackupProgress(
+    String localAssetId,
+    String filename,
+    int bytes,
+    int totalBytes, {
+    double? progressOverride,
+    bool requiresActiveForegroundRun = true,
+  }) {
+    if (requiresActiveForegroundRun && _cancelToken == null) return;
+    final progress = progressOverride ?? (totalBytes > 0 ? bytes / totalBytes : 0.0);
     final networkSpeedAsString = _uploadSpeedManager.updateProgress(localAssetId, bytes, totalBytes);
     final currentItem = state.uploadItems[localAssetId];
     if (currentItem != null) {
@@ -362,7 +412,11 @@ class DriftBackupNotifier extends StateNotifier<DriftBackupState> {
   }
 
   void _handleForegroundBackupSuccess(String localAssetId, String remoteAssetId) {
-    state = state.copyWith(backupCount: state.backupCount + 1, remainderCount: state.remainderCount - 1);
+    final completed = state.remainderCount > 0 ? 1 : 0;
+    state = state.copyWith(
+      backupCount: state.backupCount + completed,
+      remainderCount: state.remainderCount - completed,
+    );
     _uploadSpeedManager.removeTask(localAssetId);
 
     Future.delayed(const Duration(milliseconds: 1000), () {
@@ -414,7 +468,7 @@ class DriftBackupNotifier extends StateNotifier<DriftBackupState> {
     final authority = await _enablementAuthority.readAuthority();
     if (authority?.phase != DurableBackupEnablementPhase.enabled) return;
     _logger.info("Start background backup sequence");
-    state = state.copyWith(error: BackupError.none);
+    state = state.copyWith(error: BackupError.none, clearBackgroundUploadSnapshot: true);
     final admission = await _arbiter.acquireBackground(bindingDigest: binding.digest);
     final lease = admission.lease;
     var ownershipTransferred = false;
@@ -427,7 +481,37 @@ class DriftBackupNotifier extends StateNotifier<DriftBackupState> {
       if (currentAuthority != authority || currentAuthority?.phase != DurableBackupEnablementPhase.enabled) return;
       if (admission.disposition == BackupAdmissionDisposition.adoptedBackground) {
         ownershipTransferred = true;
-        return _backgroundUploadService.resume();
+        if (lease == null || !_bindings.isCurrent(binding)) return;
+        final owner = EagerBackgroundUploadOwner.fromLease(lease);
+        final EagerBackgroundUploadSnapshot snapshot;
+        try {
+          snapshot = await _backgroundUploadService.readSnapshot(owner).timeout(_backgroundOwnerTimeout);
+        } on TimeoutException {
+          _logger.warning('background_backup_owner_snapshot_timed_out');
+          return;
+        }
+        if (!mounted || !_bindings.isCurrent(binding)) return;
+        final authorityAfterSnapshot = await _enablementAuthority.readAuthority();
+        if (authorityAfterSnapshot != currentAuthority ||
+            authorityAfterSnapshot?.phase != DurableBackupEnablementPhase.enabled ||
+            !_bindings.isCurrent(binding)) {
+          return;
+        }
+        presentBackgroundSnapshot(snapshot);
+        if (snapshot.ownerState != EagerBackgroundOwnerState.active) return;
+        try {
+          await _backgroundUploadService.resumeOwned(owner).timeout(_backgroundOwnerTimeout);
+        } on TimeoutException {
+          _logger.warning('background_backup_owner_resume_timed_out');
+          return;
+        }
+        if (!mounted || !_bindings.isCurrent(binding)) return;
+        final authorityAfterResume = await _enablementAuthority.readAuthority();
+        if (authorityAfterResume != authorityAfterSnapshot ||
+            authorityAfterResume?.phase != DurableBackupEnablementPhase.enabled) {
+          return;
+        }
+        return;
       }
       if (!admission.admitted || lease == null || !_bindings.isCurrent(binding)) return;
       ownershipTransferred = true;

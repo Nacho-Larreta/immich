@@ -37,7 +37,7 @@ void main() {
     await directory.delete(recursive: true);
   });
 
-  test('schema-7 lease round-trips both legacy and native-incarnation foreground claims', () {
+  test('schema-7 lease round-trips foreground and background operation incarnations', () {
     final now = DateTime.utc(2026, 9, 2, 18);
     final legacy = ForegroundTransportClaim.legacy(
       activityId: 'legacy-claim',
@@ -50,7 +50,16 @@ void main() {
       nativeGeneration: 9,
       transportIncarnation: 'root-process',
     );
-    final lease = _lease('claim-schema', now).copyWith(foregroundActivityClaims: {legacy, current});
+    const enqueueClaim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'enqueue');
+    const callbackClaim = BackupTaskClaim(group: BackupTaskGroup.livePhoto, taskId: 'callback');
+    final lease = _lease('claim-schema', now).copyWith(
+      enqueueClaims: {enqueueClaim},
+      callbackClaims: {callbackClaim},
+      callbacksInFlight: 1,
+      enqueueIncarnations: {enqueueClaim: 'process-a'},
+      callbackIncarnations: {callbackClaim: 'process-b'},
+      foregroundActivityClaims: {legacy, current},
+    );
 
     final encoded = lease.toJson();
     final json = jsonDecode(encoded) as Map<String, dynamic>;
@@ -62,6 +71,8 @@ void main() {
       claims.singleWhere((claim) => claim['activityId'] == 'current-claim'),
       containsPair('claimSchemaVersion', ForegroundTransportClaim.currentSchemaVersion),
     );
+    expect(json['enqueueIncarnations'], hasLength(1));
+    expect(json['callbackIncarnations'], hasLength(1));
     expect(BackupExecutionLease.tryParse(encoded), lease);
   });
 
@@ -430,6 +441,27 @@ void main() {
     expect(await second.read(), recovered);
   });
 
+  test('orphan callback release is exact and preserves its terminal claim for replay', () async {
+    final now = DateTime.utc(2026, 9, 2, 18);
+    const claim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'mailbox-terminal');
+    const foreign = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'foreign-terminal');
+    final expected = _lease(
+      'callback-orphan',
+      now,
+    ).copyWith(callbacksInFlight: 1, outstandingClaims: {claim}, callbackClaims: {claim});
+    expect(await first.acquire(expected, now), isTrue);
+
+    expect(await first.releaseOrphanedCallbackForTaskExact(expected: expected, claim: foreign), isNull);
+    final released = await first.releaseOrphanedCallbackForTaskExact(expected: expected, claim: claim);
+
+    expect(released?.callbacksInFlight, 0);
+    expect(released?.callbackClaims, isEmpty);
+    expect(released?.outstandingClaims, {claim});
+    expect(released?.activityRevision, expected.activityRevision + 1);
+    expect(await second.releaseOrphanedCallbackForTaskExact(expected: expected, claim: claim), isNull);
+    expect(await second.read(), released);
+  });
+
   test('expired closing recovery CAS miss preserves callback activity from another connection', () async {
     final now = DateTime.utc(2026, 9, 2, 13);
     const originalClaim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'opaque-original');
@@ -510,6 +542,29 @@ void main() {
       activeClaims: {claim},
     );
 
+    expect(reconciled?.enqueueClaims, isEmpty);
+    expect(reconciled?.outstandingClaims, {claim});
+  });
+
+  test('closing crash recovery promotes an exact active enqueue claim without renewing ownership', () async {
+    final now = DateTime.utc(2026, 9, 2, 18);
+    final expired = _lease('closing-enqueue', now.subtract(const Duration(minutes: 2)));
+    expect(await first.acquire(expired, now), isTrue);
+    const claim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'opaque-active');
+    expect(
+      await first.beginEnqueueForTask(runToken: expired.runToken, bindingDigest: expired.bindingDigest, claim: claim),
+      isNotNull,
+    );
+    final closing = await first.beginClosingForOwner(runToken: expired.runToken, bindingDigest: expired.bindingDigest);
+
+    final reconciled = await second.reconcileTaskClaimsForOwner(
+      runToken: expired.runToken,
+      bindingDigest: expired.bindingDigest,
+      activeClaims: {claim},
+    );
+
+    expect(reconciled?.state, BackupExecutionState.closing);
+    expect(reconciled?.expiresAt, closing?.expiresAt);
     expect(reconciled?.enqueueClaims, isEmpty);
     expect(reconciled?.outstandingClaims, {claim});
   });

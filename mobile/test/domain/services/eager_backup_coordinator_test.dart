@@ -267,6 +267,96 @@ void main() {
     await coordinator.dispose();
   });
 
+  test('physical reproduction coalesces twenty workload edges behind one background owner retry', () async {
+    final retry = _ManualRetryScheduler();
+    final releaseUpload = Completer<void>();
+    final operations = _Operations(
+      [
+        const BackupWorkload(total: 1, remainder: 1, processing: 0),
+        const BackupWorkload(total: 1, remainder: 1, processing: 0),
+      ],
+      pendingUpload: releaseUpload,
+      uploadFailures: [const EagerBackupFailure.backgroundOwnerActive()],
+    );
+    final coordinator = _readyCoordinator(operations, retryScheduler: retry);
+
+    coordinator.signal(EagerBackupTrigger.startup);
+    await operations.uploadStarted.future;
+    for (var index = 0; index < 20; index++) {
+      coordinator.signal(EagerBackupTrigger.workloadChanged);
+    }
+    releaseUpload.complete();
+    await pumpEventQueue();
+
+    expect(operations.calls.where((call) => call == 'upload'), hasLength(1));
+    expect(retry.delays, [const Duration(seconds: 1)]);
+    expect(retry.hasPending, isTrue);
+    expect(coordinator.state.phase, EagerBackupPhase.backingOff);
+    expect(coordinator.state.blocker, EagerBackupBlocker.backgroundOwnerActive);
+
+    coordinator
+      ..signal(EagerBackupTrigger.workloadChanged)
+      ..signal(EagerBackupTrigger.photoLibraryChanged);
+    await pumpEventQueue();
+
+    expect(operations.calls.where((call) => call == 'upload'), hasLength(1));
+    expect(retry.delays, [const Duration(seconds: 1)]);
+    expect(retry.cancelCount, 0);
+    expect(retry.hasPending, isTrue);
+    await coordinator.dispose();
+  });
+
+  test('owner terminal preempts pending backoff and retries immediately', () async {
+    final retry = _ManualRetryScheduler();
+    final operations = _Operations(
+      [
+        const BackupWorkload(total: 1, remainder: 1, processing: 0),
+        const BackupWorkload(total: 1, remainder: 1, processing: 0),
+        const BackupWorkload(total: 1, remainder: 0, processing: 0),
+      ],
+      uploadFailures: [const EagerBackupFailure.backgroundOwnerActive()],
+    );
+    final coordinator = _readyCoordinator(operations, retryScheduler: retry);
+
+    coordinator.signal(EagerBackupTrigger.startup);
+    await operations.uploadStarted.future;
+    await pumpEventQueue();
+    expect(retry.hasPending, isTrue);
+
+    coordinator.signal(EagerBackupTrigger.uploadTerminal);
+    await operations.done.future;
+
+    expect(retry.cancelCount, 1);
+    expect(retry.hasPending, isFalse);
+    expect(operations.calls.where((call) => call == 'upload'), hasLength(2));
+    await coordinator.dispose();
+  });
+
+  test('backoff owns one timer and caps its deterministic sequence at thirty seconds', () async {
+    final retry = _ManualRetryScheduler();
+    final coordinator = EagerBackupCoordinator(operations: _Operations(const []), retryScheduler: retry)
+      ..setEnabled(true);
+
+    for (var attempt = 0; attempt < 7; attempt++) {
+      coordinator
+        ..signal(EagerBackupTrigger.uploadFailed)
+        ..signal(EagerBackupTrigger.uploadFailed);
+      expect(retry.hasPending, isTrue);
+      retry.fire();
+    }
+
+    expect(retry.delays, const [
+      Duration(seconds: 1),
+      Duration(seconds: 2),
+      Duration(seconds: 4),
+      Duration(seconds: 8),
+      Duration(seconds: 15),
+      Duration(seconds: 30),
+      Duration(seconds: 30),
+    ]);
+    await coordinator.dispose();
+  });
+
   test('pause and disable synchronously cancel and block admission', () async {
     final upload = Completer<void>();
     final operations = _Operations([
@@ -445,8 +535,8 @@ final class _Operations implements EagerBackupOperationsPort {
     calls.add('upload');
     this.cancellation = cancellation;
     if (!uploadStarted.isCompleted) uploadStarted.complete();
-    if (uploadFailures.isNotEmpty) throw uploadFailures.removeAt(0);
     await pendingUpload?.future;
+    if (uploadFailures.isNotEmpty) throw uploadFailures.removeAt(0);
     return uploadOutcomes.isEmpty ? EagerBackupUploadOutcome.completed : uploadOutcomes.removeAt(0);
   }
 }
@@ -454,12 +544,18 @@ final class _Operations implements EagerBackupOperationsPort {
 final class _ManualRetryScheduler implements EagerBackupRetryScheduler {
   final List<Duration> delays = [];
   void Function()? _callback;
+  int cancelCount = 0;
+
+  bool get hasPending => _callback != null;
 
   @override
   EagerBackupScheduledRetry schedule(Duration delay, void Function() callback) {
     delays.add(delay);
     _callback = callback;
-    return _RetryHandle(() => _callback = null);
+    return _RetryHandle(() {
+      cancelCount++;
+      _callback = null;
+    });
   }
 
   void fire() {

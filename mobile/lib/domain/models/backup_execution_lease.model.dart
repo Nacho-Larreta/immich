@@ -170,6 +170,8 @@ final class BackupExecutionLease {
     Set<BackupTaskClaim> callbackClaims = const {},
     Set<BackupTaskClaim> reconciliationClaims = const {},
     Map<BackupTaskClaim, String> candidateKeys = const {},
+    Map<BackupTaskClaim, String> enqueueIncarnations = const {},
+    Map<BackupTaskClaim, String> callbackIncarnations = const {},
     Set<ForegroundTransportClaim> foregroundActivityClaims = const {},
   }) : outstandingClaims = Set.unmodifiable(outstandingClaims),
        enqueueClaims = Set.unmodifiable(enqueueClaims),
@@ -177,6 +179,8 @@ final class BackupExecutionLease {
        callbackClaims = Set.unmodifiable(callbackClaims),
        reconciliationClaims = Set.unmodifiable(reconciliationClaims),
        candidateKeys = Map.unmodifiable(candidateKeys),
+       enqueueIncarnations = Map.unmodifiable(enqueueIncarnations),
+       callbackIncarnations = Map.unmodifiable(callbackIncarnations),
        foregroundActivityClaims = Set.unmodifiable(foregroundActivityClaims) {
     if (runToken.isEmpty) throw ArgumentError.value(runToken, 'runToken', 'Must not be empty');
     if (bindingDigest.isEmpty) throw ArgumentError.value(bindingDigest, 'bindingDigest', 'Must not be empty');
@@ -193,6 +197,14 @@ final class BackupExecutionLease {
         'Must belong to the lease binding',
       );
     }
+    if (enqueueIncarnations.values.any((value) => value.isEmpty) ||
+        callbackIncarnations.values.any((value) => value.isEmpty)) {
+      throw ArgumentError('Background operation incarnations must not be empty');
+    }
+    if (!enqueueClaims.containsAll(enqueueIncarnations.keys) ||
+        !callbackClaims.containsAll(callbackIncarnations.keys)) {
+      throw ArgumentError('Background operation incarnations must belong to durable claims');
+    }
   }
 
   final BackupExecutionMode mode;
@@ -208,6 +220,8 @@ final class BackupExecutionLease {
   final Set<BackupTaskClaim> callbackClaims;
   final Set<BackupTaskClaim> reconciliationClaims;
   final Map<BackupTaskClaim, String> candidateKeys;
+  final Map<BackupTaskClaim, String> enqueueIncarnations;
+  final Map<BackupTaskClaim, String> callbackIncarnations;
   final Set<ForegroundTransportClaim> foregroundActivityClaims;
 
   bool get hasDurableActivity =>
@@ -233,6 +247,8 @@ final class BackupExecutionLease {
     Set<BackupTaskClaim>? callbackClaims,
     Set<BackupTaskClaim>? reconciliationClaims,
     Map<BackupTaskClaim, String>? candidateKeys,
+    Map<BackupTaskClaim, String>? enqueueIncarnations,
+    Map<BackupTaskClaim, String>? callbackIncarnations,
     Set<ForegroundTransportClaim>? foregroundActivityClaims,
   }) => BackupExecutionLease(
     mode: mode ?? this.mode,
@@ -248,6 +264,8 @@ final class BackupExecutionLease {
     callbackClaims: callbackClaims ?? this.callbackClaims,
     reconciliationClaims: reconciliationClaims ?? this.reconciliationClaims,
     candidateKeys: candidateKeys ?? this.candidateKeys,
+    enqueueIncarnations: enqueueIncarnations ?? this.enqueueIncarnations,
+    callbackIncarnations: callbackIncarnations ?? this.callbackIncarnations,
     foregroundActivityClaims: foregroundActivityClaims ?? this.foregroundActivityClaims,
   );
 
@@ -266,6 +284,9 @@ final class BackupExecutionLease {
     'callbackClaims': _orderedClaims(callbackClaims),
     'reconciliationClaims': _orderedClaims(reconciliationClaims),
     'candidateKeys': _orderedCandidateKeys(candidateKeys),
+    if (enqueueIncarnations.isNotEmpty) 'enqueueIncarnations': _orderedClaimValues(enqueueIncarnations, 'incarnation'),
+    if (callbackIncarnations.isNotEmpty)
+      'callbackIncarnations': _orderedClaimValues(callbackIncarnations, 'incarnation'),
     'foregroundActivityClaims': _orderedForegroundClaims(foregroundActivityClaims),
   });
 
@@ -289,6 +310,8 @@ final class BackupExecutionLease {
         callbackClaims: _parseClaims(value['callbackClaims']),
         reconciliationClaims: _parseClaims(value['reconciliationClaims']),
         candidateKeys: _parseCandidateKeys(value['candidateKeys']),
+        enqueueIncarnations: _parseClaimValues(value['enqueueIncarnations'], 'incarnation'),
+        callbackIncarnations: _parseClaimValues(value['callbackIncarnations'], 'incarnation'),
         foregroundActivityClaims: (value['foregroundActivityClaims'] as List<dynamic>)
             .map(ForegroundTransportClaim.fromJsonValue)
             .toSet(),
@@ -314,6 +337,8 @@ final class BackupExecutionLease {
       _sameSet(other.callbackClaims, callbackClaims) &&
       _sameSet(other.reconciliationClaims, reconciliationClaims) &&
       _sameMap(other.candidateKeys, candidateKeys) &&
+      _sameMap(other.enqueueIncarnations, enqueueIncarnations) &&
+      _sameMap(other.callbackIncarnations, callbackIncarnations) &&
       _sameSet(other.foregroundActivityClaims, foregroundActivityClaims);
 
   @override
@@ -331,6 +356,12 @@ final class BackupExecutionLease {
     Object.hashAll(callbackClaims.map((claim) => claim.durableKey).toList()..sort()),
     Object.hashAll(reconciliationClaims.map((claim) => claim.durableKey).toList()..sort()),
     Object.hashAll(candidateKeys.entries.map((entry) => '${entry.key.durableKey}:${entry.value}').toList()..sort()),
+    Object.hashAll(
+      enqueueIncarnations.entries.map((entry) => '${entry.key.durableKey}:${entry.value}').toList()..sort(),
+    ),
+    Object.hashAll(
+      callbackIncarnations.entries.map((entry) => '${entry.key.durableKey}:${entry.value}').toList()..sort(),
+    ),
     Object.hashAll(foregroundActivityClaims.map((claim) => claim.activityId).toList()..sort()),
   );
 
@@ -354,6 +385,19 @@ final class BackupExecutionLease {
     for (final value in source as List<dynamic>)
       BackupTaskClaim.fromJsonValue((value as Map<String, dynamic>)['claim']): value['candidateKey'] as String,
   };
+
+  static List<Map<String, Object>> _orderedClaimValues(Map<BackupTaskClaim, String> values, String valueKey) {
+    final ordered = values.entries.toList()..sort((left, right) => left.key.durableKey.compareTo(right.key.durableKey));
+    return ordered.map((entry) => {'claim': entry.key.toJsonValue(), valueKey: entry.value}).toList(growable: false);
+  }
+
+  static Map<BackupTaskClaim, String> _parseClaimValues(Object? source, String valueKey) {
+    if (source == null) return const {};
+    return {
+      for (final value in source as List<dynamic>)
+        BackupTaskClaim.fromJsonValue((value as Map<String, dynamic>)['claim']): value[valueKey] as String,
+    };
+  }
 
   static List<Map<String, Object>> _orderedForegroundClaims(Set<ForegroundTransportClaim> claims) {
     final ordered = claims.toList()..sort((left, right) => left.activityId.compareTo(right.activityId));

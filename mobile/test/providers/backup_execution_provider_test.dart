@@ -129,6 +129,9 @@ final class _EmptyGateway implements BackupTaskRegistryGateway {
   Future<void> repairTracking(TaskRecord record) async {}
 
   @override
+  Future<void> replayUndeliveredUpdates() async {}
+
+  @override
   Future<void> resetNative(String group) async {}
 
   @override

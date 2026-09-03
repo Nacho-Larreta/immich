@@ -20,6 +20,7 @@ abstract interface class BackupExecutionLeasePort {
     required String runToken,
     required String bindingDigest,
     required BackupTaskClaim claim,
+    String? operationIncarnation,
   });
 
   Future<BackupExecutionLease?> endCallbackForTask({
@@ -41,6 +42,7 @@ abstract interface class BackupExecutionLeasePort {
     required String bindingDigest,
     required BackupTaskClaim claim,
     required String candidateKey,
+    String? operationIncarnation,
   });
 
   Future<bool> allowForegroundCandidateUnlessQuarantined({
@@ -100,6 +102,11 @@ abstract interface class BackupExecutionLeasePort {
     required Set<BackupTaskClaim> activeClaims,
   });
 
+  Future<BackupExecutionLease?> releaseOrphanedCallbackForTaskExact({
+    required BackupExecutionLease expected,
+    required BackupTaskClaim claim,
+  });
+
   Future<BackupExecutionLease?> beginClosingForOwner({required String runToken, required String bindingDigest});
 
   Future<BackupExecutionLease?> beginForegroundActivityForOwner({
@@ -147,4 +154,18 @@ abstract interface class BackupCallbackFencePort {
   void end(BackupCallbackPermit permit);
 
   Future<bool> fenceAndDrain({required String runToken, required String bindingDigest, required Duration timeout});
+}
+
+final class BackupOrphanRecoveryPermit {
+  const BackupOrphanRecoveryPermit({required this.runToken, required this.bindingDigest, required this.permitId});
+
+  final String runToken;
+  final String bindingDigest;
+  final int permitId;
+}
+
+abstract interface class BackupOrphanRecoveryFencePort implements BackupCallbackFencePort {
+  BackupOrphanRecoveryPermit? tryBeginOrphanRecovery({required String runToken, required String bindingDigest});
+
+  void endOrphanRecovery(BackupOrphanRecoveryPermit permit);
 }

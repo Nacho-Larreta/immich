@@ -227,6 +227,9 @@ final class _Operations implements EagerBackupOperationsPort {
   bool _uploadCompleted = false;
 
   @override
+  Future<bool> hasReconciliationQuarantine() async => false;
+
+  @override
   Future<BackupRunBinding?> captureBinding() async => BackupRunBinding(
     userId: 'user-a',
     sessionEpoch: 1,

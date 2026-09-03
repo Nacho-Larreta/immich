@@ -12,6 +12,7 @@ import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/interfaces/backup_execution.interface.dart';
 import 'package:immich_mobile/domain/interfaces/connectivity_monitor.interface.dart';
+import 'package:immich_mobile/domain/interfaces/eager_backup.interface.dart';
 import 'package:immich_mobile/domain/models/backup_execution_lease.model.dart';
 import 'package:immich_mobile/domain/models/backup_candidate_key.model.dart';
 import 'package:immich_mobile/domain/models/backup_reconciliation_quarantine.model.dart';
@@ -382,7 +383,20 @@ class UploadTaskMetadata {
 ///
 /// This service handles asynchronous background uploads that can continue
 /// even when the app is suspended. Primarily used for iOS background backup.
-class BackgroundUploadService {
+const _ownerCompletedSnapshot = EagerBackgroundUploadSnapshot(
+  activeCount: 0,
+  waitingToRetryCount: 0,
+  pausedCount: 0,
+  ownerState: EagerBackgroundOwnerState.completed,
+);
+const _ownerAuthorityChangedSnapshot = EagerBackgroundUploadSnapshot(
+  activeCount: 0,
+  waitingToRetryCount: 0,
+  pausedCount: 0,
+  ownerState: EagerBackgroundOwnerState.authorityChanged,
+);
+
+class BackgroundUploadService implements EagerBackgroundUploadPort {
   BackgroundUploadService(
     this._uploadRepository,
     this._storageRepository,
@@ -394,6 +408,7 @@ class BackgroundUploadService {
     BackupExecutionArbiter? arbiter,
     BackupCallbackFencePort? callbackFence,
     String Function()? taskIdFactory,
+    String? operationIncarnation,
     BackupRunBinding? Function(UploadTaskMetadata metadata, Task task)? validateBinding,
     BackupRunBindingResolution Function(UploadTaskMetadata metadata, Task task)? resolveBinding,
     Future<bool> Function(BackupRunBinding binding)? canContinueOwnedUpload,
@@ -407,6 +422,7 @@ class BackgroundUploadService {
        _arbiter = arbiter,
        _callbackFence = callbackFence ?? BackupCallbackFence(),
        _taskIdFactory = taskIdFactory ?? _opaqueTaskId,
+       _operationIncarnation = operationIncarnation ?? 'pid:$pid',
        _resolveBinding =
            resolveBinding ??
            ((metadata, task) {
@@ -437,6 +453,7 @@ class BackgroundUploadService {
   final BackupExecutionArbiter? _arbiter;
   final BackupCallbackFencePort _callbackFence;
   final String Function() _taskIdFactory;
+  final String _operationIncarnation;
   final BackupRunBindingResolution Function(UploadTaskMetadata metadata, Task task) _resolveBinding;
   final Future<bool> Function(BackupRunBinding binding) _canContinueOwnedUpload;
   final bool _requiresConnectivityGate;
@@ -450,6 +467,11 @@ class BackgroundUploadService {
 
   final StreamController<TaskStatusUpdate> _taskStatusController = StreamController<TaskStatusUpdate>.broadcast();
   final StreamController<TaskProgressUpdate> _taskProgressController = StreamController<TaskProgressUpdate>.broadcast();
+  final StreamController<_OwnedEagerBackgroundUploadEvent> _eagerEventController =
+      StreamController<_OwnedEagerBackgroundUploadEvent>.broadcast(sync: true);
+  final Map<(String, String, BackupTaskClaim), Future<void>> _ownedStatusOperations = {};
+  final Map<(String, String), List<TaskStatusUpdate>> _mailboxReplayBuffers = {};
+  final Map<(String, String), Future<void>> _mailboxReplayOperations = {};
   final Map<BackupTaskClaim, Future<void>> _reconciliationOperations = {};
   Future<void>? _resumeReconciliationsOperation;
   bool _resumeReconciliationsRequested = false;
@@ -457,6 +479,231 @@ class BackgroundUploadService {
 
   Stream<TaskStatusUpdate> get taskStatusStream => _taskStatusController.stream;
   Stream<TaskProgressUpdate> get taskProgressStream => _taskProgressController.stream;
+
+  @override
+  Stream<EagerBackgroundUploadEvent> eventsFor(EagerBackgroundUploadOwner owner) =>
+      _eagerEventController.stream.where((event) => event.belongsTo(owner)).map((event) => event.scopedTo(owner));
+
+  @override
+  Future<EagerBackgroundUploadSnapshot> readSnapshot(EagerBackgroundUploadOwner owner) async {
+    final before = await _leasePort?.read();
+    if (before == null) return _ownerCompletedSnapshot;
+    if (!_isOwner(before, owner)) return _ownerAuthorityChangedSnapshot;
+    await _replayOwnedMailbox(owner);
+    final afterReplay = await _leasePort?.read();
+    if (afterReplay == null) return _ownerCompletedSnapshot;
+    if (!_isOwner(afterReplay, owner)) return _ownerAuthorityChangedSnapshot;
+    final tasks = await _uploadRepository.snapshot(BackupExecutionArbiter.groups);
+    final current = await _leasePort?.read();
+    if (current == null) return _ownerCompletedSnapshot;
+    if (!_isOwner(current, owner)) return _ownerAuthorityChangedSnapshot;
+    final durableClaims = _backgroundClaims(current);
+    final ownedTasks = tasks
+        .where((task) {
+          final metadata = task.metadata;
+          final claim = BackupTaskClaim(group: task.group, taskId: task.taskId);
+          return task.isActive &&
+              owner.claims.contains(claim) &&
+              durableClaims.contains(claim) &&
+              metadata?.runToken == owner.runToken &&
+              metadata?.bindingDigest == owner.bindingDigest;
+        })
+        .toList(growable: false);
+    final pendingClaims = durableClaims.intersection(owner.claims);
+    final ownerState = ownedTasks.isNotEmpty
+        ? EagerBackgroundOwnerState.active
+        : pendingClaims.isEmpty
+        ? EagerBackgroundOwnerState.completed
+        : EagerBackgroundOwnerState.recoveryPending;
+    return EagerBackgroundUploadSnapshot(
+      activeCount: ownedTasks.length,
+      waitingToRetryCount: ownedTasks.where((task) => task.status == BackupTaskStatus.waitingToRetry).length,
+      pausedCount: ownedTasks.where((task) => task.status == BackupTaskStatus.paused).length,
+      ownerState: ownerState,
+    );
+  }
+
+  @override
+  Future<EagerBackgroundResumeDisposition> resumeOwned(EagerBackgroundUploadOwner owner) async {
+    final snapshot = await readSnapshot(owner);
+    return switch (snapshot.ownerState) {
+      EagerBackgroundOwnerState.completed => EagerBackgroundResumeDisposition.completed,
+      EagerBackgroundOwnerState.recoveryPending => EagerBackgroundResumeDisposition.recoveryPending,
+      EagerBackgroundOwnerState.authorityChanged => EagerBackgroundResumeDisposition.authorityChanged,
+      EagerBackgroundOwnerState.active when snapshot.waitingToRetryCount > 0 || snapshot.pausedCount > 0 =>
+        EagerBackgroundResumeDisposition.recoveryPending,
+      EagerBackgroundOwnerState.active => EagerBackgroundResumeDisposition.observing,
+    };
+  }
+
+  static bool _isOwner(BackupExecutionLease lease, EagerBackgroundUploadOwner owner) =>
+      lease.runToken == owner.runToken && lease.bindingDigest == owner.bindingDigest;
+
+  static Set<BackupTaskClaim> _backgroundClaims(BackupExecutionLease lease) => {
+    ...lease.outstandingClaims,
+    ...lease.enqueueClaims,
+    ...lease.reconciliationClaims,
+  };
+
+  Future<void> _awaitOwnedStatusOperations(EagerBackgroundUploadOwner owner) async {
+    final operations = _ownedStatusOperations.entries
+        .where(
+          (entry) =>
+              entry.key.$1 == owner.runToken &&
+              entry.key.$2 == owner.bindingDigest &&
+              owner.claims.contains(entry.key.$3),
+        )
+        .map((entry) => entry.value)
+        .toList(growable: false);
+    if (operations.isNotEmpty) await Future.wait(operations);
+  }
+
+  Future<void> _replayOwnedMailbox(EagerBackgroundUploadOwner owner) {
+    final key = (owner.runToken, owner.bindingDigest);
+    final active = _mailboxReplayOperations[key];
+    if (active != null) return active;
+    late final Future<void> operation;
+    operation = _performOwnedMailboxReplay(owner).whenComplete(() {
+      if (identical(_mailboxReplayOperations[key], operation)) _mailboxReplayOperations.remove(key);
+    });
+    _mailboxReplayOperations[key] = operation;
+    return operation;
+  }
+
+  Future<void> _performOwnedMailboxReplay(EagerBackgroundUploadOwner owner) async {
+    final expected = await _leasePort?.read();
+    if (expected == null || !_isOwner(expected, owner)) return;
+    final beforeTasks = await _uploadRepository.snapshot(BackupExecutionArbiter.groups);
+    if (await _leasePort?.read() != expected) return;
+    final key = (owner.runToken, owner.bindingDigest);
+    final replayed = <TaskStatusUpdate>[];
+    _mailboxReplayBuffers[key] = replayed;
+    try {
+      await _uploadRepository.replayUndeliveredUpdates();
+    } finally {
+      if (identical(_mailboxReplayBuffers[key], replayed)) _mailboxReplayBuffers.remove(key);
+    }
+    if (await _leasePort?.read() != expected) return;
+    await Future<void>.delayed(Duration.zero);
+    if (await _leasePort?.read() != expected) return;
+    final afterTasks = await _uploadRepository.snapshot(BackupExecutionArbiter.groups);
+    if (await _leasePort?.read() != expected) return;
+    for (final update in replayed) {
+      if (!_belongsToOwner(update.task, owner)) continue;
+      if (!await _prepareReplayedStatus(owner, update)) continue;
+      await _enqueueOwnedStatus(update);
+    }
+    await _awaitOwnedStatusOperations(owner);
+    await _recoverOrphanedEnqueueClaims(owner, beforeTasks: beforeTasks, afterTasks: afterTasks, replayed: replayed);
+  }
+
+  Future<void> _recoverOrphanedEnqueueClaims(
+    EagerBackgroundUploadOwner owner, {
+    required List<BackupTaskSnapshot> beforeTasks,
+    required List<BackupTaskSnapshot> afterTasks,
+    required List<TaskStatusUpdate> replayed,
+  }) async {
+    final recoveryFence = _callbackFence;
+    if (recoveryFence is! BackupOrphanRecoveryFencePort) return;
+    final observed = await _leasePort?.read();
+    if (observed == null || !_isOwner(observed, owner)) return;
+    final candidates = observed.enqueueClaims.intersection(owner.claims).toList(growable: false);
+    for (final claim in candidates) {
+      if (_containsExactClaim(beforeTasks, owner, claim) ||
+          _containsExactClaim(afterTasks, owner, claim) ||
+          replayed.any((update) => _belongsToClaim(update.task, owner, claim))) {
+        continue;
+      }
+      var current = await _leasePort?.read();
+      final candidateKey = current?.candidateKeys[claim];
+      final claimedBy = current?.enqueueIncarnations[claim];
+      if (current == null ||
+          !_isOwner(current, owner) ||
+          !current.enqueueClaims.contains(claim) ||
+          current.callbackClaims.contains(claim) ||
+          claimedBy == null ||
+          claimedBy == _operationIncarnation ||
+          candidateKey == null) {
+        continue;
+      }
+      final permit = recoveryFence.tryBeginOrphanRecovery(runToken: owner.runToken, bindingDigest: owner.bindingDigest);
+      if (permit == null) continue;
+      try {
+        current = await _leasePort?.read();
+        if (current == null ||
+            !_isOwner(current, owner) ||
+            !current.enqueueClaims.contains(claim) ||
+            current.callbackClaims.contains(claim) ||
+            current.enqueueIncarnations[claim] != claimedBy ||
+            current.candidateKeys[claim] != candidateKey) {
+          continue;
+        }
+        final pending = await _leasePort?.markReconciliationPendingForTask(
+          runToken: owner.runToken,
+          bindingDigest: owner.bindingDigest,
+          claim: claim,
+        );
+        if (pending == null || !pending.reconciliationClaims.contains(claim)) continue;
+        await _quarantineReconciliation(
+          lease: pending,
+          claim: claim,
+          candidateKey: candidateKey,
+          code: BackupReconciliationQuarantineCode.completedTaskMissing,
+        );
+      } finally {
+        recoveryFence.endOrphanRecovery(permit);
+      }
+    }
+  }
+
+  Future<bool> _prepareReplayedStatus(EagerBackgroundUploadOwner owner, TaskStatusUpdate update) async {
+    final claim = _claimForTask(update.task);
+    var lease = await _leasePort?.read();
+    if (lease == null || !_isOwner(lease, owner) || !owner.claims.contains(claim)) return false;
+    if (!lease.callbackClaims.contains(claim)) return true;
+    final claimedBy = lease.callbackIncarnations[claim];
+    if (claimedBy == _operationIncarnation) return false;
+    if (!_isTerminal(update.status)) return false;
+    final recoveryFence = _callbackFence;
+    if (recoveryFence is! BackupOrphanRecoveryFencePort) return false;
+    final permit = recoveryFence.tryBeginOrphanRecovery(runToken: owner.runToken, bindingDigest: owner.bindingDigest);
+    if (permit == null) return false;
+    try {
+      lease = await _leasePort?.read();
+      if (lease == null ||
+          !_isOwner(lease, owner) ||
+          !lease.callbackClaims.contains(claim) ||
+          lease.callbackIncarnations[claim] != claimedBy) {
+        return false;
+      }
+      return await _leasePort?.releaseOrphanedCallbackForTaskExact(expected: lease, claim: claim) != null;
+    } finally {
+      recoveryFence.endOrphanRecovery(permit);
+    }
+  }
+
+  static bool _containsExactClaim(
+    Iterable<BackupTaskSnapshot> tasks,
+    EagerBackgroundUploadOwner owner,
+    BackupTaskClaim claim,
+  ) => tasks.any((task) {
+    final metadata = task.metadata;
+    return task.taskId == claim.taskId &&
+        task.group == claim.group &&
+        metadata?.runToken == owner.runToken &&
+        metadata?.bindingDigest == owner.bindingDigest;
+  });
+
+  bool _belongsToOwner(Task task, EagerBackgroundUploadOwner owner) {
+    final metadata = _ownedMetadata(task)?.ownership;
+    final claim = _claimForTask(task);
+    return owner.claims.contains(claim) &&
+        metadata?.runToken == owner.runToken &&
+        metadata?.bindingDigest == owner.bindingDigest;
+  }
+
+  bool _belongsToClaim(Task task, EagerBackgroundUploadOwner owner, BackupTaskClaim claim) =>
+      _claimForTask(task) == claim && _belongsToOwner(task, owner);
 
   bool shouldAbortQueuingTasks = false;
 
@@ -472,7 +719,19 @@ class BackgroundUploadService {
 
   void _onUploadCallback(TaskStatusUpdate update) {
     if (_isBackupGroup(update.task.group)) {
-      unawaited(_handleOwnedStatus(update));
+      final ownership = _ownedMetadata(update.task)?.ownership;
+      final replayBuffer = ownership == null
+          ? null
+          : _mailboxReplayBuffers[(ownership.runToken, ownership.bindingDigest)];
+      if (replayBuffer != null) {
+        replayBuffer.add(update);
+        return;
+      }
+      unawaited(
+        _enqueueOwnedStatus(update).onError((Object error, StackTrace stackTrace) {
+          _logger.warning('backup_status_callback_failed');
+        }),
+      );
       return;
     }
     if (!_taskStatusController.isClosed) {
@@ -480,10 +739,35 @@ class BackgroundUploadService {
     }
   }
 
+  Future<void> _enqueueOwnedStatus(TaskStatusUpdate update) {
+    final metadata = _ownedMetadata(update.task);
+    if (metadata?.ownership case final ownership?) {
+      final claim = _claimForTask(update.task);
+      final key = (ownership.runToken, ownership.bindingDigest, claim);
+      final predecessor = _ownedStatusOperations[key] ?? Future<void>.value();
+      late final Future<void> operation;
+      operation =
+          () async {
+            try {
+              await predecessor;
+            } on Object {
+              // The next persisted status remains authoritative even if an earlier callback failed.
+            }
+            await _handleOwnedStatus(update);
+          }().whenComplete(() {
+            if (identical(_ownedStatusOperations[key], operation)) _ownedStatusOperations.remove(key);
+          });
+      _ownedStatusOperations[key] = operation;
+      return operation;
+    }
+    return Future<void>.value();
+  }
+
   void dispose() {
     _disposed = true;
     _taskStatusController.close();
     _taskProgressController.close();
+    _eagerEventController.close();
   }
 
   Future<void> resumePersistedReconciliations() {
@@ -609,43 +893,56 @@ class BackgroundUploadService {
         continue;
       }
       final taskClaim = _claimForTask(task);
-      final reservation = await _leasePort?.beginEnqueueUnlessQuarantined(
+      final enqueuePermit = _callbackFence.tryBegin(
         runToken: ownership.runToken,
         bindingDigest: ownership.bindingDigest,
-        claim: taskClaim,
-        candidateKey: taskMetadata!.candidateKey!,
       );
-      if (reservation == null) {
+      if (enqueuePermit == null) {
         results.add(false);
         continue;
       }
       try {
-        if (binding != null && !await _canContinueOwnedUpload(binding)) {
-          await _abortEnqueue(ownership, taskClaim);
-          results.add(false);
-          continue;
-        }
-        final pluginResult = await _uploadRepository.enqueueBackgroundAll([task]);
-        final enqueued = pluginResult.length == 1 && pluginResult.first;
-        if (!enqueued) {
-          await _abortEnqueue(ownership, taskClaim);
-          results.add(false);
-          continue;
-        }
-        final confirmed = await _leasePort?.confirmEnqueueForTask(
+        final reservation = await _leasePort?.beginEnqueueUnlessQuarantined(
           runToken: ownership.runToken,
           bindingDigest: ownership.bindingDigest,
           claim: taskClaim,
+          candidateKey: taskMetadata!.candidateKey!,
+          operationIncarnation: _operationIncarnation,
         );
-        if (confirmed == null) {
-          await _uploadRepository.cancelAndDrain(BackupExecutionArbiter.groups);
+        if (reservation == null) {
           results.add(false);
           continue;
         }
-        results.add(true);
-      } on Object {
-        await _abortEnqueue(ownership, taskClaim);
-        rethrow;
+        try {
+          if (binding != null && !await _canContinueOwnedUpload(binding)) {
+            await _abortEnqueue(ownership, taskClaim);
+            results.add(false);
+            continue;
+          }
+          final pluginResult = await _uploadRepository.enqueueBackgroundAll([task]);
+          final enqueued = pluginResult.length == 1 && pluginResult.first;
+          if (!enqueued) {
+            await _abortEnqueue(ownership, taskClaim);
+            results.add(false);
+            continue;
+          }
+          final confirmed = await _leasePort?.confirmEnqueueForTask(
+            runToken: ownership.runToken,
+            bindingDigest: ownership.bindingDigest,
+            claim: taskClaim,
+          );
+          if (confirmed == null) {
+            await _uploadRepository.cancelAndDrain(BackupExecutionArbiter.groups);
+            results.add(false);
+            continue;
+          }
+          results.add(true);
+        } on Object {
+          await _abortEnqueue(ownership, taskClaim);
+          rethrow;
+        }
+      } finally {
+        _callbackFence.end(enqueuePermit);
       }
     }
     return results;
@@ -759,11 +1056,6 @@ class BackgroundUploadService {
     return drained == true ? 0 : 1;
   }
 
-  /// Resume background backup processing
-  Future<void> resume() {
-    return _uploadRepository.start();
-  }
-
   Future<bool> _handleTaskStatusUpdate(
     TaskStatusUpdate update,
     UploadTaskMetadata metadata,
@@ -841,18 +1133,22 @@ class BackgroundUploadService {
     final permit = _callbackFence.tryBegin(runToken: ownership.runToken, bindingDigest: ownership.bindingDigest);
     if (permit == null) return;
     var callbackClaimed = false;
+    var terminalClaimConsumed = false;
     var terminalSucceeded = false;
     BackupRunBinding? pendingReconciliation;
+    BackupRunBinding? validatedBinding;
     try {
       final claim = await _leasePort?.beginCallbackForTask(
         runToken: ownership.runToken,
         bindingDigest: ownership.bindingDigest,
         claim: taskClaim,
+        operationIncarnation: _operationIncarnation,
       );
       if (claim == null) return;
       callbackClaimed = true;
       final binding = _resolveBinding(metadata, update.task).binding;
       if (binding == null) return;
+      validatedBinding = binding;
       if (!_taskStatusController.isClosed) _taskStatusController.add(update);
       final terminalConfirmed = await _handleTaskStatusUpdate(update, metadata, binding);
       var reconciled = true;
@@ -867,22 +1163,38 @@ class BackgroundUploadService {
         );
         if (pending != null) pendingReconciliation = binding;
       } else if (_isTerminal(update.status) && terminalConfirmed && reconciled) {
-        await _leasePort?.consumeTerminalForTask(
+        final consumedLease = await _leasePort?.consumeTerminalForTask(
           runToken: ownership.runToken,
           bindingDigest: ownership.bindingDigest,
           claim: taskClaim,
         );
+        terminalClaimConsumed = consumedLease != null;
       }
-      terminalSucceeded = update.status == TaskStatus.complete && terminalConfirmed && reconciled;
+      terminalSucceeded =
+          update.status == TaskStatus.complete && terminalConfirmed && reconciled && terminalClaimConsumed;
     } finally {
       try {
+        BackupExecutionLease? endedLease;
         if (callbackClaimed) {
-          final ended = await _leasePort?.endCallbackForTask(
+          endedLease = await _leasePort?.endCallbackForTask(
             runToken: ownership.runToken,
             bindingDigest: ownership.bindingDigest,
             claim: taskClaim,
           );
-          if (ended != null) {
+          final bindingAfterEnd = _resolveBinding(metadata, update.task).binding;
+          if (_isTerminal(update.status) &&
+              terminalClaimConsumed &&
+              endedLease != null &&
+              validatedBinding != null &&
+              bindingAfterEnd == validatedBinding) {
+            _publishEagerTerminal(metadata, taskClaim, update, terminalSucceeded, endedLease);
+          } else if (!_isTerminal(update.status) &&
+              endedLease != null &&
+              validatedBinding != null &&
+              bindingAfterEnd == validatedBinding) {
+            _publishEagerStatus(metadata, taskClaim, update, endedLease);
+          }
+          if (endedLease != null) {
             await _arbiter?.releaseCurrentWhenQuiescent(
               runToken: ownership.runToken,
               bindingDigest: ownership.bindingDigest,
@@ -978,7 +1290,10 @@ class BackgroundUploadService {
   }
 
   @visibleForTesting
-  Future<void> handleOwnedStatusForTest(TaskStatusUpdate update) => _handleOwnedStatus(update);
+  Future<void> handleOwnedStatusForTest(TaskStatusUpdate update) => _enqueueOwnedStatus(update);
+
+  @visibleForTesting
+  void handleDownloaderStatusForTest(TaskStatusUpdate update) => _onUploadCallback(update);
 
   @visibleForTesting
   Future<void> handleOwnedProgressForTest(TaskProgressUpdate update) => _handleOwnedProgress(update);
@@ -986,7 +1301,89 @@ class BackgroundUploadService {
   Future<void> _handleOwnedProgress(TaskProgressUpdate update) async {
     final metadata = _ownedMetadata(update.task);
     if (metadata == null) return;
+    final ownership = metadata.ownership!;
+    final claim = _claimForTask(update.task);
+    final binding = _resolveBinding(metadata, update.task).binding;
+    if (binding == null) return;
+    final lease = await _leasePort?.read();
+    if (lease == null ||
+        lease.runToken != ownership.runToken ||
+        lease.bindingDigest != ownership.bindingDigest ||
+        !lease.outstandingClaims.contains(claim) ||
+        _resolveBinding(metadata, update.task).binding != binding) {
+      return;
+    }
     if (!_taskProgressController.isClosed) _taskProgressController.add(update);
+    if (!_eagerEventController.isClosed) {
+      _eagerEventController.add(
+        _OwnedEagerBackgroundUploadEvent(
+          ownership: ownership,
+          claim: claim,
+          event: EagerBackgroundUploadEvent(
+            activity: BackupUploadActivity(
+              kind: BackupUploadActivityKind.progress,
+              localAssetId: metadata.localAssetId,
+              filename: update.task.filename,
+              progress: update.progress,
+            ),
+          ),
+        ),
+      );
+    }
+  }
+
+  void _publishEagerTerminal(
+    UploadTaskMetadata metadata,
+    BackupTaskClaim claim,
+    TaskStatusUpdate update,
+    bool succeeded,
+    BackupExecutionLease lease,
+  ) {
+    if (_eagerEventController.isClosed) return;
+    final ownership = metadata.ownership!;
+    if (lease.runToken != ownership.runToken || lease.bindingDigest != ownership.bindingDigest) return;
+    final remainingClaims = {...lease.outstandingClaims, ...lease.enqueueClaims, ...lease.reconciliationClaims};
+    _eagerEventController.add(
+      _OwnedEagerBackgroundUploadEvent(
+        ownership: ownership,
+        claim: claim,
+        remainingClaims: remainingClaims,
+        event: EagerBackgroundUploadEvent(
+          activity: BackupUploadActivity(
+            kind: succeeded ? BackupUploadActivityKind.success : BackupUploadActivityKind.error,
+            localAssetId: metadata.localAssetId,
+            filename: update.task.filename,
+            error: succeeded ? null : 'background_upload_failed',
+          ),
+          terminal: succeeded ? EagerBackgroundUploadTerminal.succeeded : EagerBackgroundUploadTerminal.failed,
+          remainingActiveCount: remainingClaims.length,
+        ),
+      ),
+    );
+  }
+
+  void _publishEagerStatus(
+    UploadTaskMetadata metadata,
+    BackupTaskClaim claim,
+    TaskStatusUpdate update,
+    BackupExecutionLease lease,
+  ) {
+    if (_eagerEventController.isClosed || !lease.outstandingClaims.contains(claim)) return;
+    final ownership = metadata.ownership!;
+    if (lease.runToken != ownership.runToken || lease.bindingDigest != ownership.bindingDigest) return;
+    _eagerEventController.add(
+      _OwnedEagerBackgroundUploadEvent(
+        ownership: ownership,
+        claim: claim,
+        event: EagerBackgroundUploadEvent(
+          activity: BackupUploadActivity(
+            kind: BackupUploadActivityKind.status,
+            localAssetId: metadata.localAssetId,
+            filename: update.task.filename,
+          ),
+        ),
+      ),
+    );
   }
 
   UploadTaskMetadata? _ownedMetadata(Task task) {
@@ -1233,5 +1630,33 @@ class BackgroundUploadService {
     final random = Random.secure();
     final bytes = List<int>.generate(16, (_) => random.nextInt(256));
     return base64UrlEncode(bytes).replaceAll('=', '');
+  }
+}
+
+final class _OwnedEagerBackgroundUploadEvent {
+  _OwnedEagerBackgroundUploadEvent({
+    required this.ownership,
+    required this.claim,
+    required this.event,
+    Set<BackupTaskClaim> remainingClaims = const {},
+  }) : remainingClaims = Set.unmodifiable(remainingClaims);
+
+  final BackupTaskMetadata ownership;
+  final BackupTaskClaim claim;
+  final EagerBackgroundUploadEvent event;
+  final Set<BackupTaskClaim> remainingClaims;
+
+  bool belongsTo(EagerBackgroundUploadOwner owner) =>
+      ownership.runToken == owner.runToken &&
+      ownership.bindingDigest == owner.bindingDigest &&
+      owner.claims.contains(claim);
+
+  EagerBackgroundUploadEvent scopedTo(EagerBackgroundUploadOwner owner) {
+    if (event.terminal == null) return event;
+    return EagerBackgroundUploadEvent(
+      activity: event.activity,
+      terminal: event.terminal,
+      remainingActiveCount: remainingClaims.intersection(owner.claims).length,
+    );
   }
 }

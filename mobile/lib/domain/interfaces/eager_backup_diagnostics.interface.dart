@@ -14,6 +14,7 @@ enum EagerBackupDiagnosticCode {
   workloadFirstEmission,
   workloadSubscriptionFailed,
   serverProofChanged,
+  admissionDecided,
   uploadFinished,
 }
 
@@ -25,6 +26,8 @@ final class EagerBackupDiagnosticEvent {
     this.trigger,
     this.phase,
     this.blocker,
+    this.admissionDisposition,
+    this.activeClaims,
     this.ready,
     this.processing,
     this.available,
@@ -39,6 +42,8 @@ final class EagerBackupDiagnosticEvent {
   final EagerBackupTrigger? trigger;
   final EagerBackupPhase? phase;
   final EagerBackupBlocker? blocker;
+  final EagerBackupAdmissionDisposition? admissionDisposition;
+  final int? activeClaims;
   final int? ready;
   final int? processing;
   final bool? available;

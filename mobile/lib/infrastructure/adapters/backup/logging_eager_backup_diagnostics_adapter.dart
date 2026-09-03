@@ -16,6 +16,8 @@ final class LoggingEagerBackupDiagnosticsAdapter implements EagerBackupDiagnosti
         ' trigger=${event.trigger?.name ?? 'none'}'
         ' phase=${event.phase?.name ?? 'none'}'
         ' blocker=${event.blocker?.name ?? 'none'}'
+        ' admission_disposition=${event.admissionDisposition?.name ?? 'none'}'
+        ' active_claims=${_value(event.activeClaims)}'
         ' ready=${_value(event.ready)}'
         ' processing=${_value(event.processing)}'
         ' available=${_value(event.available)}'
@@ -33,7 +35,7 @@ final class LoggingEagerBackupDiagnosticsAdapter implements EagerBackupDiagnosti
           EagerBackupDiagnosticCode.photoObserverStartFailed ||
           EagerBackupDiagnosticCode.workloadSubscriptionFailed:
         _logger.warning(message);
-      case EagerBackupDiagnosticCode.uploadFinished:
+      case EagerBackupDiagnosticCode.admissionDecided || EagerBackupDiagnosticCode.uploadFinished:
         _logger.info(message);
       case EagerBackupDiagnosticCode.phaseChanged when event.blocker != null:
         _logger.info(message);

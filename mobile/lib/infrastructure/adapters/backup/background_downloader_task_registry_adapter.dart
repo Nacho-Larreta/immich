@@ -11,6 +11,8 @@ abstract interface class BackupTaskRegistryGateway {
 
   Future<List<TaskRecord>> allTrackingRecords(String group);
 
+  Future<void> replayUndeliveredUpdates();
+
   Future<bool> cancelNative(String group);
 
   Future<void> resetNative(String group);
@@ -46,6 +48,9 @@ final class BackgroundDownloaderTaskRegistryAdapter implements BackupTaskRegistr
 
   @override
   Future<List<TaskRecord>> allTrackingRecords(String group) => _downloader.database.allRecords(group: group);
+
+  @override
+  Future<void> replayUndeliveredUpdates() => _downloader.resumeFromBackground();
 
   @override
   Future<void> deleteTrackingRecords(Iterable<String> taskIds) => _downloader.database.deleteRecordsWithIds(taskIds);

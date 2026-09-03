@@ -1,3 +1,5 @@
+import 'package:immich_mobile/domain/models/backup_execution_lease.model.dart';
+
 enum EagerBackupPhase { idle, evaluating, preparing, uploading, backingOff, blocked, disposed }
 
 enum EagerBackupBlocker {
@@ -12,6 +14,10 @@ enum EagerBackupBlocker {
   paused,
   bindingStale,
   evidenceUnavailable,
+  backgroundOwnerActive,
+  leaseAwaitingExpiry,
+  leaseRecoveryPending,
+  leaseContention,
 }
 
 enum EagerBackupTrigger {
@@ -35,6 +41,96 @@ enum EagerBackupTrigger {
 enum BackupNetworkCapability { wifi, cellular, vpn, unmetered }
 
 enum EagerBackupUploadOutcome { completed, noWifi, transportCursorChanged, bindingStale, evidenceUnavailable }
+
+enum EagerBackupAdmissionDisposition {
+  foregroundAcquired,
+  backgroundAdopted,
+  ownerActive,
+  awaitingExpiry,
+  recoveryPending,
+  contention,
+  bindingStale,
+}
+
+enum EagerBackgroundUploadTerminal { succeeded, failed }
+
+enum EagerBackgroundOwnerState { active, completed, recoveryPending, authorityChanged }
+
+enum EagerBackgroundResumeDisposition { observing, completed, recoveryPending, authorityChanged }
+
+final class EagerBackgroundUploadOwner {
+  EagerBackgroundUploadOwner({
+    required this.runToken,
+    required this.bindingDigest,
+    required Set<BackupTaskClaim> claims,
+  }) : claims = Set.unmodifiable(claims);
+
+  factory EagerBackgroundUploadOwner.fromLease(BackupExecutionLease lease) => EagerBackgroundUploadOwner(
+    runToken: lease.runToken,
+    bindingDigest: lease.bindingDigest,
+    claims: {...lease.outstandingClaims, ...lease.enqueueClaims, ...lease.reconciliationClaims},
+  );
+
+  final String runToken;
+  final String bindingDigest;
+  final Set<BackupTaskClaim> claims;
+}
+
+final class EagerBackgroundUploadSnapshot {
+  const EagerBackgroundUploadSnapshot({
+    required this.activeCount,
+    required this.waitingToRetryCount,
+    required this.pausedCount,
+    this.ownerState = EagerBackgroundOwnerState.active,
+  }) : assert(activeCount >= 0),
+       assert(waitingToRetryCount >= 0),
+       assert(pausedCount >= 0);
+
+  final int activeCount;
+  final int waitingToRetryCount;
+  final int pausedCount;
+  final EagerBackgroundOwnerState ownerState;
+
+  @override
+  bool operator ==(Object other) =>
+      other is EagerBackgroundUploadSnapshot &&
+      other.activeCount == activeCount &&
+      other.waitingToRetryCount == waitingToRetryCount &&
+      other.pausedCount == pausedCount &&
+      other.ownerState == ownerState;
+
+  @override
+  int get hashCode => Object.hash(activeCount, waitingToRetryCount, pausedCount, ownerState);
+}
+
+enum BackupUploadActivityKind { status, progress, success, iCloudProgress, error }
+
+final class BackupUploadActivity {
+  const BackupUploadActivity({
+    required this.kind,
+    required this.localAssetId,
+    this.filename,
+    this.progress,
+    this.totalBytes,
+    this.error,
+  });
+
+  final BackupUploadActivityKind kind;
+  final String localAssetId;
+  final String? filename;
+  final double? progress;
+  final int? totalBytes;
+  final String? error;
+}
+
+final class EagerBackgroundUploadEvent {
+  const EagerBackgroundUploadEvent({required this.activity, this.terminal, this.remainingActiveCount})
+    : assert(remainingActiveCount == null || remainingActiveCount >= 0);
+
+  final BackupUploadActivity activity;
+  final EagerBackgroundUploadTerminal? terminal;
+  final int? remainingActiveCount;
+}
 
 enum ForegroundUploadGateStage { preCandidate, preStorage, preFile, preReservation, preUpload }
 
@@ -122,16 +218,35 @@ final class EagerBackupState {
   final BackupWorkload? workload;
 }
 
-enum EagerBackupFailureKind { transient, authentication, staleContext, deterministic, drainFailed }
+enum EagerBackupFailureKind {
+  transient,
+  authentication,
+  staleContext,
+  deterministic,
+  drainFailed,
+  backgroundOwnerActive,
+  awaitingLeaseExpiry,
+  recoveryPending,
+  leaseContention,
+  bindingStale,
+}
 
 final class EagerBackupFailure implements Exception {
-  const EagerBackupFailure.transient() : kind = EagerBackupFailureKind.transient;
-  const EagerBackupFailure.authentication() : kind = EagerBackupFailureKind.authentication;
-  const EagerBackupFailure.staleContext() : kind = EagerBackupFailureKind.staleContext;
-  const EagerBackupFailure.deterministic() : kind = EagerBackupFailureKind.deterministic;
-  const EagerBackupFailure.drainFailed() : kind = EagerBackupFailureKind.drainFailed;
+  const EagerBackupFailure.transient() : kind = EagerBackupFailureKind.transient, retryAt = null;
+  const EagerBackupFailure.authentication() : kind = EagerBackupFailureKind.authentication, retryAt = null;
+  const EagerBackupFailure.staleContext() : kind = EagerBackupFailureKind.staleContext, retryAt = null;
+  const EagerBackupFailure.deterministic() : kind = EagerBackupFailureKind.deterministic, retryAt = null;
+  const EagerBackupFailure.drainFailed() : kind = EagerBackupFailureKind.drainFailed, retryAt = null;
+  const EagerBackupFailure.backgroundOwnerActive()
+    : kind = EagerBackupFailureKind.backgroundOwnerActive,
+      retryAt = null;
+  const EagerBackupFailure.awaitingLeaseExpiry(this.retryAt) : kind = EagerBackupFailureKind.awaitingLeaseExpiry;
+  const EagerBackupFailure.recoveryPending() : kind = EagerBackupFailureKind.recoveryPending, retryAt = null;
+  const EagerBackupFailure.leaseContention() : kind = EagerBackupFailureKind.leaseContention, retryAt = null;
+  const EagerBackupFailure.bindingStale() : kind = EagerBackupFailureKind.bindingStale, retryAt = null;
 
   final EagerBackupFailureKind kind;
+  final DateTime? retryAt;
 }
 
 final class EagerBackupCancellation {

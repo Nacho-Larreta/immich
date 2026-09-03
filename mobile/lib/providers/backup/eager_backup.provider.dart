@@ -19,6 +19,7 @@ import 'package:immich_mobile/providers/background_sync.provider.dart';
 import 'package:immich_mobile/providers/backup/backup_execution.provider.dart';
 import 'package:immich_mobile/providers/backup/backup_enablement.provider.dart';
 import 'package:immich_mobile/providers/backup/backup_run_binding.provider.dart';
+import 'package:immich_mobile/providers/backup/drift_backup.provider.dart';
 import 'package:immich_mobile/providers/backup/eager_backup_signal.provider.dart';
 import 'package:immich_mobile/providers/server_reachability.provider.dart';
 import 'package:immich_mobile/providers/user.provider.dart';
@@ -49,8 +50,27 @@ final eagerBackupOperationsProvider = Provider<EagerBackupOperationsPort>((ref) 
     uploads: ref.read(foregroundUploadServiceProvider),
     arbiter: ref.read(backupExecutionArbiterProvider),
     bindings: ref.read(backupRunBindingSourceProvider),
+    backgroundUploads: ref.read(backgroundUploadServiceProvider),
+    activityProjection: _DriftBackupActivityProjection(ref),
+    diagnostics: ref.read(eagerBackupDiagnosticsProvider),
   );
 });
+
+final class _DriftBackupActivityProjection implements EagerBackupActivityProjectionPort {
+  const _DriftBackupActivityProjection(this._ref);
+
+  final Ref _ref;
+
+  @override
+  void presentActivity(BackupUploadActivity activity) {
+    _ref.read(driftBackupProvider.notifier).presentActivity(activity);
+  }
+
+  @override
+  void presentBackgroundSnapshot(EagerBackgroundUploadSnapshot snapshot) {
+    _ref.read(driftBackupProvider.notifier).presentBackgroundSnapshot(snapshot);
+  }
+}
 
 final eagerBackupPhotoObserverFactoryProvider = Provider<EagerBackupPhotoObserverPort Function(void Function())>(
   (_) =>

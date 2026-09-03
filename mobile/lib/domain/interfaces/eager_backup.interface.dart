@@ -13,6 +13,20 @@ abstract interface class EagerBackupOperationsPort {
   Future<EagerBackupUploadOutcome> upload(BackupRunBinding binding, EagerBackupCancellation cancellation);
 }
 
+abstract interface class EagerBackgroundUploadPort {
+  Future<EagerBackgroundUploadSnapshot> readSnapshot(EagerBackgroundUploadOwner owner);
+
+  Stream<EagerBackgroundUploadEvent> eventsFor(EagerBackgroundUploadOwner owner);
+
+  Future<EagerBackgroundResumeDisposition> resumeOwned(EagerBackgroundUploadOwner owner);
+}
+
+abstract interface class EagerBackupActivityProjectionPort {
+  void presentBackgroundSnapshot(EagerBackgroundUploadSnapshot snapshot);
+
+  void presentActivity(BackupUploadActivity activity);
+}
+
 abstract interface class EagerBackupWorkloadMonitorPort {
   Stream<BackupWorkload> watch(String userId);
 }

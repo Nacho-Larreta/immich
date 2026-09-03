@@ -11,15 +11,18 @@ final class EagerBackupCoordinator {
     EagerBackupRetryScheduler? retryScheduler,
     EagerBackupDiagnosticsPort diagnostics = const NoOpEagerBackupDiagnostics(),
     double Function()? jitter,
+    DateTime Function()? clock,
   }) : _operations = operations,
        _retryScheduler = retryScheduler ?? const _TimerRetryScheduler(),
        _diagnostics = FailSafeEagerBackupDiagnostics(diagnostics),
-       _jitter = jitter ?? (() => 0);
+       _jitter = jitter ?? (() => 0),
+       _clock = clock ?? DateTime.now;
 
   final EagerBackupOperationsPort _operations;
   final EagerBackupRetryScheduler _retryScheduler;
   final EagerBackupDiagnosticsPort _diagnostics;
   final double Function() _jitter;
+  final DateTime Function() _clock;
   final StreamController<EagerBackupState> _states = StreamController<EagerBackupState>.broadcast(sync: true);
 
   EagerBackupState _state = const EagerBackupState(EagerBackupPhase.idle);
@@ -72,6 +75,7 @@ final class EagerBackupCoordinator {
   }
 
   void setTransport(BackupTransportSnapshot transport) {
+    final changed = !_transport.hasSameCursorAs(transport) || !_transport.hasSamePayloadAs(transport);
     final lostWifi = _transport.hasWifi && !transport.hasWifi;
     _transport = transport;
     if (lostWifi) {
@@ -79,10 +83,11 @@ final class EagerBackupCoordinator {
       _cancelActiveWork();
       _setState(EagerBackupPhase.blocked, blocker: EagerBackupBlocker.noWifi);
     }
-    _signalIfActivated(EagerBackupTrigger.connectivityChanged);
+    if (changed) _signalIfActivated(EagerBackupTrigger.connectivityChanged);
   }
 
   void setServerProofAvailable(bool available) {
+    final changed = _serverProofAvailable != available;
     final lostProof = _serverProofAvailable && !available;
     _serverProofAvailable = available;
     _diagnostics.report(
@@ -93,7 +98,7 @@ final class EagerBackupCoordinator {
       _cancelActiveWork();
       _setState(EagerBackupPhase.blocked, blocker: EagerBackupBlocker.noProof);
     }
-    _signalIfActivated(EagerBackupTrigger.serverProofChanged);
+    if (changed) _signalIfActivated(EagerBackupTrigger.serverProofChanged);
   }
 
   void reportDrainFailed() {
@@ -112,8 +117,7 @@ final class EagerBackupCoordinator {
     _activated = true;
     if (trigger == EagerBackupTrigger.uploadFailed) {
       _demand = true;
-      _scheduledRetry?.cancel();
-      _scheduleRetry();
+      _scheduleRetry(blocker: EagerBackupBlocker.drainFailed);
       return;
     }
     if (trigger == EagerBackupTrigger.reconciliationPending) {
@@ -128,8 +132,11 @@ final class EagerBackupCoordinator {
     }
     if (_invalidatesPreparation(trigger)) _preparedWorkload = null;
     _demand = true;
-    _scheduledRetry?.cancel();
-    _scheduledRetry = null;
+    if (_scheduledRetry != null) {
+      if (!_preemptsRetry(trigger)) return;
+      _scheduledRetry?.cancel();
+      _scheduledRetry = null;
+    }
     if (_foreground) unawaited(_drain());
   }
 
@@ -166,7 +173,6 @@ final class EagerBackupCoordinator {
               _setState(EagerBackupPhase.idle);
               continue;
             }
-
             _setState(EagerBackupPhase.preparing);
             await _operations.synchronizeLocal(cancellation);
             if (_mustStop(cancellation)) return;
@@ -221,6 +227,9 @@ final class EagerBackupCoordinator {
           if (failure.kind == EagerBackupFailureKind.transient) {
             _demand = true;
             _scheduleRetry();
+          } else if (_retries(failure.kind)) {
+            _demand = true;
+            _scheduleRetry(blocker: _blockerFor(failure.kind), retryAt: failure.retryAt);
           } else {
             _demand = true;
             _setState(EagerBackupPhase.blocked, blocker: _blockerFor(failure.kind));
@@ -250,12 +259,20 @@ final class EagerBackupCoordinator {
     _cancellation?.cancel();
   }
 
-  void _scheduleRetry() {
-    final seconds = const [1, 2, 4, 8, 15, 30][min(_retryAttempt, 5)];
+  void _scheduleRetry({EagerBackupBlocker? blocker, DateTime? retryAt}) {
+    if (_scheduledRetry != null) return;
+    final Duration delay;
+    if (retryAt != null) {
+      final untilRetry = retryAt.difference(_clock());
+      delay = untilRetry.isNegative ? Duration.zero : untilRetry;
+    } else {
+      final seconds = const [1, 2, 4, 8, 15, 30][min(_retryAttempt, 5)];
+      final jitteredMillis = (seconds * 1000 * (1 + (_jitter().clamp(-1, 1) * 0.1))).round();
+      delay = Duration(milliseconds: jitteredMillis);
+    }
     _retryAttempt++;
-    final jitteredMillis = (seconds * 1000 * (1 + (_jitter().clamp(-1, 1) * 0.1))).round();
-    _setState(EagerBackupPhase.backingOff);
-    _scheduledRetry = _retryScheduler.schedule(Duration(milliseconds: jitteredMillis), () {
+    _setState(EagerBackupPhase.backingOff, blocker: blocker);
+    _scheduledRetry = _retryScheduler.schedule(delay, () {
       _scheduledRetry = null;
       signal(EagerBackupTrigger.retry);
     });
@@ -276,12 +293,37 @@ final class EagerBackupCoordinator {
     _ => true,
   };
 
+  static bool _preemptsRetry(EagerBackupTrigger trigger) => switch (trigger) {
+    EagerBackupTrigger.uploadTerminal ||
+    EagerBackupTrigger.localTerminal ||
+    EagerBackupTrigger.hashTerminal ||
+    EagerBackupTrigger.connectivityChanged ||
+    EagerBackupTrigger.serverProofChanged ||
+    EagerBackupTrigger.resumed ||
+    EagerBackupTrigger.settingChanged ||
+    EagerBackupTrigger.retry => true,
+    _ => false,
+  };
+
+  static bool _retries(EagerBackupFailureKind kind) => switch (kind) {
+    EagerBackupFailureKind.backgroundOwnerActive ||
+    EagerBackupFailureKind.awaitingLeaseExpiry ||
+    EagerBackupFailureKind.recoveryPending ||
+    EagerBackupFailureKind.leaseContention => true,
+    _ => false,
+  };
+
   static EagerBackupBlocker _blockerFor(EagerBackupFailureKind kind) => switch (kind) {
     EagerBackupFailureKind.authentication => EagerBackupBlocker.noProof,
     EagerBackupFailureKind.staleContext => EagerBackupBlocker.leaseOwned,
     EagerBackupFailureKind.deterministic => EagerBackupBlocker.deterministicFailure,
     EagerBackupFailureKind.drainFailed => EagerBackupBlocker.drainFailed,
     EagerBackupFailureKind.transient => EagerBackupBlocker.drainFailed,
+    EagerBackupFailureKind.backgroundOwnerActive => EagerBackupBlocker.backgroundOwnerActive,
+    EagerBackupFailureKind.awaitingLeaseExpiry => EagerBackupBlocker.leaseAwaitingExpiry,
+    EagerBackupFailureKind.recoveryPending => EagerBackupBlocker.leaseRecoveryPending,
+    EagerBackupFailureKind.leaseContention => EagerBackupBlocker.leaseContention,
+    EagerBackupFailureKind.bindingStale => EagerBackupBlocker.bindingStale,
   };
 
   static EagerBackupBlocker _blockerForUploadOutcome(EagerBackupUploadOutcome outcome) => switch (outcome) {

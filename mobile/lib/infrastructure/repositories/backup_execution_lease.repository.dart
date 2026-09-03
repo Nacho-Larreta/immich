@@ -115,6 +115,7 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
     required String runToken,
     required String bindingDigest,
     required BackupTaskClaim claim,
+    String? operationIncarnation,
   }) => _transitionForTask(
     runToken: runToken,
     bindingDigest: bindingDigest,
@@ -124,6 +125,9 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
       return lease.copyWith(
         callbacksInFlight: lease.callbacksInFlight + 1,
         callbackClaims: {...lease.callbackClaims, claim},
+        callbackIncarnations: operationIncarnation == null
+            ? lease.callbackIncarnations
+            : {...lease.callbackIncarnations, claim: operationIncarnation},
         activityRevision: lease.activityRevision + 1,
       );
     },
@@ -142,6 +146,7 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
         : lease.copyWith(
             callbacksInFlight: lease.callbacksInFlight - 1,
             callbackClaims: {...lease.callbackClaims}..remove(claim),
+            callbackIncarnations: {...lease.callbackIncarnations}..remove(claim),
             activityRevision: lease.activityRevision + 1,
           ),
   );
@@ -180,6 +185,7 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
     required String bindingDigest,
     required BackupTaskClaim claim,
     required String candidateKey,
+    String? operationIncarnation,
   }) {
     return _db.transaction(() async {
       final key = BackupCandidateKey.parse(candidateKey).value;
@@ -197,6 +203,9 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
       final replacement = expected.copyWith(
         enqueueClaims: {...expected.enqueueClaims, claim},
         candidateKeys: {...expected.candidateKeys, claim: key},
+        enqueueIncarnations: operationIncarnation == null
+            ? expected.enqueueIncarnations
+            : {...expected.enqueueIncarnations, claim: operationIncarnation},
         activityRevision: expected.activityRevision + 1,
       );
       return await _replaceExactWhenBackupEnabled(expected, replacement) ? replacement : null;
@@ -236,6 +245,7 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
         return lease.copyWith(
           terminalTombstones: {...lease.terminalTombstones}..remove(claim),
           candidateKeys: {...lease.candidateKeys}..remove(claim),
+          enqueueIncarnations: {...lease.enqueueIncarnations}..remove(claim),
           activityRevision: lease.activityRevision + 1,
         );
       }
@@ -244,6 +254,7 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
       return lease.copyWith(
         enqueueClaims: {...lease.enqueueClaims}..remove(claim),
         outstandingClaims: {...lease.outstandingClaims, claim},
+        enqueueIncarnations: {...lease.enqueueIncarnations}..remove(claim),
         activityRevision: lease.activityRevision + 1,
       );
     },
@@ -262,6 +273,7 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
       return lease.copyWith(
         enqueueClaims: {...lease.enqueueClaims}..remove(claim),
         candidateKeys: {...lease.candidateKeys}..remove(claim),
+        enqueueIncarnations: {...lease.enqueueIncarnations}..remove(claim),
         activityRevision: lease.activityRevision + 1,
       );
     },
@@ -281,6 +293,7 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
         return lease.copyWith(
           enqueueClaims: {...lease.enqueueClaims}..remove(claim),
           terminalTombstones: {...lease.terminalTombstones, claim},
+          enqueueIncarnations: {...lease.enqueueIncarnations}..remove(claim),
           activityRevision: lease.activityRevision + 1,
         );
       }
@@ -308,6 +321,7 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
         outstandingClaims: {...lease.outstandingClaims}..remove(claim),
         enqueueClaims: {...lease.enqueueClaims}..remove(claim),
         reconciliationClaims: {...lease.reconciliationClaims, claim},
+        enqueueIncarnations: {...lease.enqueueIncarnations}..remove(claim),
         activityRevision: lease.activityRevision + 1,
       );
     },
@@ -401,7 +415,7 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
       bindingDigest: bindingDigest,
       replacement: (lease) {
         final outstanding = lease.state == BackupExecutionState.closing
-            ? lease.outstandingClaims.intersection(activeClaims)
+            ? {...lease.outstandingClaims, ...lease.enqueueClaims}.intersection(activeClaims)
             : activeClaims;
         final enqueue = lease.enqueueClaims.difference(activeClaims);
         if (_sameClaims(outstanding, lease.outstandingClaims) && _sameClaims(enqueue, lease.enqueueClaims)) {
@@ -410,6 +424,10 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
         return lease.copyWith(
           outstandingClaims: outstanding,
           enqueueClaims: enqueue,
+          enqueueIncarnations: {
+            for (final entry in lease.enqueueIncarnations.entries)
+              if (enqueue.contains(entry.key)) entry.key: entry.value,
+          },
           activityRevision: lease.activityRevision + 1,
         );
       },
@@ -441,7 +459,35 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
         terminalTombstones: tombstones,
         callbacksInFlight: 0,
         callbackClaims: const {},
+        enqueueIncarnations: {
+          for (final entry in expected.enqueueIncarnations.entries)
+            if (enqueue.contains(entry.key)) entry.key: entry.value,
+        },
+        callbackIncarnations: const {},
         foregroundActivityClaims: const {},
+        activityRevision: expected.activityRevision + 1,
+      ),
+    );
+  }
+
+  @override
+  Future<BackupExecutionLease?> releaseOrphanedCallbackForTaskExact({
+    required BackupExecutionLease expected,
+    required BackupTaskClaim claim,
+  }) {
+    final ownsClaim =
+        expected.outstandingClaims.contains(claim) ||
+        expected.enqueueClaims.contains(claim) ||
+        expected.reconciliationClaims.contains(claim);
+    if (!ownsClaim || !expected.callbackClaims.contains(claim) || expected.callbacksInFlight < 1) {
+      return Future.value();
+    }
+    return _transition(
+      expected,
+      expected.copyWith(
+        callbacksInFlight: expected.callbacksInFlight - 1,
+        callbackClaims: {...expected.callbackClaims}..remove(claim),
+        callbackIncarnations: {...expected.callbackIncarnations}..remove(claim),
         activityRevision: expected.activityRevision + 1,
       ),
     );

@@ -178,6 +178,9 @@ final class _Gateway implements BackupTaskRegistryGateway {
   }
 
   @override
+  Future<void> replayUndeliveredUpdates() async {}
+
+  @override
   Future<void> resetNative(String group) async {
     if (resetError case final error?) throw error;
   }

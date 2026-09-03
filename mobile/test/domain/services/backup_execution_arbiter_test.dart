@@ -56,6 +56,85 @@ void main() {
     final result = await pending;
     expect(result.disposition, BackupAdmissionDisposition.adoptedBackground);
     expect(registry.requestedGroups, {BackupTaskGroup.primary, BackupTaskGroup.livePhoto});
+    expect(registry.cancelAndDrainCalls, 0);
+    expect(leases.acquireCalls, 0);
+    expect(leases.releaseCalls, 0);
+  });
+
+  test('non-expired empty lease returns its retry deadline without mutation', () async {
+    final now = DateTime.utc(2026, 9, 2, 18);
+    final lease = _lease('background-token', 'same-binding', now);
+    final leases = _Leases(existing: lease);
+    final registry = _Registry();
+    final arbiter = BackupExecutionArbiter(leases: leases, tasks: registry, clock: () => now);
+
+    final result = await arbiter.acquireForeground(bindingDigest: 'same-binding');
+
+    expect(result.disposition, BackupAdmissionDisposition.awaitingExpiry);
+    expect(result.retryAt, lease.expiresAt);
+    expect(registry.cancelAndDrainCalls, 0);
+    expect(leases.acquireCalls, 0);
+    expect(leases.releaseCalls, 0);
+    expect(leases.existing, lease);
+  });
+
+  test('lease with an exact durable background claim is adopted so its native mailbox can be replayed', () async {
+    final now = DateTime.utc(2026, 9, 2, 18);
+    const claim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'mailbox-terminal');
+    final lease = _lease('background-token', 'same-binding', now).copyWith(outstandingClaims: {claim});
+    final leases = _Leases(existing: lease);
+    final registry = _Registry();
+    final arbiter = BackupExecutionArbiter(leases: leases, tasks: registry, clock: () => now);
+
+    final result = await arbiter.acquireForeground(bindingDigest: 'same-binding');
+
+    expect(result.disposition, BackupAdmissionDisposition.adoptedBackground);
+    expect(result.lease, lease);
+    expect(registry.cancelAndDrainCalls, 0);
+    expect(leases.recoverExactCalls, 0);
+    expect(leases.acquireCalls, 0);
+    expect(leases.releaseCalls, 0);
+  });
+
+  test('expired orphan recovery fails closed with a typed pending disposition', () async {
+    final now = DateTime.utc(2026, 9, 2, 18);
+    final orphan = _lease(
+      'orphan',
+      'same-binding',
+      now.subtract(const Duration(minutes: 2)),
+    ).copyWith(state: BackupExecutionState.closing, callbacksInFlight: 1);
+    final leases = _Leases(existing: orphan);
+    final registry = _Registry()..snapshotSequence = [const [], const []];
+    final arbiter = BackupExecutionArbiter(leases: leases, tasks: registry, clock: () => now);
+
+    final result = await arbiter.acquireForeground(bindingDigest: 'same-binding');
+
+    expect(result.disposition, BackupAdmissionDisposition.recoveryPending);
+    expect(leases.existing, orphan);
+    expect(leases.acquireCalls, 0);
+    expect(leases.releaseCalls, 0);
+  });
+
+  test('expired empty lease uses fenced recovery before a new admission', () async {
+    final now = DateTime.utc(2026, 9, 2, 18);
+    final expired = _lease('orphan', 'same-binding', now.subtract(const Duration(minutes: 2)));
+    final leases = _Leases(existing: expired);
+    final registry = _Registry()..snapshotSequence = [const [], const [], const [], const [], const []];
+    final arbiter = BackupExecutionArbiter(
+      leases: leases,
+      tasks: registry,
+      callbackFence: BackupCallbackFence(),
+      clock: () => now,
+      tokenFactory: () => 'replacement',
+    );
+
+    final result = await arbiter.acquireForeground(bindingDigest: 'same-binding');
+
+    expect(result.disposition, BackupAdmissionDisposition.acquired);
+    expect(result.lease?.runToken, 'replacement');
+    expect(leases.recoverExactCalls, 1);
+    expect(leases.releaseCalls, 1);
+    expect(registry.cancelAndDrainCalls, 0);
   });
 
   test('expired lease with exact active native task is renewed and adopted', () async {
@@ -73,6 +152,74 @@ void main() {
 
     expect(result.disposition, BackupAdmissionDisposition.adoptedBackground);
     expect(leases.acquireCalls, 0);
+  });
+
+  test('expired closing lease with its exact waiting task is adopted without renewal', () async {
+    final now = DateTime.utc(2026, 9, 2, 18);
+    final expired = _lease('owned', 'same', now.subtract(const Duration(minutes: 2))).copyWith(
+      state: BackupExecutionState.closing,
+      outstandingClaims: {const BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'owned-waiting')},
+    );
+    const task = BackupTaskSnapshot(
+      taskId: 'owned-waiting',
+      group: BackupTaskGroup.primary,
+      status: BackupTaskStatus.waitingToRetry,
+      metadata: BackupTaskMetadata.current(runToken: 'owned', bindingDigest: 'same', phase: BackupTaskPhase.primary),
+    );
+    final leases = _Leases(existing: expired);
+    final registry = _Registry()..snapshots = [task];
+    final arbiter = BackupExecutionArbiter(leases: leases, tasks: registry, clock: () => now);
+
+    final result = await arbiter.acquireForeground(bindingDigest: 'same');
+
+    expect(result.disposition, BackupAdmissionDisposition.adoptedBackground);
+    expect(result.lease?.state, BackupExecutionState.closing);
+    expect(result.lease?.expiresAt, expired.expiresAt);
+    expect(leases.existing?.expiresAt, expired.expiresAt);
+    expect(leases.acquireCalls, 0);
+    expect(leases.releaseCalls, 0);
+  });
+
+  test('expired closing lease adopts and promotes its exact active enqueue claim', () async {
+    final now = DateTime.utc(2026, 9, 2, 18);
+    const claim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'owned-enqueue');
+    final expired = _lease(
+      'owned',
+      'same',
+      now.subtract(const Duration(minutes: 2)),
+    ).copyWith(state: BackupExecutionState.closing, enqueueClaims: {claim});
+    const task = BackupTaskSnapshot(
+      taskId: 'owned-enqueue',
+      group: BackupTaskGroup.primary,
+      status: BackupTaskStatus.running,
+      metadata: BackupTaskMetadata.current(runToken: 'owned', bindingDigest: 'same', phase: BackupTaskPhase.primary),
+    );
+    final leases = _Leases(existing: expired);
+    final arbiter = BackupExecutionArbiter(leases: leases, tasks: _Registry()..snapshots = [task], clock: () => now);
+
+    final result = await arbiter.acquireForeground(bindingDigest: 'same');
+
+    expect(result.disposition, BackupAdmissionDisposition.adoptedBackground);
+    expect(result.lease?.state, BackupExecutionState.closing);
+    expect(result.lease?.expiresAt, expired.expiresAt);
+    expect(result.lease?.enqueueClaims, isEmpty);
+    expect(result.lease?.outstandingClaims, {claim});
+    expect(leases.releaseCalls, 0);
+  });
+
+  test('durable background claim from another binding cannot be adopted', () async {
+    final now = DateTime.utc(2026, 9, 2, 18);
+    const claim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'foreign-owner');
+    final lease = _lease('owned', 'other-binding', now).copyWith(outstandingClaims: {claim});
+    final leases = _Leases(existing: lease);
+    final arbiter = BackupExecutionArbiter(leases: leases, tasks: _Registry(), clock: () => now);
+
+    final result = await arbiter.acquireForeground(bindingDigest: 'same');
+
+    expect(result.disposition, BackupAdmissionDisposition.awaitingExpiry);
+    expect(leases.existing, lease);
+    expect(leases.acquireCalls, 0);
+    expect(leases.releaseCalls, 0);
   });
 
   test('owned task without its durable lease is drained instead of adopted', () async {
@@ -115,7 +262,7 @@ void main() {
 
     final result = await arbiter.acquireForeground(bindingDigest: 'same');
 
-    expect(result.disposition, BackupAdmissionDisposition.backgroundActive);
+    expect(result.disposition, BackupAdmissionDisposition.ownerActive);
     expect(leases.releaseCalls, 1);
   });
 
@@ -246,7 +393,7 @@ void main() {
 
     final admission = await arbiter.acquireForeground(bindingDigest: 'same');
 
-    expect(admission.disposition, BackupAdmissionDisposition.backgroundActive);
+    expect(admission.disposition, BackupAdmissionDisposition.recoveryPending);
     expect(leases.acquireCalls, 0);
   });
 
@@ -275,7 +422,7 @@ void main() {
 
     expect(
       (await arbiter.acquireForeground(bindingDigest: 'same')).disposition,
-      BackupAdmissionDisposition.backgroundActive,
+      BackupAdmissionDisposition.recoveryPending,
     );
     expect(leases.acquireCalls, 0);
     expect(leases.existing?.foregroundActivityClaims, {claim});
@@ -297,7 +444,7 @@ void main() {
     expect(leases.existing, lease);
   });
 
-  test('expired orphan claims enter closing and recover only after two empty registry snapshots', () async {
+  test('expired durable claims are adopted before recovery so the owner mailbox can be replayed', () async {
     final now = DateTime.utc(2026, 8, 11, 12);
     final orphan = _lease('orphan', 'same', now.subtract(const Duration(minutes: 2))).copyWith(
       outstandingClaims: {const BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'opaque-orphan')},
@@ -314,8 +461,10 @@ void main() {
 
     final admission = await arbiter.acquireForeground(bindingDigest: 'same');
 
-    expect(admission.disposition, BackupAdmissionDisposition.acquired);
-    expect(admission.lease?.runToken, 'replacement');
+    expect(admission.disposition, BackupAdmissionDisposition.adoptedBackground);
+    expect(admission.lease, orphan);
+    expect(leases.recoverExactCalls, 0);
+    expect(leases.releaseCalls, 0);
   });
 
   test('concurrent disable callers share one closing and drain operation', () async {
@@ -870,6 +1019,7 @@ final class _Leases implements BackupExecutionLeasePort {
     required String runToken,
     required String bindingDigest,
     required BackupTaskClaim claim,
+    String? operationIncarnation,
   }) => throw UnimplementedError();
 
   @override
@@ -902,6 +1052,7 @@ final class _Leases implements BackupExecutionLeasePort {
     required String bindingDigest,
     required BackupTaskClaim claim,
     required String candidateKey,
+    String? operationIncarnation,
   }) => throw UnimplementedError();
 
   @override
@@ -966,7 +1117,14 @@ final class _Leases implements BackupExecutionLeasePort {
   }) async {
     final current = existing;
     if (current == null || current.runToken != runToken || current.bindingDigest != bindingDigest) return null;
-    existing = current.copyWith(outstandingClaims: activeClaims, activityRevision: current.activityRevision + 1);
+    final outstanding = current.state == BackupExecutionState.closing
+        ? {...current.outstandingClaims, ...current.enqueueClaims}.intersection(activeClaims)
+        : activeClaims;
+    existing = current.copyWith(
+      outstandingClaims: outstanding,
+      enqueueClaims: current.enqueueClaims.difference(activeClaims),
+      activityRevision: current.activityRevision + 1,
+    );
     return existing;
   }
 
@@ -990,6 +1148,12 @@ final class _Leases implements BackupExecutionLeasePort {
     );
     return existing;
   }
+
+  @override
+  Future<BackupExecutionLease?> releaseOrphanedCallbackForTaskExact({
+    required BackupExecutionLease expected,
+    required BackupTaskClaim claim,
+  }) async => null;
 
   @override
   Future<BackupExecutionLease?> beginClosingForOwner({required String runToken, required String bindingDigest}) async {

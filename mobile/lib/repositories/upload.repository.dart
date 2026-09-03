@@ -53,6 +53,11 @@ class UploadRepository implements BackupTaskRegistryPort, BackupTaskDrainPort<Ba
   @override
   Future<void> get ready => _taskRegistry.ready;
 
+  Future<void> replayUndeliveredUpdates() async {
+    await ready;
+    await _taskRegistry.replayUndeliveredUpdates();
+  }
+
   @override
   Future<List<BackupTaskSnapshot>> snapshot(Set<BackupTaskGroup> groups) async {
     await ready;
@@ -201,10 +206,6 @@ class UploadRepository implements BackupTaskRegistryPort, BackupTaskDrainPort<Ba
     return FileDownloader().allTasks(group: group);
   }
 
-  Future<void> start() {
-    return FileDownloader().start();
-  }
-
   Future<void> getUploadInfo() async {
     final [enqueuedTasks, runningTasks, canceledTasks, waitingTasks, pausedTasks] = await Future.wait([
       FileDownloader().database.allRecordsWithStatus(TaskStatus.enqueued, group: kBackupGroup),
@@ -286,10 +287,10 @@ class UploadRepository implements BackupTaskRegistryPort, BackupTaskDrainPort<Ba
         return UploadResult.error(errorMessage: 'Failed to parse server response');
       }
     } on RequestAbortedException {
-      logger.warning('foreground_upload_cancelled');
+      logger.warning('foreground_upload_cancelled context=$logContext');
       return UploadResult.cancelled();
     } on Object {
-      logger.warning('foreground_upload_failed');
+      logger.warning('foreground_upload_failed context=$logContext');
       return UploadResult.error(errorMessage: 'Upload failed');
     }
   }

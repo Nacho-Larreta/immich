@@ -5,13 +5,22 @@ import 'dart:math';
 import 'package:immich_mobile/domain/interfaces/backup_execution.interface.dart';
 import 'package:immich_mobile/domain/models/backup_execution_lease.model.dart';
 
-enum BackupAdmissionDisposition { acquired, adoptedBackground, backgroundActive, unavailable }
+enum BackupAdmissionDisposition {
+  acquired,
+  adoptedBackground,
+  ownerActive,
+  awaitingExpiry,
+  recoveryPending,
+  contention,
+  bindingStale,
+}
 
 final class BackupAdmission {
-  const BackupAdmission(this.disposition, {this.lease});
+  const BackupAdmission(this.disposition, {this.lease, this.retryAt});
 
   final BackupAdmissionDisposition disposition;
   final BackupExecutionLease? lease;
+  final DateTime? retryAt;
 
   bool get admitted => disposition == BackupAdmissionDisposition.acquired;
 }
@@ -61,57 +70,72 @@ final class BackupExecutionArbiter implements BackgroundBackupAdmissionPort {
 
   Future<BackupAdmission> _acquire({required BackupExecutionMode mode, required String bindingDigest}) async {
     await _tasks.ready;
-    var active = await _activeTasks();
+    var active = (await _tasks.snapshot(groups)).where((task) => task.isActive).toList(growable: false);
     var existing = await _leases.read();
     final ownership = _classify(active, bindingDigest);
     if (ownership case _OwnedTasks(:final runToken, :final digest)) {
       if (existing != null && existing.runToken == runToken && existing.bindingDigest == digest) {
+        if (existing.state == BackupExecutionState.closing) {
+          existing = await _leases.reconcileTaskClaimsForOwner(
+            runToken: runToken,
+            bindingDigest: digest,
+            activeClaims: _claimsFor(active),
+          );
+          return existing == null
+              ? const BackupAdmission(BackupAdmissionDisposition.contention)
+              : BackupAdmission(BackupAdmissionDisposition.adoptedBackground, lease: existing);
+        }
         if (existing.isExpiredAt(_clock())) {
           existing = await _renewExact(existing);
-          if (existing == null) return const BackupAdmission(BackupAdmissionDisposition.unavailable);
-        }
-        if (existing.state == BackupExecutionState.closing) {
-          return BackupAdmission(BackupAdmissionDisposition.backgroundActive, lease: existing);
+          if (existing == null) return const BackupAdmission(BackupAdmissionDisposition.contention);
         }
         existing = await _leases.reconcileTaskClaimsForOwner(
           runToken: runToken,
           bindingDigest: digest,
           activeClaims: _claimsFor(active),
         );
-        if (existing == null) return const BackupAdmission(BackupAdmissionDisposition.unavailable);
+        if (existing == null) return const BackupAdmission(BackupAdmissionDisposition.contention);
         return BackupAdmission(BackupAdmissionDisposition.adoptedBackground, lease: existing);
       }
       if (!await _drainInconsistent(existing)) {
-        return const BackupAdmission(BackupAdmissionDisposition.unavailable);
+        return const BackupAdmission(BackupAdmissionDisposition.bindingStale);
       }
       active = await _activeTasks();
-      if (active.isNotEmpty) return const BackupAdmission(BackupAdmissionDisposition.unavailable);
+      if (active.isNotEmpty) return const BackupAdmission(BackupAdmissionDisposition.ownerActive);
       existing = await _leases.read();
     } else if (ownership is _InconsistentTasks) {
       if (!await _drainInconsistent(existing)) {
-        return const BackupAdmission(BackupAdmissionDisposition.unavailable);
+        return const BackupAdmission(BackupAdmissionDisposition.bindingStale);
       }
       active = await _activeTasks();
-      if (active.isNotEmpty) return const BackupAdmission(BackupAdmissionDisposition.unavailable);
+      if (active.isNotEmpty) return const BackupAdmission(BackupAdmissionDisposition.ownerActive);
       existing = await _leases.read();
     }
 
+    if (active.isEmpty && existing != null && _hasExactBackgroundClaims(existing, bindingDigest)) {
+      return BackupAdmission(BackupAdmissionDisposition.adoptedBackground, lease: existing);
+    }
+
     if (active.isEmpty && existing != null && existing.isExpiredAt(_clock())) {
-      if (existing.state == BackupExecutionState.accepting && existing.hasDurableActivity) {
+      if (existing.state == BackupExecutionState.accepting) {
         existing = await _leases.beginClosingForOwner(
           runToken: existing.runToken,
           bindingDigest: existing.bindingDigest,
         );
-        if (existing == null) return const BackupAdmission(BackupAdmissionDisposition.unavailable);
+        if (existing == null) return const BackupAdmission(BackupAdmissionDisposition.contention);
       }
       if (existing.state == BackupExecutionState.closing) {
         final recovered = await _recoverExpiredClosing(existing);
-        if (!recovered) return BackupAdmission(BackupAdmissionDisposition.backgroundActive, lease: existing);
+        if (!recovered) return BackupAdmission(BackupAdmissionDisposition.recoveryPending, lease: existing);
         existing = await _leases.read();
       }
       if (existing != null && existing.hasDurableActivity) {
-        return BackupAdmission(BackupAdmissionDisposition.backgroundActive, lease: existing);
+        return BackupAdmission(BackupAdmissionDisposition.recoveryPending, lease: existing);
       }
+    }
+
+    if (active.isEmpty && existing != null && !existing.isExpiredAt(_clock())) {
+      return BackupAdmission(BackupAdmissionDisposition.awaitingExpiry, lease: existing, retryAt: existing.expiresAt);
     }
 
     final now = _clock();
@@ -124,13 +148,13 @@ final class BackupExecutionArbiter implements BackgroundBackupAdmissionPort {
       callbacksInFlight: 0,
     );
     if (!await _leases.acquire(candidate, now)) {
-      return const BackupAdmission(BackupAdmissionDisposition.unavailable);
+      return const BackupAdmission(BackupAdmissionDisposition.contention);
     }
 
     final postAcquireTasks = await _activeTasks();
     if (postAcquireTasks.isNotEmpty) {
       await _leases.releaseExact(candidate);
-      return const BackupAdmission(BackupAdmissionDisposition.backgroundActive);
+      return const BackupAdmission(BackupAdmissionDisposition.ownerActive);
     }
     return BackupAdmission(BackupAdmissionDisposition.acquired, lease: candidate);
   }
@@ -322,6 +346,10 @@ final class BackupExecutionArbiter implements BackgroundBackupAdmissionPort {
 
   static Set<BackupTaskClaim> _claimsFor(Iterable<BackupTaskSnapshot> tasks) =>
       tasks.map((task) => BackupTaskClaim(group: task.group, taskId: task.taskId)).toSet();
+
+  static bool _hasExactBackgroundClaims(BackupExecutionLease lease, String bindingDigest) =>
+      lease.bindingDigest == bindingDigest &&
+      (lease.outstandingClaims.isNotEmpty || lease.enqueueClaims.isNotEmpty || lease.reconciliationClaims.isNotEmpty);
 
   static _TaskOwnership _classify(List<BackupTaskSnapshot> tasks, String bindingDigest) {
     if (tasks.isEmpty) return const _EmptyTasks();
