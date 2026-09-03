@@ -433,6 +433,17 @@ class DriftTimelineRepository extends DriftDatabaseRepository implements MainTim
     origin: TimelineOrigin.person,
   );
 
+  Expression<bool> _hasVisibleFaceForPerson(String personId) => existsQuery(
+    _db.assetFaceEntity.selectOnly()
+      ..addColumns([_db.assetFaceEntity.id])
+      ..where(
+        _db.assetFaceEntity.assetId.equalsExp(_db.remoteAssetEntity.id) &
+            _db.assetFaceEntity.personId.equals(personId) &
+            _db.assetFaceEntity.isVisible.equals(true) &
+            _db.assetFaceEntity.deletedAt.isNull(),
+      ),
+  );
+
   Stream<List<Bucket>> _watchPlaceBucket(String place, {GroupAssetsBy groupBy = GroupAssetsBy.day}) {
     if (groupBy == GroupAssetsBy.none) {
       // TODO: implement GroupAssetBy for place
@@ -489,20 +500,11 @@ class DriftTimelineRepository extends DriftDatabaseRepository implements MainTim
     if (groupBy == GroupAssetsBy.none) {
       final query = _db.remoteAssetEntity.selectOnly()
         ..addColumns([_db.remoteAssetEntity.id.count()])
-        ..join([
-          innerJoin(
-            _db.assetFaceEntity,
-            _db.assetFaceEntity.assetId.equalsExp(_db.remoteAssetEntity.id),
-            useColumns: false,
-          ),
-        ])
         ..where(
           _db.remoteAssetEntity.deletedAt.isNull() &
               _db.remoteAssetEntity.ownerId.equals(userId) &
               _db.remoteAssetEntity.visibility.equalsValue(AssetVisibility.timeline) &
-              _db.assetFaceEntity.personId.equals(personId) &
-              _db.assetFaceEntity.isVisible.equals(true) &
-              _db.assetFaceEntity.deletedAt.isNull(),
+              _hasVisibleFaceForPerson(personId),
         );
 
       return query.map((row) {
@@ -516,20 +518,11 @@ class DriftTimelineRepository extends DriftDatabaseRepository implements MainTim
 
     final query = _db.remoteAssetEntity.selectOnly()
       ..addColumns([assetCountExp, dateExp])
-      ..join([
-        innerJoin(
-          _db.assetFaceEntity,
-          _db.assetFaceEntity.assetId.equalsExp(_db.remoteAssetEntity.id),
-          useColumns: false,
-        ),
-      ])
       ..where(
         _db.remoteAssetEntity.deletedAt.isNull() &
             _db.remoteAssetEntity.ownerId.equals(userId) &
             _db.remoteAssetEntity.visibility.equalsValue(AssetVisibility.timeline) &
-            _db.assetFaceEntity.personId.equals(personId) &
-            _db.assetFaceEntity.isVisible.equals(true) &
-            _db.assetFaceEntity.deletedAt.isNull(),
+            _hasVisibleFaceForPerson(personId),
       )
       ..groupBy([dateExp])
       ..orderBy([OrderingTerm.desc(dateExp)]);
@@ -547,26 +540,18 @@ class DriftTimelineRepository extends DriftDatabaseRepository implements MainTim
     required int offset,
     required int count,
   }) {
-    final query =
-        _db.remoteAssetEntity.select().join([
-            innerJoin(
-              _db.assetFaceEntity,
-              _db.assetFaceEntity.assetId.equalsExp(_db.remoteAssetEntity.id),
-              useColumns: false,
-            ),
-          ])
-          ..where(
-            _db.remoteAssetEntity.deletedAt.isNull() &
-                _db.remoteAssetEntity.ownerId.equals(userId) &
-                _db.remoteAssetEntity.visibility.equalsValue(AssetVisibility.timeline) &
-                _db.assetFaceEntity.personId.equals(personId) &
-                _db.assetFaceEntity.isVisible.equals(true) &
-                _db.assetFaceEntity.deletedAt.isNull(),
-          )
-          ..orderBy([OrderingTerm.desc(_db.remoteAssetEntity.createdAt)])
-          ..limit(count, offset: offset);
+    final query = _db.remoteAssetEntity.select()
+      ..where(
+        (asset) =>
+            asset.deletedAt.isNull() &
+            asset.ownerId.equals(userId) &
+            asset.visibility.equalsValue(AssetVisibility.timeline) &
+            _hasVisibleFaceForPerson(personId),
+      )
+      ..orderBy([(asset) => OrderingTerm.desc(asset.createdAt)])
+      ..limit(count, offset: offset);
 
-    return query.map((row) => row.readTable(_db.remoteAssetEntity).toDto()).get();
+    return query.map((asset) => asset.toDto()).get();
   }
 
   TimelineQuery map(List<String> userIds, TimelineMapOptions options, GroupAssetsBy groupBy) => (
