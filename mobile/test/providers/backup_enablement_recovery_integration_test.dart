@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:immich_mobile/constants/constants.dart';
 import 'package:immich_mobile/domain/interfaces/backup_enablement.interface.dart';
 import 'package:immich_mobile/domain/interfaces/backup_execution.interface.dart';
+import 'package:immich_mobile/domain/interfaces/backup_operation_lifetime.interface.dart';
 import 'package:immich_mobile/domain/models/backup_execution_lease.model.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/services/backup_callback_fence.dart';
@@ -97,7 +98,9 @@ void main() {
           leasePort: leases,
           arbiter: arbiter,
           callbackFence: fence,
-          operationIncarnation: 'current-process',
+          operationLifetime: const _OperationLifetime('current-process', {
+            'previous-process': BackupOperationState.retired,
+          }),
         );
         final port = _PersistedEnablementPort(
           enablement,
@@ -423,4 +426,17 @@ final class _ForegroundFence implements ForegroundTransportFencePort {
     claims.addAll(requestedClaims);
     return retirement;
   }
+}
+
+final class _OperationLifetime implements BackupOperationLifetimePort {
+  const _OperationLifetime(this.identity, this.states);
+
+  final String identity;
+  final Map<String, BackupOperationState> states;
+
+  @override
+  Future<String?> currentIdentity() async => identity;
+
+  @override
+  Future<BackupOperationState> stateOf(String identity) async => states[identity] ?? BackupOperationState.unknown;
 }

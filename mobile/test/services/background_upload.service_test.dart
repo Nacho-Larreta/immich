@@ -11,6 +11,7 @@ import 'package:background_downloader/background_downloader.dart';
 import 'package:immich_mobile/constants/constants.dart';
 import 'package:immich_mobile/domain/models/album/local_album.model.dart';
 import 'package:immich_mobile/domain/interfaces/backup_execution.interface.dart';
+import 'package:immich_mobile/domain/interfaces/backup_operation_lifetime.interface.dart';
 import 'package:immich_mobile/domain/interfaces/eager_backup.interface.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/backup_candidate_key.model.dart';
@@ -496,6 +497,59 @@ void main() {
       reconcileOwnedSuccess: (_) async => true,
     );
 
+    test('completed automatic task does not delete a borrowed source used by a manual reader', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      final directory = await Directory.systemTemp.createTemp('backup-borrowed-source-');
+      addTearDown(() => directory.delete(recursive: true));
+      final source = File('${directory.path}/shared.mov')..writeAsStringSync('video-content');
+      final sentinel = File('${directory.path}/other-intent.mov')..writeAsStringSync('other-content');
+      final manualReader = await source.open();
+      addTearDown(manualReader.close);
+      await manualReader.readByte();
+      const taskId = 'shared-source-task';
+      const claim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: taskId);
+      final leases = _ExactOwnerLeasePort(_leaseWithClaims({claim}));
+      final ownedService = BackgroundUploadService(
+        mockUploadRepository,
+        mockStorageRepository,
+        mockLocalAssetRepository,
+        mockBackupRepository,
+        mockAppSettingsService,
+        mockAssetMediaRepository,
+        leasePort: leases,
+        operationLifetime: _OperationLifetime('engine-active', {}),
+        validateBinding: (_, _) => _binding(),
+        reconcileOwnedSuccess: (_) async => true,
+      );
+      addTearDown(ownedService.dispose);
+      final task = UploadTask.fromFile(
+        file: source,
+        taskId: taskId,
+        url: 'https://photos.example/api/assets',
+        group: kBackupGroup,
+        metaData: UploadTaskMetadata(
+          localAssetId: LocalAssetStub.image1.id,
+          isLivePhotos: false,
+          livePhotoVideoId: '',
+          ownership: const BackupTaskMetadata.current(
+            runToken: 'run-token',
+            bindingDigest: 'binding-digest',
+            phase: BackupTaskPhase.primary,
+          ),
+          expectedNativeRevision: 3,
+          bindingAuthority: UploadBindingAuthority.fromBinding(_binding()),
+          candidateKey: _candidateKey,
+        ).toJson(),
+      );
+
+      await ownedService.handleOwnedStatusForTest(TaskStatusUpdate(task, TaskStatus.complete, null, '{"id":"remote"}'));
+
+      expect(await source.exists(), isTrue);
+      expect(await sentinel.exists(), isTrue);
+      expect(leases.terminalClaims, {claim});
+    });
+
     test('background snapshot preserves only the admitted owner waiting and paused states', () async {
       const waitingClaim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'waiting');
       const pausedClaim = BackupTaskClaim(group: BackupTaskGroup.livePhoto, taskId: 'paused');
@@ -670,7 +724,7 @@ void main() {
         leasePort: leases,
         arbiter: arbiter,
         callbackFence: freshFence,
-        operationIncarnation: 'process-after-reboot',
+        operationLifetime: _OperationLifetime('process-after-reboot', {'process-a': BackupOperationState.retired}),
         validateBinding: (_, _) => _binding(),
         reconcileOwnedSuccess: (_) async => true,
       );
@@ -729,7 +783,7 @@ void main() {
         leasePort: leases,
         arbiter: arbiter,
         callbackFence: fence,
-        operationIncarnation: 'current-process',
+        operationLifetime: _OperationLifetime('current-process', {'previous-process': BackupOperationState.retired}),
         validateBinding: (_, _) => _binding(),
         reconcileOwnedSuccess: (_) async => true,
       );
@@ -797,7 +851,7 @@ void main() {
         mockAssetMediaRepository,
         leasePort: leases,
         callbackFence: fence,
-        operationIncarnation: 'process-a',
+        operationLifetime: _OperationLifetime('process-a', {'process-a': BackupOperationState.alive}),
         validateBinding: (_, _) => _binding(),
       );
       addTearDown(ownedService.dispose);
@@ -832,7 +886,7 @@ void main() {
         leasePort: leases,
         arbiter: arbiter,
         callbackFence: fence,
-        operationIncarnation: 'process-b',
+        operationLifetime: _OperationLifetime('process-b', {'process-a': BackupOperationState.retired}),
         validateBinding: (_, _) => _binding(),
       );
       addTearDown(ownedService.dispose);
@@ -845,6 +899,183 @@ void main() {
       expect(leases.released, isTrue);
       verify(() => mockUploadRepository.replayUndeliveredUpdates()).called(1);
       verify(() => mockUploadRepository.snapshot(BackupExecutionArbiter.groups)).called(greaterThanOrEqualTo(2));
+    });
+
+    for (final state in BackupOperationState.values) {
+      test('same-PID sibling enqueue recovery requires native $state evidence', () async {
+        const oldIdentity = 'ios-engine-v1:123e4567-e89b-12d3-a456-426614174000:1';
+        const currentIdentity = 'ios-engine-v1:123e4567-e89b-12d3-a456-426614174000:2';
+        const claim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'old-engine-enqueue');
+        final lease = _lease().copyWith(
+          callbacksInFlight: 0,
+          enqueueClaims: {claim},
+          candidateKeys: {claim: _candidateKey},
+          enqueueIncarnations: {claim: oldIdentity},
+        );
+        final leases = _ExactOwnerLeasePort(lease);
+        when(() => mockUploadRepository.snapshot(BackupExecutionArbiter.groups)).thenAnswer((_) async => const []);
+        final service = BackgroundUploadService(
+          mockUploadRepository,
+          mockStorageRepository,
+          mockLocalAssetRepository,
+          mockBackupRepository,
+          mockAppSettingsService,
+          mockAssetMediaRepository,
+          leasePort: leases,
+          callbackFence: BackupCallbackFence(),
+          operationLifetime: _OperationLifetime(currentIdentity, {oldIdentity: state}),
+        );
+        addTearDown(service.dispose);
+
+        final disposition = await service.resumeOwned(EagerBackgroundUploadOwner.fromLease(lease));
+
+        expect(
+          disposition,
+          state == BackupOperationState.retired
+              ? EagerBackgroundResumeDisposition.completed
+              : EagerBackgroundResumeDisposition.recoveryPending,
+        );
+        expect(
+          leases.events.where((event) => event == 'releaseProvenOrphanedEnqueue').length,
+          state == BackupOperationState.retired ? 1 : 0,
+        );
+      });
+    }
+
+    for (final state in BackupOperationState.values) {
+      test('replayed terminal cannot take a $state sibling callback claim', () async {
+        const oldIdentity = 'ios-engine-v1:123e4567-e89b-12d3-a456-426614174000:1';
+        const currentIdentity = 'ios-engine-v1:123e4567-e89b-12d3-a456-426614174000:2';
+        final update = _completeOwnedUpdate();
+        final claim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: update.task.taskId);
+        final lease = _leaseWithClaims({
+          claim,
+        }).copyWith(callbacksInFlight: 1, callbackClaims: {claim}, callbackIncarnations: {claim: oldIdentity});
+        final leases = _ExactOwnerLeasePort(lease);
+        late final BackgroundUploadService service;
+        when(() => mockUploadRepository.snapshot(BackupExecutionArbiter.groups)).thenAnswer((_) async => const []);
+        when(() => mockUploadRepository.replayUndeliveredUpdates()).thenAnswer((_) async {
+          service.handleDownloaderStatusForTest(update);
+        });
+        service = BackgroundUploadService(
+          mockUploadRepository,
+          mockStorageRepository,
+          mockLocalAssetRepository,
+          mockBackupRepository,
+          mockAppSettingsService,
+          mockAssetMediaRepository,
+          leasePort: leases,
+          callbackFence: BackupCallbackFence(),
+          operationLifetime: _OperationLifetime(currentIdentity, {oldIdentity: state}),
+          validateBinding: (_, _) => _binding(),
+        );
+        addTearDown(service.dispose);
+
+        final disposition = await service.resumeOwned(EagerBackgroundUploadOwner.fromLease(lease));
+
+        expect(
+          disposition,
+          state == BackupOperationState.retired
+              ? EagerBackgroundResumeDisposition.completed
+              : EagerBackgroundResumeDisposition.recoveryPending,
+        );
+        expect(leases.orphanCallbackReleaseCalls, state == BackupOperationState.retired ? 1 : 0);
+      });
+    }
+
+    test('legacy writer recovers only after native bootstrap proof and no active URLSession task', () async {
+      const claim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'legacy-enqueue');
+      final lease = _lease().copyWith(
+        callbacksInFlight: 0,
+        enqueueClaims: {claim},
+        candidateKeys: {claim: _candidateKey},
+        enqueueIncarnations: {claim: 'pid:42'},
+      );
+      final leases = _ExactOwnerLeasePort(lease);
+      var active = true;
+      when(() => mockUploadRepository.snapshot(BackupExecutionArbiter.groups)).thenAnswer(
+        (_) async => active
+            ? [
+                BackupTaskSnapshot(
+                  taskId: claim.taskId,
+                  group: claim.group,
+                  status: BackupTaskStatus.running,
+                  metadata: _taskOwnership(),
+                ),
+              ]
+            : const [],
+      );
+      final service = BackgroundUploadService(
+        mockUploadRepository,
+        mockStorageRepository,
+        mockLocalAssetRepository,
+        mockBackupRepository,
+        mockAppSettingsService,
+        mockAssetMediaRepository,
+        leasePort: leases,
+        callbackFence: BackupCallbackFence(),
+        operationLifetime: _OperationLifetime('ios-engine-v1:123e4567-e89b-12d3-a456-426614174000:2', {
+          'pid:42': BackupOperationState.retired,
+        }),
+      );
+      addTearDown(service.dispose);
+
+      expect(
+        await service.resumeOwned(EagerBackgroundUploadOwner.fromLease(lease)),
+        EagerBackgroundResumeDisposition.observing,
+      );
+      expect(leases.events, isNot(contains('releaseProvenOrphanedEnqueue')));
+      active = false;
+      expect(
+        await service.resumeOwned(EagerBackgroundUploadOwner.fromLease(lease)),
+        EagerBackgroundResumeDisposition.completed,
+      );
+      expect(leases.events.where((event) => event == 'releaseProvenOrphanedEnqueue'), hasLength(1));
+    });
+
+    test('bridge failure never reserves a new owned task', () async {
+      final leases = _ExactOwnerLeasePort(_lease().copyWith(callbacksInFlight: 0));
+      final service = BackgroundUploadService(
+        mockUploadRepository,
+        mockStorageRepository,
+        mockLocalAssetRepository,
+        mockBackupRepository,
+        mockAppSettingsService,
+        mockAssetMediaRepository,
+        leasePort: leases,
+        callbackFence: BackupCallbackFence(),
+        operationLifetime: _OperationLifetime(null, const {}),
+      );
+      addTearDown(service.dispose);
+
+      expect(await service.enqueueTasks([_ownedUploadTask()], ownership: _taskOwnership()), [false]);
+      expect(leases.events, isNot(contains('beginEnqueue')));
+      verifyNever(() => mockUploadRepository.enqueueBackgroundAll(any()));
+    });
+
+    test('owned task and claim use the same current identity before native enqueue', () async {
+      const identity = 'ios-engine-v1:123e4567-e89b-12d3-a456-426614174000:2';
+      final leases = _ExactOwnerLeasePort(_lease().copyWith(callbacksInFlight: 0));
+      final service = BackgroundUploadService(
+        mockUploadRepository,
+        mockStorageRepository,
+        mockLocalAssetRepository,
+        mockBackupRepository,
+        mockAppSettingsService,
+        mockAssetMediaRepository,
+        leasePort: leases,
+        callbackFence: BackupCallbackFence(),
+        operationLifetime: _OperationLifetime(identity, const {}),
+      );
+      addTearDown(service.dispose);
+      when(() => mockUploadRepository.enqueueBackgroundAll(any())).thenAnswer((_) async => [true]);
+
+      expect(await service.enqueueTasks([_ownedUploadTask()], ownership: _taskOwnership()), [true]);
+
+      final queued =
+          verify(() => mockUploadRepository.enqueueBackgroundAll(captureAny())).captured.single as List<UploadTask>;
+      expect(UploadTaskMetadata.fromJson(queued.single.metaData).operationIncarnation, identity);
+      expect(leases.reservedIncarnations, [identity]);
     });
 
     test('legacy enqueue claim without terminal proof remains fail-closed', () async {
@@ -865,7 +1096,7 @@ void main() {
         mockAssetMediaRepository,
         leasePort: leases,
         callbackFence: BackupCallbackFence(),
-        operationIncarnation: 'process-b',
+        operationLifetime: _OperationLifetime('process-b', const {}),
       );
       addTearDown(ownedService.dispose);
 
@@ -898,7 +1129,7 @@ void main() {
         mockAssetMediaRepository,
         leasePort: leases,
         callbackFence: fence,
-        operationIncarnation: 'process-a',
+        operationLifetime: _OperationLifetime('process-a', {'process-a': BackupOperationState.alive}),
       );
       addTearDown(ownedService.dispose);
       final task = UploadTask(
@@ -1283,6 +1514,8 @@ void main() {
     });
 
     test('duplicate LivePhoto terminal callback enqueues exactly one child', () async {
+      const currentIdentity = 'ios-engine-v1:123e4567-e89b-12d3-a456-426614174000:2';
+      const oldIdentity = 'ios-engine-v1:123e4567-e89b-12d3-a456-426614174000:1';
       final leases = _LeasePort();
       final binding = _binding();
       final entity = MockAssetEntity();
@@ -1306,16 +1539,20 @@ void main() {
         mockAppSettingsService,
         mockAssetMediaRepository,
         leasePort: leases,
+        operationLifetime: _OperationLifetime(currentIdentity, const {}),
         validateBinding: (_, _) => binding,
         reconcileOwnedSuccess: (_) async => true,
       );
       addTearDown(ownedService.dispose);
 
-      final update = _completeLivePhotoUpdate();
+      final update = _completeLivePhotoUpdate(operationIncarnation: oldIdentity);
       await ownedService.handleOwnedStatusForTest(update);
       await ownedService.handleOwnedStatusForTest(update);
 
-      verify(() => mockUploadRepository.enqueueBackgroundAll(any())).called(1);
+      final queued =
+          verify(() => mockUploadRepository.enqueueBackgroundAll(captureAny())).captured.single as List<UploadTask>;
+      expect(UploadTaskMetadata.fromJson(queued.single.metaData).operationIncarnation, currentIdentity);
+      expect(leases.reservedIncarnations, [currentIdentity]);
       verify(() => mockLocalAssetRepository.getById(LocalAssetStub.image1.id)).called(1);
     });
 
@@ -1723,6 +1960,106 @@ void main() {
       verify(() => mockUploadRepository.enqueueBackgroundAll(any())).called(1);
     });
 
+    test('retired engine orphan automatically reselects and invokes the uploader without a tap', () async {
+      const retiredIdentity = 'ios-engine-v1:123e4567-e89b-12d3-a456-426614174000:1';
+      const currentIdentity = 'ios-engine-v1:123e4567-e89b-12d3-a456-426614174000:2';
+      final directory = await Directory.systemTemp.createTemp('immich-retired-engine-');
+      addTearDown(() => directory.delete(recursive: true));
+      final file = File('${directory.path}/backup.sqlite');
+      final seed = MediumRepositoryContext.file(file);
+      final user = await seed.newUser(id: 'user-a');
+      final album = await seed.newLocalAlbum(backupSelection: BackupSelection.selected);
+      final asset = await seed.newLocalAsset();
+      await seed.newLocalAlbumAsset(albumId: album.id, assetId: asset.id);
+      final binding = _binding();
+      final candidateKey = BackupCandidateKey.fromLocalIdentity(deviceId: 'test-device', localAssetId: asset.id).value;
+      const oldClaim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'retired-engine-enqueue');
+      final oldLease = BackupExecutionLease(
+        mode: BackupExecutionMode.background,
+        runToken: 'old-run',
+        bindingDigest: binding.digest,
+        expiresAt: DateTime.now().add(const Duration(minutes: 2)),
+        activityRevision: 0,
+        callbacksInFlight: 0,
+        enqueueClaims: {oldClaim},
+        candidateKeys: {oldClaim: candidateKey},
+        enqueueIncarnations: {oldClaim: retiredIdentity},
+      );
+      await DriftBackupEnablementRepository(seed.db).initialize(true);
+      expect(await DriftBackupExecutionLeaseRepository(seed.db).acquire(oldLease, DateTime.now()), isTrue);
+      await seed.dispose();
+
+      final db = Drift(DatabaseConnection(NativeDatabase(file), closeStreamsSynchronously: true));
+      addTearDown(db.close);
+      final candidates = DriftBackupRepository(db);
+      final leases = DriftBackupExecutionLeaseRepository(db);
+      final fence = BackupCallbackFence();
+      final arbiter = BackupExecutionArbiter(
+        leases: leases,
+        tasks: const _EmptyRegistry(),
+        callbackFence: fence,
+        tokenFactory: () => 'new-run',
+      );
+      late final EagerBackupCoordinator coordinator;
+      when(() => mockUploadRepository.snapshot(BackupExecutionArbiter.groups)).thenAnswer((_) async => const []);
+      when(() => mockUploadRepository.enqueueBackgroundAll(any())).thenAnswer((_) async => [true]);
+      final service = BackgroundUploadService(
+        mockUploadRepository,
+        mockStorageRepository,
+        mockLocalAssetRepository,
+        candidates,
+        mockAppSettingsService,
+        mockAssetMediaRepository,
+        leasePort: leases,
+        arbiter: arbiter,
+        callbackFence: fence,
+        operationLifetime: _OperationLifetime(currentIdentity, {retiredIdentity: BackupOperationState.retired}),
+        onOrphanRecovered: () => coordinator.signal(EagerBackupTrigger.workloadChanged),
+      );
+      addTearDown(service.dispose);
+      final operations = _PersistedCandidateRetryOperations(
+        binding: binding,
+        userId: user.id,
+        localAssetId: asset.id,
+        candidateKey: candidateKey,
+        candidates: candidates,
+        leases: leases,
+        arbiter: arbiter,
+        service: service,
+      );
+      coordinator = EagerBackupCoordinator(operations: operations)
+        ..setEnabled(true)
+        ..setForeground(true)
+        ..setTransport(
+          const BackupTransportSnapshot(
+            available: true,
+            capabilities: {BackupNetworkCapability.wifi},
+            monitorEpoch: 1,
+            revision: 3,
+          ),
+        )
+        ..setServerProofAvailable(true);
+      addTearDown(coordinator.dispose);
+
+      await pumpEventQueue();
+      verifyNever(() => mockUploadRepository.enqueueBackgroundAll(any()));
+      expect(
+        await service.resumeOwned(EagerBackgroundUploadOwner.fromLease(oldLease)),
+        EagerBackgroundResumeDisposition.completed,
+      );
+      await operations.queued.future.timeout(const Duration(seconds: 4));
+
+      final current = (await leases.read())!;
+      expect(current.runToken, 'new-run');
+      expect(
+        current.outstandingClaims,
+        contains(const BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'fresh-task')),
+      );
+      final queued =
+          verify(() => mockUploadRepository.enqueueBackgroundAll(captureAny())).captured.single as List<UploadTask>;
+      expect(UploadTaskMetadata.fromJson(queued.single.metaData).operationIncarnation, currentIdentity);
+    });
+
     test('definitively stale binding is quarantined and subsequent edges stay inert', () async {
       final update = _completeOwnedUpdate();
       final claim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: update.task.taskId);
@@ -1971,7 +2308,7 @@ void main() {
   });
 }
 
-TaskStatusUpdate _completeLivePhotoUpdate() {
+TaskStatusUpdate _completeLivePhotoUpdate({String? operationIncarnation}) {
   const ownership = BackupTaskMetadata.current(
     runToken: 'run-token',
     bindingDigest: 'binding-digest',
@@ -1985,6 +2322,7 @@ TaskStatusUpdate _completeLivePhotoUpdate() {
     expectedNativeRevision: 3,
     bindingAuthority: UploadBindingAuthority.fromBinding(_binding()),
     candidateKey: _candidateKey,
+    operationIncarnation: operationIncarnation,
   );
   final task = UploadTask(
     taskId: 'opaque-primary',
@@ -2065,6 +2403,35 @@ BackupTaskMetadata _taskOwnership() => const BackupTaskMetadata.current(
   bindingDigest: 'binding-digest',
   phase: BackupTaskPhase.primary,
 );
+
+UploadTask _ownedUploadTask() => UploadTask(
+  taskId: 'fresh-owned-task',
+  url: 'https://photos.example/api/assets',
+  filename: 'asset.jpg',
+  group: kBackupGroup,
+  metaData: UploadTaskMetadata(
+    localAssetId: 'opaque-local',
+    isLivePhotos: false,
+    livePhotoVideoId: '',
+    ownership: _taskOwnership(),
+    expectedNativeRevision: 3,
+    bindingAuthority: UploadBindingAuthority.fromBinding(_binding()),
+    candidateKey: _candidateKey,
+  ).toJson(),
+);
+
+final class _OperationLifetime implements BackupOperationLifetimePort {
+  _OperationLifetime(this.identity, this.states);
+
+  final String? identity;
+  final Map<String, BackupOperationState> states;
+
+  @override
+  Future<String?> currentIdentity() async => identity;
+
+  @override
+  Future<BackupOperationState> stateOf(String identity) async => states[identity] ?? BackupOperationState.unknown;
+}
 
 BackupExecutionLease _leaseWithClaims(Set<BackupTaskClaim> claims) =>
     _lease().copyWith(callbacksInFlight: 0, outstandingClaims: claims);
@@ -2185,6 +2552,7 @@ class _LeasePort implements BackupExecutionLeasePort {
   BackupExecutionLease? existing;
   final Set<BackupTaskClaim> retiredClaims;
   final List<String> events = [];
+  final List<String?> reservedIncarnations = [];
   int releaseCalls = 0;
   int beginClosingCalls = 0;
   int orphanCallbackReleaseCalls = 0;
@@ -2239,6 +2607,7 @@ class _LeasePort implements BackupExecutionLeasePort {
     String? operationIncarnation,
   }) async {
     if (retiredClaims.contains(claim)) return null;
+    reservedIncarnations.add(operationIncarnation);
     events.add('beginEnqueue');
     final lease = existing ?? _lease().copyWith(callbacksInFlight: 0);
     existing = lease.copyWith(

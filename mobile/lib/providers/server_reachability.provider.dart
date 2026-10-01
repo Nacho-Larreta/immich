@@ -34,6 +34,7 @@ import 'package:immich_mobile/providers/backup/eager_backup_signal.provider.dart
 import 'package:immich_mobile/providers/backup/eager_backup.provider.dart';
 import 'package:immich_mobile/domain/models/eager_backup.model.dart';
 import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
+import 'package:immich_mobile/providers/manual_upload.provider.dart';
 import 'package:immich_mobile/providers/session_mutation.provider.dart';
 import 'package:immich_mobile/infrastructure/repositories/network.repository.dart';
 import 'package:immich_mobile/providers/websocket.provider.dart';
@@ -171,6 +172,7 @@ final reconciliationProvider = Provider<ReconciliationPort>((ref) {
 
 final serverReachabilityCoordinatorProvider = Provider<ServerReachabilityCoordinator>((ref) {
   ref.read(eagerBackupStartupProvider);
+  ref.read(manualUploadStartupProvider);
   final coordinator = ServerReachabilityCoordinator(
     epochs: ref.read(sessionEpochControllerProvider),
     connectivity: ref.read(connectivityMonitorProvider),

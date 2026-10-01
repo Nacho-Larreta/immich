@@ -8,16 +8,22 @@ import 'package:immich_mobile/constants/enums.dart';
 import 'package:immich_mobile/domain/interfaces/share_operation.interface.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/asset_edit.model.dart';
+import 'package:immich_mobile/domain/models/manual_upload_intent.model.dart';
+import 'package:immich_mobile/domain/models/manual_upload_result.model.dart';
 import 'package:immich_mobile/domain/models/share.model.dart';
+import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/services/asset.service.dart';
 import 'package:immich_mobile/domain/services/remote_mutation_guard.dart';
+import 'package:immich_mobile/entities/store.entity.dart';
+import 'package:immich_mobile/extensions/platform_extensions.dart';
 import 'package:immich_mobile/models/download/livephotos_medatada.model.dart';
 import 'package:immich_mobile/providers/asset_viewer/asset_viewer.provider.dart';
 import 'package:immich_mobile/providers/backup/asset_upload_progress.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/asset.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/asset_viewer/asset.provider.dart' show assetExifProvider;
-import 'package:immich_mobile/providers/timeline/multiselect.provider.dart';
+import 'package:immich_mobile/providers/manual_upload.provider.dart';
 import 'package:immich_mobile/providers/server_access.provider.dart';
+import 'package:immich_mobile/providers/timeline/multiselect.provider.dart';
 import 'package:immich_mobile/providers/user.provider.dart';
 import 'package:immich_mobile/providers/websocket.provider.dart';
 import 'package:immich_mobile/routing/router.dart';
@@ -27,18 +33,38 @@ import 'package:immich_mobile/services/foreground_upload.service.dart';
 import 'package:immich_mobile/widgets/asset_grid/delete_dialog.dart';
 import 'package:logging/logging.dart';
 import 'package:openapi/api.dart';
+import 'package:uuid/uuid.dart';
 
 final actionProvider = NotifierProvider<ActionNotifier, void>(ActionNotifier.new, dependencies: [multiSelectProvider]);
+final manualUploadDeviceIdProvider = Provider<String>((_) => Store.get(StoreKey.deviceId));
 
 class ActionResult {
   final int count;
   final bool success;
   final String? error;
+  final int failedCount;
+  final int pendingCount;
+  final int cancelledCount;
+  final int acceptedCount;
+  final List<String> acceptedIntentIds;
+  final List<String> acceptedLocalAssetIds;
 
-  const ActionResult({required this.count, required this.success, this.error});
+  const ActionResult({
+    required this.count,
+    required this.success,
+    this.error,
+    this.failedCount = 0,
+    this.pendingCount = 0,
+    this.cancelledCount = 0,
+    this.acceptedCount = 0,
+    this.acceptedIntentIds = const [],
+    this.acceptedLocalAssetIds = const [],
+  });
 
   @override
-  String toString() => 'ActionResult(count: $count, success: $success, error: $error)';
+  String toString() =>
+      'ActionResult(count: $count, success: $success, failed: $failedCount, pending: $pendingCount, '
+      'cancelled: $cancelledCount, accepted: $acceptedCount, error: $error)';
 }
 
 class ActionNotifier extends Notifier<void> {
@@ -444,53 +470,93 @@ class ActionNotifier extends Notifier<void> {
   }
 
   Future<ActionResult> upload(ActionSource source, {List<LocalAsset>? assets}) async {
-    final assetsToUpload = assets ?? _getAssets(source).whereType<LocalAsset>().toList();
+    final assetsToUpload = List<LocalAsset>.of(assets ?? _getAssets(source).whereType<LocalAsset>());
     if (assetsToUpload.isEmpty) {
       return const ActionResult(count: 0, success: true);
     }
+    if (!CurrentPlatform.isIOS) return _uploadForeground(assetsToUpload);
 
+    try {
+      final destination = ref.read(manualUploadAuthorityProvider).currentDestination();
+      if (destination == null) throw StateError('Manual upload destination unavailable');
+      final deviceId = ref.read(manualUploadDeviceIdProvider);
+      final selectedAt = DateTime.now().toUtc();
+      const uuid = Uuid();
+      final selections = [
+        for (final asset in assetsToUpload)
+          ManualUploadSelection(
+            intentId: uuid.v4(),
+            destination: destination,
+            deviceId: deviceId,
+            localAssetId: asset.id,
+            createdAt: selectedAt,
+          ),
+      ];
+      final accepted = await ref.read(manualUploadSubmissionProvider).submit(selections);
+      final progressNotifier = ref.read(assetUploadProgressProvider.notifier);
+      for (final intent in accepted) {
+        progressNotifier.setProgress(intent.localAssetId, 0);
+      }
+      return ActionResult(
+        count: 0,
+        success: accepted.length == assetsToUpload.length,
+        acceptedCount: accepted.length,
+        acceptedIntentIds: [for (final intent in accepted) intent.id],
+        acceptedLocalAssetIds: [for (final intent in accepted) intent.localAssetId],
+        pendingCount: accepted.length,
+      );
+    } catch (error, stack) {
+      _logger.severe('Failed to persist manual upload selection', error, stack);
+      return ActionResult(count: 0, success: false, pendingCount: assetsToUpload.length, error: error.toString());
+    }
+  }
+
+  Future<ActionResult> _uploadForeground(List<LocalAsset> assets) async {
     try {
       _remoteMutationGuard.requireAllowed();
-    } catch (error, stack) {
-      _logger.severe('Manual upload requires remote mutation access', error, stack);
-      return ActionResult(count: assetsToUpload.length, success: false, error: error.toString());
+    } on Object {
+      return ActionResult(count: 0, success: false, pendingCount: assets.length, error: 'Remote upload unavailable');
     }
-
-    final progressNotifier = ref.read(assetUploadProgressProvider.notifier);
+    final progress = ref.read(assetUploadProgressProvider.notifier);
     final cancelToken = Completer<void>();
     ref.read(manualUploadCancelTokenProvider.notifier).state = cancelToken;
-
-    // Initialize progress for all assets
-    for (final asset in assetsToUpload) {
-      progressNotifier.setProgress(asset.id, 0.0);
+    for (final asset in assets) {
+      progress.setProgress(asset.id, 0);
     }
-
     try {
-      await _foregroundUploadService.uploadManual(
-        assetsToUpload,
+      final uploadResult = await _foregroundUploadService.uploadManual(
+        assets,
         cancelToken: cancelToken,
         callbacks: UploadCallbacks(
           onProgress: (localAssetId, filename, bytes, totalBytes) {
-            final progress = totalBytes > 0 ? bytes / totalBytes : 0.0;
-            progressNotifier.setProgress(localAssetId, progress);
+            progress.setProgress(localAssetId, totalBytes > 0 ? bytes / totalBytes : 0);
           },
-          onSuccess: (localAssetId, remoteAssetId) {
-            progressNotifier.remove(localAssetId);
-          },
-          onError: (localAssetId, errorMessage) {
-            progressNotifier.setError(localAssetId);
-          },
+          onSuccess: (localAssetId, remoteAssetId) => progress.remove(localAssetId),
+          onError: (localAssetId, errorMessage) => progress.setError(localAssetId),
         ),
       );
-      return ActionResult(count: assetsToUpload.length, success: true);
-    } catch (error, stack) {
-      _logger.severe('Failed manually upload assets', error, stack);
-      return ActionResult(count: assetsToUpload.length, success: false, error: error.toString());
+      for (final outcome in uploadResult.outcomes) {
+        switch (outcome.state) {
+          case ManualAssetUploadState.succeeded:
+            progress.remove(outcome.localAssetId);
+          case ManualAssetUploadState.failed:
+            progress.setError(outcome.localAssetId);
+          case ManualAssetUploadState.pending:
+          case ManualAssetUploadState.cancelled:
+            break;
+        }
+      }
+      return ActionResult(
+        count: uploadResult.succeededCount,
+        success: uploadResult.requestedCount == assets.length && uploadResult.allSucceeded,
+        failedCount: uploadResult.failedCount,
+        pendingCount: uploadResult.pendingCount,
+        cancelledCount: uploadResult.cancelledCount,
+      );
+    } on Object {
+      return ActionResult(count: 0, success: false, pendingCount: assets.length, error: 'Manual upload failed');
     } finally {
       ref.read(manualUploadCancelTokenProvider.notifier).state = null;
-      Future.delayed(const Duration(seconds: 2), () {
-        progressNotifier.clear();
-      });
     }
   }
 

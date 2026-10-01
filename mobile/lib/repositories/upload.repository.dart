@@ -17,12 +17,21 @@ import 'package:logging/logging.dart';
 import 'package:http/http.dart';
 import 'package:immich_mobile/utils/debug_print.dart';
 
-final uploadRepositoryProvider = Provider((ref) => UploadRepository());
+final uploadRepositoryProvider = Provider((ref) {
+  final repository = UploadRepository();
+  ref.onDispose(repository.dispose);
+  return repository;
+});
 
 class UploadRepository implements BackupTaskRegistryPort, BackupTaskDrainPort<BackupTaskGroup> {
   final Logger logger = Logger('UploadRepository');
   void Function(TaskStatusUpdate)? onUploadStatus;
   void Function(TaskProgressUpdate)? onTaskProgress;
+  final StreamController<TaskStatusUpdate> _manualStatusController = StreamController.broadcast();
+  final StreamController<TaskProgressUpdate> _manualProgressController = StreamController.broadcast();
+
+  Stream<TaskStatusUpdate> get manualStatusUpdates => _manualStatusController.stream;
+  Stream<TaskProgressUpdate> get manualProgressUpdates => _manualProgressController.stream;
 
   late final BackupTaskRegistryGateway _taskRegistry;
 
@@ -31,23 +40,44 @@ class UploadRepository implements BackupTaskRegistryPort, BackupTaskDrainPort<Ba
       final downloader = FileDownloader();
       downloader.registerCallbacks(
         group: kBackupGroup,
-        taskStatusCallback: (update) => onUploadStatus?.call(update),
-        taskProgressCallback: (update) => onTaskProgress?.call(update),
+        taskStatusCallback: dispatchStatusUpdate,
+        taskProgressCallback: dispatchProgressUpdate,
       );
       downloader.registerCallbacks(
         group: kBackupLivePhotoGroup,
-        taskStatusCallback: (update) => onUploadStatus?.call(update),
-        taskProgressCallback: (update) => onTaskProgress?.call(update),
+        taskStatusCallback: dispatchStatusUpdate,
+        taskProgressCallback: dispatchProgressUpdate,
       );
       downloader.registerCallbacks(
         group: kManualUploadGroup,
-        taskStatusCallback: (update) => onUploadStatus?.call(update),
-        taskProgressCallback: (update) => onTaskProgress?.call(update),
+        taskStatusCallback: dispatchStatusUpdate,
+        taskProgressCallback: dispatchProgressUpdate,
       );
       _taskRegistry = BackgroundDownloaderTaskRegistryAdapter(downloader);
     } else {
       _taskRegistry = taskRegistry;
     }
+  }
+
+  void dispatchStatusUpdate(TaskStatusUpdate update) {
+    if (update.task.group == kManualUploadGroup) {
+      if (!_manualStatusController.isClosed) _manualStatusController.add(update);
+    } else if (update.task.group == kBackupGroup || update.task.group == kBackupLivePhotoGroup) {
+      onUploadStatus?.call(update);
+    }
+  }
+
+  void dispatchProgressUpdate(TaskProgressUpdate update) {
+    if (update.task.group == kManualUploadGroup) {
+      if (!_manualProgressController.isClosed) _manualProgressController.add(update);
+    } else if (update.task.group == kBackupGroup || update.task.group == kBackupLivePhotoGroup) {
+      onTaskProgress?.call(update);
+    }
+  }
+
+  void dispose() {
+    _manualStatusController.close();
+    _manualProgressController.close();
   }
 
   @override

@@ -87,6 +87,11 @@ class MultiSelectNotifier extends Notifier<MultiSelectState> {
     state = state.copyWith(selectedAssets: state.selectedAssets.where((a) => a != asset).toSet());
   }
 
+  void deselectAssets(Iterable<BaseAsset> assets) {
+    final remaining = state.selectedAssets.toSet()..removeAll(assets);
+    state = state.copyWith(selectedAssets: remaining);
+  }
+
   void toggleAssetSelection(BaseAsset asset) {
     if (state.selectedAssets.contains(asset)) {
       deselectAsset(asset);

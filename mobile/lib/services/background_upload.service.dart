@@ -11,6 +11,7 @@ import 'package:immich_mobile/domain/models/asset/asset_metadata.model.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/interfaces/backup_execution.interface.dart';
+import 'package:immich_mobile/domain/interfaces/backup_operation_lifetime.interface.dart';
 import 'package:immich_mobile/domain/interfaces/connectivity_monitor.interface.dart';
 import 'package:immich_mobile/domain/interfaces/eager_backup.interface.dart';
 import 'package:immich_mobile/domain/models/backup_execution_lease.model.dart';
@@ -23,6 +24,8 @@ import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/extensions/platform_extensions.dart';
 import 'package:immich_mobile/infrastructure/repositories/backup.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/backup_enablement.repository.dart';
+import 'package:immich_mobile/infrastructure/adapters/backup/ios_backup_operation_lifetime_adapter.dart';
+import 'package:immich_mobile/infrastructure/adapters/backup/process_backup_operation_lifetime_adapter.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_asset.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/network.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/storage.repository.dart';
@@ -82,6 +85,7 @@ final Provider<BackgroundUploadService> backgroundUploadServiceProvider = Provid
     onReconciliationPending: () => ref.read(eagerBackupSignalProvider).signal(EagerBackupTrigger.reconciliationPending),
     onReconciliationBlocked: () => ref.read(eagerBackupSignalProvider).signal(EagerBackupTrigger.reconciliationBlocked),
     onReconciliationRetired: () => ref.read(eagerBackupSignalProvider).signal(EagerBackupTrigger.workloadChanged),
+    onOrphanRecovered: () => ref.read(eagerBackupSignalProvider).signal(EagerBackupTrigger.workloadChanged),
     reconcileOwnedSuccess: (binding) => ref.read(backgroundSyncProvider).syncRemoteForBinding(binding),
   );
 
@@ -292,6 +296,7 @@ class UploadTaskMetadata {
   final int? expectedNativeRevision;
   final UploadBindingAuthority? bindingAuthority;
   final String? candidateKey;
+  final String? operationIncarnation;
 
   const UploadTaskMetadata({
     required this.localAssetId,
@@ -301,6 +306,7 @@ class UploadTaskMetadata {
     this.expectedNativeRevision,
     this.bindingAuthority,
     this.candidateKey,
+    this.operationIncarnation,
   });
 
   UploadTaskMetadata copyWith({
@@ -308,6 +314,7 @@ class UploadTaskMetadata {
     bool? isLivePhotos,
     String? livePhotoVideoId,
     String? candidateKey,
+    String? operationIncarnation,
   }) {
     return UploadTaskMetadata(
       localAssetId: localAssetId ?? this.localAssetId,
@@ -317,6 +324,7 @@ class UploadTaskMetadata {
       expectedNativeRevision: expectedNativeRevision,
       bindingAuthority: bindingAuthority,
       candidateKey: candidateKey ?? this.candidateKey,
+      operationIncarnation: operationIncarnation ?? this.operationIncarnation,
     );
   }
 
@@ -329,6 +337,7 @@ class UploadTaskMetadata {
       if (expectedNativeRevision != null) 'expectedNativeRevision': expectedNativeRevision,
       if (bindingAuthority != null) 'bindingAuthority': bindingAuthority!.toMap(),
       if (candidateKey != null) 'candidateKey': candidateKey,
+      if (operationIncarnation != null) 'operationIncarnation': operationIncarnation,
     };
   }
 
@@ -344,6 +353,7 @@ class UploadTaskMetadata {
           ? null
           : UploadBindingAuthority.fromMap(map['bindingAuthority'] as Map<String, dynamic>),
       candidateKey: candidateKey == null ? null : BackupCandidateKey.parse(candidateKey).value,
+      operationIncarnation: map['operationIncarnation'] as String?,
     );
   }
 
@@ -365,6 +375,7 @@ class UploadTaskMetadata {
         other.expectedNativeRevision == expectedNativeRevision &&
         other.bindingAuthority == bindingAuthority &&
         other.candidateKey == candidateKey &&
+        other.operationIncarnation == operationIncarnation &&
         other.ownership?.toJson() == ownership?.toJson();
   }
 
@@ -377,6 +388,7 @@ class UploadTaskMetadata {
     expectedNativeRevision,
     bindingAuthority,
     candidateKey,
+    operationIncarnation,
   );
 }
 
@@ -409,7 +421,7 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
     BackupExecutionArbiter? arbiter,
     BackupCallbackFencePort? callbackFence,
     String Function()? taskIdFactory,
-    String? operationIncarnation,
+    BackupOperationLifetimePort? operationLifetime,
     BackupRunBinding? Function(UploadTaskMetadata metadata, Task task)? validateBinding,
     BackupRunBindingResolution Function(UploadTaskMetadata metadata, Task task)? resolveBinding,
     Future<bool> Function(BackupRunBinding binding)? canContinueOwnedUpload,
@@ -417,6 +429,7 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
     void Function()? onReconciliationPending,
     void Function()? onReconciliationBlocked,
     void Function()? onReconciliationRetired,
+    void Function()? onOrphanRecovered,
     Future<bool> Function(BackupRunBinding binding)? reconcileOwnedSuccess,
     Future<void> Function(Duration delay)? reconciliationDelay,
     Future<void> Function(Duration delay)? completedTaskRecheckDelay,
@@ -424,7 +437,11 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
        _arbiter = arbiter,
        _callbackFence = callbackFence ?? BackupCallbackFence(),
        _taskIdFactory = taskIdFactory ?? _opaqueTaskId,
-       _operationIncarnation = operationIncarnation ?? 'pid:$pid',
+       _operationLifetime =
+           operationLifetime ??
+           (CurrentPlatform.isIOS
+               ? const IosBackupOperationLifetimeAdapter()
+               : ProcessBackupOperationLifetimeAdapter()),
        _resolveBinding =
            resolveBinding ??
            ((metadata, task) {
@@ -439,6 +456,7 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
        _onReconciliationPending = onReconciliationPending,
        _onReconciliationBlocked = onReconciliationBlocked,
        _onReconciliationRetired = onReconciliationRetired,
+       _onOrphanRecovered = onOrphanRecovered,
        _reconcileOwnedSuccess = reconcileOwnedSuccess ?? ((_) async => true) {
     _reconciliationDelay = reconciliationDelay ?? Future<void>.delayed;
     _completedTaskRecheckDelay = completedTaskRecheckDelay ?? Future<void>.delayed;
@@ -456,7 +474,7 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
   final BackupExecutionArbiter? _arbiter;
   final BackupCallbackFencePort _callbackFence;
   final String Function() _taskIdFactory;
-  final String _operationIncarnation;
+  final BackupOperationLifetimePort _operationLifetime;
   final BackupRunBindingResolution Function(UploadTaskMetadata metadata, Task task) _resolveBinding;
   final Future<bool> Function(BackupRunBinding binding) _canContinueOwnedUpload;
   final bool _requiresConnectivityGate;
@@ -464,6 +482,7 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
   final void Function()? _onReconciliationPending;
   final void Function()? _onReconciliationBlocked;
   final void Function()? _onReconciliationRetired;
+  final void Function()? _onOrphanRecovered;
   final Future<bool> Function(BackupRunBinding binding) _reconcileOwnedSuccess;
   late final Future<void> Function(Duration delay) _reconciliationDelay;
   late final Future<void> Function(Duration delay) _completedTaskRecheckDelay;
@@ -621,17 +640,21 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
       var current = await _leasePort?.read();
       final candidateKey = current?.candidateKeys[claim];
       final claimedBy = current?.enqueueIncarnations[claim];
+      final currentIdentity = await _operationLifetime.currentIdentity();
       if (current == null ||
           !_isOwner(current, owner) ||
           !current.enqueueClaims.contains(claim) ||
           current.callbackClaims.contains(claim) ||
           claimedBy == null ||
-          claimedBy == _operationIncarnation ||
+          currentIdentity == null ||
+          claimedBy == currentIdentity ||
           candidateKey == null) {
         continue;
       }
+      if (await _operationLifetime.stateOf(claimedBy) != BackupOperationState.retired) continue;
       final permit = recoveryFence.tryBeginOrphanRecovery(runToken: owner.runToken, bindingDigest: owner.bindingDigest);
       if (permit == null) continue;
+      var recoveredClaim = false;
       try {
         final finalTasks = await _uploadRepository.snapshot(BackupExecutionArbiter.groups);
         if (_containsTaskClaim(finalTasks, claim)) continue;
@@ -645,12 +668,13 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
           continue;
         }
         final recovered = await _leasePort?.releaseProvenOrphanedEnqueueExact(expected: current, claim: claim);
-        if (recovered != null) {
-          await _arbiter?.releaseCurrentWhenQuiescent(runToken: owner.runToken, bindingDigest: owner.bindingDigest);
-        }
+        recoveredClaim = recovered != null;
       } finally {
         recoveryFence.endOrphanRecovery(permit);
       }
+      if (!recoveredClaim) continue;
+      await _arbiter?.releaseCurrentWhenQuiescent(runToken: owner.runToken, bindingDigest: owner.bindingDigest);
+      _onOrphanRecovered?.call();
     }
   }
 
@@ -660,8 +684,10 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
     if (lease == null || !_isOwner(lease, owner) || !owner.claims.contains(claim)) return false;
     if (!lease.callbackClaims.contains(claim)) return true;
     final claimedBy = lease.callbackIncarnations[claim];
-    if (claimedBy == _operationIncarnation) return false;
+    final currentIdentity = await _operationLifetime.currentIdentity();
+    if (claimedBy == null || currentIdentity == null || claimedBy == currentIdentity) return false;
     if (!_isTerminal(update.status)) return false;
+    if (await _operationLifetime.stateOf(claimedBy) != BackupOperationState.retired) return false;
     final recoveryFence = _callbackFence;
     if (recoveryFence is! BackupOrphanRecoveryFencePort) return false;
     final permit = recoveryFence.tryBeginOrphanRecovery(runToken: owner.runToken, bindingDigest: owner.bindingDigest);
@@ -862,10 +888,11 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
     final results = <bool>[];
     for (final task in tasks) {
       final taskMetadata = _ownedMetadata(task);
-      if (taskMetadata?.ownership?.toJson() != ownership.toJson() ||
-          taskMetadata?.expectedNativeRevision == null ||
-          taskMetadata?.bindingAuthority == null ||
-          taskMetadata?.candidateKey == null) {
+      if (taskMetadata == null ||
+          taskMetadata.ownership?.toJson() != ownership.toJson() ||
+          taskMetadata.expectedNativeRevision == null ||
+          taskMetadata.bindingAuthority == null ||
+          taskMetadata.candidateKey == null) {
         results.add(false);
         continue;
       }
@@ -873,7 +900,16 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
         results.add(false);
         continue;
       }
-      final binding = _requiresConnectivityGate ? _resolveBinding(taskMetadata!, task).binding : null;
+      final operationIdentity = await _operationLifetime.currentIdentity();
+      if (operationIdentity == null) {
+        _logger.warning('backup_operation_identity_unavailable');
+        results.add(false);
+        continue;
+      }
+      final admittedTask = task.copyWith(
+        metaData: taskMetadata.copyWith(operationIncarnation: operationIdentity).toJson(),
+      );
+      final binding = _requiresConnectivityGate ? _resolveBinding(taskMetadata, task).binding : null;
       if (_requiresConnectivityGate && (binding == null || !await _canContinueOwnedUpload(binding))) {
         results.add(false);
         continue;
@@ -892,8 +928,8 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
           runToken: ownership.runToken,
           bindingDigest: ownership.bindingDigest,
           claim: taskClaim,
-          candidateKey: taskMetadata!.candidateKey!,
-          operationIncarnation: _operationIncarnation,
+          candidateKey: taskMetadata.candidateKey!,
+          operationIncarnation: operationIdentity,
         );
         if (reservation == null) {
           results.add(false);
@@ -905,7 +941,7 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
             results.add(false);
             continue;
           }
-          final pluginResult = await _uploadRepository.enqueueBackgroundAll([task]);
+          final pluginResult = await _uploadRepository.enqueueBackgroundAll([admittedTask]);
           final enqueued = pluginResult.length == 1 && pluginResult.first;
           if (!enqueued) {
             await _abortEnqueue(ownership, taskClaim);
@@ -972,7 +1008,6 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
   }) async {
     if (!isBindingCurrent()) return;
     if (!await _canContinueOwnedUpload(binding) || !isBindingCurrent()) return;
-    await _storageRepository.clearCache();
     shouldAbortQueuingTasks = false;
 
     if (!await _canContinueOwnedUpload(binding) || !isBindingCurrent()) return;
@@ -1026,7 +1061,6 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
   Future<int> cancel() async {
     shouldAbortQueuingTasks = true;
 
-    await _storageRepository.clearCache();
     final lease = await _leasePort?.read();
     if (lease == null) {
       if (!await _uploadRepository.cancelAndDrain(BackupExecutionArbiter.groups)) {
@@ -1085,16 +1119,6 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
     switch (update.status) {
       case TaskStatus.complete:
         final terminalConfirmed = await _handleLivePhoto(update, metadata, binding);
-
-        if (CurrentPlatform.isIOS) {
-          try {
-            final path = await update.task.filePath();
-            await File(path).delete();
-          } on Object {
-            _logger.warning('backup_callback_cleanup_failed');
-          }
-        }
-
         return terminalConfirmed;
 
       default:
@@ -1159,11 +1183,13 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
     BackupRunBinding? pendingReconciliation;
     BackupRunBinding? validatedBinding;
     try {
+      final operationIdentity = await _operationLifetime.currentIdentity();
+      if (operationIdentity == null) return;
       final claim = await _leasePort?.beginCallbackForTask(
         runToken: ownership.runToken,
         bindingDigest: ownership.bindingDigest,
         claim: taskClaim,
-        operationIncarnation: _operationIncarnation,
+        operationIncarnation: operationIdentity,
       );
       if (claim == null) return;
       callbackClaimed = true;

@@ -8,6 +8,7 @@ import 'package:immich_mobile/providers/backup/drift_backup.provider.dart';
 import 'package:immich_mobile/providers/backup/eager_backup.provider.dart';
 import 'package:immich_mobile/providers/gallery_permission.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
+import 'package:immich_mobile/providers/manual_upload.provider.dart';
 import 'package:immich_mobile/providers/notification_permission.provider.dart';
 import 'package:immich_mobile/providers/server_reachability.provider.dart';
 import 'package:immich_mobile/providers/session_work.provider.dart';
@@ -69,6 +70,7 @@ class AppLifeCycleNotifier extends StateNotifier<AppLifeCycleEnum> {
     _wasPaused = false;
 
     await _sessionWork.resume(fullLocalSync: CurrentPlatform.isAndroid);
+    if (CurrentPlatform.isIOS) _ref.read(manualUploadResumeSignalProvider).add(null);
 
     await _ref.read(notificationPermissionProvider.notifier).getNotificationPermission();
 

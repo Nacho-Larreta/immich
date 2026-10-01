@@ -59,7 +59,9 @@ public class BDPlugin: NSObject, FlutterPlugin, UNUserNotificationCenterDelegate
     
     public static func register(with registrar: FlutterPluginRegistrar) {
         let channel = FlutterMethodChannel(name: "com.bbflight.background_downloader", binaryMessenger: registrar.messenger())
-        registrar.addMethodCallDelegate(instance, channel: channel)
+        let engineDelegate = BackupEngineMethodDelegate()
+        registrar.addMethodCallDelegate(engineDelegate, channel: channel)
+        registrar.publish(engineDelegate)
         let callbackChannel = FlutterMethodChannel(name: "com.bbflight.background_downloader.callbacks", binaryMessenger: registrar.messenger())
         registrar.addApplicationDelegate(instance)
         if (backgroundChannel == nil) {
@@ -82,15 +84,19 @@ public class BDPlugin: NSObject, FlutterPlugin, UNUserNotificationCenterDelegate
     
     /// Handler for Flutter plugin method channel calls
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        handle(call, originIdentity: nil, result: result)
+    }
+
+    func handle(_ call: FlutterMethodCall, originIdentity: String?, result: @escaping FlutterResult) {
         _Concurrency.Task { @MainActor () -> Void in
             // to allow async/await
             switch call.method {
             case "reset":
                 await methodReset(call: call, result: result)
             case "enqueue":
-                await methodEnqueue(call: call, result: result)
+                await methodEnqueue(call: call, originIdentity: originIdentity, result: result)
             case "enqueueAll":
-                await methodEnqueueAll(call: call, result: result)
+                methodEnqueueAll(call: call, originIdentity: originIdentity, result: result)
             case "allTasks":
                 await methodAllTasks(call: call, result: result)
             case "cancelTasksWithIds":
@@ -165,15 +171,21 @@ public class BDPlugin: NSObject, FlutterPlugin, UNUserNotificationCenterDelegate
     /// Enqueues one task
     ///
     /// Returns true if successful
-    private func methodEnqueue(call: FlutterMethodCall, result: @escaping FlutterResult) async {
+    private func methodEnqueue(call: FlutterMethodCall, originIdentity: String?, result: @escaping FlutterResult) async {
         let args = call.arguments as! [Any]
         let taskJsonString = args[0] as! String
+        guard let task = taskFrom(jsonString: taskJsonString),
+              BackupTaskEngineGate.shared.acceptsOrigin(originIdentity, group: task.group, metadata: task.metaData) else {
+            postResult(result: result, value: false)
+            return
+        }
         let notificationConfigJsonString = args[1] as? String
         let isResume = args.count == 5
         let resumeDataAsBase64String = isResume
         ? args[2] as? String ?? ""
         : ""
-        if BDPlugin.holdingQueue == nil {
+        let holdingQueue = BDPlugin.holdingQueue
+        if holdingQueue == nil {
             postResult(result: result, value: await doEnqueue(taskJsonString: taskJsonString, notificationConfigJsonString: notificationConfigJsonString, resumeDataAsBase64String: resumeDataAsBase64String))
         } else {
             // add entry for HoldingQueue, after checks
@@ -190,7 +202,11 @@ public class BDPlugin: NSObject, FlutterPlugin, UNUserNotificationCenterDelegate
                 return
             }
             os_log("Enqueueing task with id %@ to the HoldingQueue", log: log, type: .info, task.taskId)
-            await BDPlugin.holdingQueue?.add(item: EnqueueItem(task: task, notificationConfigJsonString: notificationConfigJsonString, resumeDataAsBase64String: resumeDataAsBase64String))
+            guard let admission = BackupTaskEngineGate.shared.begin(taskId: task.taskId, group: task.group, metadata: task.metaData) else {
+                postResult(result: result, value: false)
+                return
+            }
+            await holdingQueue?.add(item: EnqueueItem(task: task, notificationConfigJsonString: notificationConfigJsonString, resumeDataAsBase64String: resumeDataAsBase64String, nativeAdmission: admission))
             processStatusUpdate(task: task, status: .enqueued)
             postResult(result: result, value: true)
         }
@@ -199,7 +215,7 @@ public class BDPlugin: NSObject, FlutterPlugin, UNUserNotificationCenterDelegate
     /// Enqueues a list of tasks
         ///
         /// Returns a list of equal length of booleans indicating whether each individual enqueue succeeded
-        private func methodEnqueueAll(call: FlutterMethodCall, result: @escaping FlutterResult) {
+        private func methodEnqueueAll(call: FlutterMethodCall, originIdentity: String?, result: @escaping FlutterResult) {
             guard let args = call.arguments as? [Any],
                   let taskListJsonString = args[0] as? String,
                   let notificationConfigListJsonString = args[1] as? String,
@@ -212,6 +228,10 @@ public class BDPlugin: NSObject, FlutterPlugin, UNUserNotificationCenterDelegate
             _Concurrency.Task.detached { // Run the loop off the main thread
                 var results: [Bool] = []
                 for (index, task) in tasks.enumerated() {
+                    guard BackupTaskEngineGate.shared.acceptsOrigin(originIdentity, group: task.group, metadata: task.metaData) else {
+                        results.append(false)
+                        continue
+                    }
                     let notificationConfig = notificationConfigs.indices.contains(index) ? notificationConfigs[index] : nil
                     let notificationConfigJsonString = notificationConfig != nil ? try? String(data: JSONEncoder().encode(notificationConfig), encoding: .utf8) : nil
                     guard let taskJsonString = jsonStringFor(task: task) else {
@@ -219,7 +239,8 @@ public class BDPlugin: NSObject, FlutterPlugin, UNUserNotificationCenterDelegate
                         results.append(false)
                         continue
                     }
-                    if BDPlugin.holdingQueue == nil {
+                    let holdingQueue = BDPlugin.holdingQueue
+                    if holdingQueue == nil {
                         // Enqueue directly using doEnqueue
                         let success = await self.doEnqueue(taskJsonString: taskJsonString, notificationConfigJsonString: notificationConfigJsonString, resumeDataAsBase64String: "")
                         results.append(success)
@@ -231,7 +252,11 @@ public class BDPlugin: NSObject, FlutterPlugin, UNUserNotificationCenterDelegate
                             continue
                         }
                         os_log("Enqueueing task with id %@ to the HoldingQueue", log: log, type: .info, task.taskId)
-                        await BDPlugin.holdingQueue?.add(item: EnqueueItem(task: task, notificationConfigJsonString: notificationConfigJsonString, resumeDataAsBase64String: ""))
+                        guard let admission = BackupTaskEngineGate.shared.begin(taskId: task.taskId, group: task.group, metadata: task.metaData) else {
+                            results.append(false)
+                            continue
+                        }
+                        await holdingQueue?.add(item: EnqueueItem(task: task, notificationConfigJsonString: notificationConfigJsonString, resumeDataAsBase64String: "", nativeAdmission: admission))
                         processStatusUpdate(task: task, status: .enqueued)
                         results.append(true)
                     }
@@ -246,14 +271,24 @@ public class BDPlugin: NSObject, FlutterPlugin, UNUserNotificationCenterDelegate
     
     /// Do the actual enqueue as a URLSessionTask
     public func doEnqueue(taskJsonString: String, notificationConfigJsonString: String?, resumeDataAsBase64String: String) async -> Bool {
+        await doEnqueue(taskJsonString: taskJsonString, notificationConfigJsonString: notificationConfigJsonString, resumeDataAsBase64String: resumeDataAsBase64String, nativeAdmission: nil)
+    }
+
+    func doEnqueue(taskJsonString: String, notificationConfigJsonString: String?, resumeDataAsBase64String: String, nativeAdmission: BackupTaskNativeAdmission?) async -> Bool {
         let taskDescription = notificationConfigJsonString == nil ? taskJsonString : taskJsonString + separatorString + notificationConfigJsonString!
         var isResume = !resumeDataAsBase64String.isEmpty
         let resumeData = isResume ? Data(base64Encoded: resumeDataAsBase64String) : nil
         guard let task = taskFrom(jsonString: taskJsonString)
         else {
+            nativeAdmission?.finish()
             os_log("Could not decode %@ to Task", log: log, taskJsonString)
             return false
         }
+        guard let admission = nativeAdmission ?? BackupTaskEngineGate.shared.begin(taskId: task.taskId, group: task.group, metadata: task.metaData) else {
+            return false
+        }
+        guard admission.start(taskId: task.taskId, group: task.group, metadata: task.metaData) else { return false }
+        defer { admission.finish() }
         // Check if the file should be skipped
         if !isResume {
             let skipThreshold = UserDefaults.standard.object(forKey: BDPlugin.keyConfigSkipExistingFiles) as? Int ?? -1

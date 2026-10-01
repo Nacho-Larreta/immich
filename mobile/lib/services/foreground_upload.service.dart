@@ -11,6 +11,7 @@ import 'package:immich_mobile/domain/models/backup_candidate_key.model.dart';
 import 'package:immich_mobile/domain/models/backup_execution_lease.model.dart';
 import 'package:immich_mobile/domain/models/backup_run_binding.model.dart';
 import 'package:immich_mobile/domain/models/eager_backup.model.dart';
+import 'package:immich_mobile/domain/models/manual_upload_result.model.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/extensions/platform_extensions.dart';
@@ -149,15 +150,17 @@ class ForegroundUploadService {
           final requireWifi = _shouldRequireWiFi(asset);
           return requireWifi && !hasWifi;
         },
-        processItem: (asset) => _uploadSingleAsset(
-          asset,
-          cancelToken,
-          callbacks: callbacks,
-          binding: binding,
-          executionLease: executionLease,
-          isBindingCurrent: current,
-          onDenied: denyWorker,
-        ),
+        processItem: (asset) async {
+          await _uploadSingleAsset(
+            asset,
+            cancelToken,
+            callbacks: callbacks,
+            binding: binding,
+            executionLease: executionLease,
+            isBindingCurrent: current,
+            onDenied: denyWorker,
+          );
+        },
       );
     }
     final denial = workerDenial;
@@ -185,7 +188,6 @@ class ForegroundUploadService {
       onDenied(storageDenial);
       return;
     }
-    await _storageRepository.clearCache();
     shouldAbortUpload = false;
 
     for (final asset in items) {
@@ -212,20 +214,30 @@ class ForegroundUploadService {
   }
 
   /// Manually upload picked local assets
-  Future<void> uploadManual(
+  Future<ManualUploadResult> uploadManual(
     List<LocalAsset> localAssets, {
     Completer<void>? cancelToken,
     UploadCallbacks callbacks = const UploadCallbacks(),
   }) async {
     if (localAssets.isEmpty) {
-      return;
+      return const ManualUploadResult([]);
     }
 
-    await _executeWithWorkerPool<LocalAsset>(
-      items: localAssets,
+    final outcomes = List<ManualAssetUploadOutcome?>.filled(localAssets.length, null);
+    await _executeWithWorkerPool<(int, LocalAsset)>(
+      items: localAssets.indexed.toList(growable: false),
       cancelToken: cancelToken,
-      processItem: (asset) => _uploadSingleAsset(asset, cancelToken, callbacks: callbacks),
+      processItem: (item) async {
+        outcomes[item.$1] = await _uploadSingleAsset(item.$2, cancelToken, callbacks: callbacks);
+      },
     );
+    final unstartedState = cancelToken?.isCompleted == true
+        ? ManualAssetUploadState.cancelled
+        : ManualAssetUploadState.pending;
+    return ManualUploadResult([
+      for (var index = 0; index < localAssets.length; index++)
+        outcomes[index] ?? ManualAssetUploadOutcome(localAssetId: localAssets[index].id, state: unstartedState),
+    ]);
   }
 
   /// Upload files from shared intent
@@ -281,7 +293,6 @@ class ForegroundUploadService {
     int concurrentWorkers = 3,
   }) async {
     if (beforeStorage != null && !await beforeStorage()) return;
-    await _storageRepository.clearCache();
     shouldAbortUpload = false;
 
     int currentIndex = 0;
@@ -316,7 +327,7 @@ class ForegroundUploadService {
     await Future.wait(workerFutures);
   }
 
-  Future<void> _uploadSingleAsset(
+  Future<ManualAssetUploadOutcome> _uploadSingleAsset(
     LocalAsset asset,
     Completer<void>? cancelToken, {
     required UploadCallbacks callbacks,
@@ -327,6 +338,23 @@ class ForegroundUploadService {
   }) async {
     File? file;
     File? livePhotoFile;
+    String? livePhotoVideoId;
+
+    ManualAssetUploadOutcome interrupted() => ManualAssetUploadOutcome(
+      localAssetId: asset.id,
+      state: cancelToken?.isCompleted == true ? ManualAssetUploadState.cancelled : ManualAssetUploadState.pending,
+      motionRemoteId: livePhotoVideoId,
+    );
+
+    ManualAssetUploadOutcome failed(String message) {
+      callbacks.onError?.call(asset.localId!, message);
+      return ManualAssetUploadOutcome(
+        localAssetId: asset.id,
+        state: ManualAssetUploadState.failed,
+        motionRemoteId: livePhotoVideoId,
+        errorMessage: message,
+      );
+    }
 
     try {
       Future<bool> gate(ForegroundUploadGateStage stage) async {
@@ -336,21 +364,19 @@ class ForegroundUploadService {
         return false;
       }
 
-      if (!await gate(ForegroundUploadGateStage.preReservation)) return;
+      if (!await gate(ForegroundUploadGateStage.preReservation)) return interrupted();
       final candidateKey = binding == null ? null : _candidateKeyForAsset(asset);
-      if (!await _autoCandidateAllowed(executionLease, candidateKey)) return;
-      if (!await gate(ForegroundUploadGateStage.preFile)) return;
+      if (!await _autoCandidateAllowed(executionLease, candidateKey)) return interrupted();
+      if (!await gate(ForegroundUploadGateStage.preFile)) return interrupted();
       final entity = await _storageRepository.getAssetEntityForAsset(asset);
-      if (!await gate(ForegroundUploadGateStage.preFile)) return;
+      if (!await gate(ForegroundUploadGateStage.preFile)) return interrupted();
       if (entity == null) {
-        callbacks.onError?.call(
-          asset.localId!,
+        return failed(
           CurrentPlatform.isAndroid ? "asset_not_found_on_device_android".t() : "asset_not_found_on_device_ios".t(),
         );
-        return;
       }
 
-      if (!await gate(ForegroundUploadGateStage.preFile)) return;
+      if (!await gate(ForegroundUploadGateStage.preFile)) return interrupted();
       final isAvailableLocally = await _storageRepository.isAssetAvailableLocally(asset.id);
 
       if (!isAvailableLocally && CurrentPlatform.isIOS) {
@@ -366,10 +392,10 @@ class ForegroundUploadService {
         });
 
         try {
-          if (!await gate(ForegroundUploadGateStage.preFile)) return;
+          if (!await gate(ForegroundUploadGateStage.preFile)) return interrupted();
           file = await _storageRepository.loadFileFromCloud(asset.id, progressHandler: progressHandler);
           if (entity.isLivePhoto) {
-            if (!await gate(ForegroundUploadGateStage.preFile)) return;
+            if (!await gate(ForegroundUploadGateStage.preFile)) return interrupted();
             livePhotoFile = await _storageRepository.loadMotionFileFromCloud(
               asset.id,
               progressHandler: progressHandler,
@@ -380,38 +406,35 @@ class ForegroundUploadService {
         }
       } else {
         // Get files locally
-        if (!await gate(ForegroundUploadGateStage.preFile)) return;
+        if (!await gate(ForegroundUploadGateStage.preFile)) return interrupted();
         file = await _storageRepository.getFileForAsset(asset.id);
         if (file == null) {
           _logger.warning('foreground_upload_file_unavailable');
-          callbacks.onError?.call(
-            asset.localId!,
+          return failed(
             CurrentPlatform.isAndroid ? "asset_not_found_on_device_android".t() : "asset_not_found_on_device_ios".t(),
           );
-          return;
         }
 
         // For live photos, get the motion video file
         if (entity.isLivePhoto) {
-          if (!await gate(ForegroundUploadGateStage.preFile)) return;
+          if (!await gate(ForegroundUploadGateStage.preFile)) return interrupted();
           livePhotoFile = await _storageRepository.getMotionFileForAsset(asset);
-          if (livePhotoFile == null) {
-            _logger.warning('foreground_upload_live_photo_part_unavailable');
-            callbacks.onError?.call(
-              asset.localId!,
-              CurrentPlatform.isAndroid ? "asset_not_found_on_device_android".t() : "asset_not_found_on_device_ios".t(),
-            );
-          }
         }
       }
 
       if (file == null) {
         _logger.warning('foreground_upload_cloud_file_unavailable');
-        callbacks.onError?.call(asset.localId!, "asset_not_found_on_icloud".t());
-        return;
+        return failed("asset_not_found_on_icloud".t());
+      }
+      if (entity.isLivePhoto && livePhotoFile == null) {
+        _logger.warning('foreground_upload_live_photo_part_unavailable');
+        if (!isAvailableLocally && CurrentPlatform.isIOS) return failed("asset_not_found_on_icloud".t());
+        return failed(
+          CurrentPlatform.isAndroid ? "asset_not_found_on_device_android".t() : "asset_not_found_on_device_ios".t(),
+        );
       }
 
-      if (!await gate(ForegroundUploadGateStage.preFile)) return;
+      if (!await gate(ForegroundUploadGateStage.preFile)) return interrupted();
       String fileName = await _assetMediaRepository.getOriginalFilename(asset.id) ?? asset.name;
 
       /// Handle special file name from DJI or Fusion app
@@ -435,11 +458,10 @@ class ForegroundUploadService {
       };
 
       // Upload live photo video first if available
-      String? livePhotoVideoId;
       if (entity.isLivePhoto && livePhotoFile != null) {
-        if (!await gate(ForegroundUploadGateStage.preReservation)) return;
-        if (!await _autoCandidateAllowed(executionLease, candidateKey)) return;
-        if (!await gate(ForegroundUploadGateStage.preUpload)) return;
+        if (!await gate(ForegroundUploadGateStage.preReservation)) return interrupted();
+        if (!await _autoCandidateAllowed(executionLease, candidateKey)) return interrupted();
+        if (!await gate(ForegroundUploadGateStage.preUpload)) return interrupted();
         final livePhotoTitle = p.setExtension(originalFileName, p.extension(livePhotoFile.path));
 
         final onProgress = callbacks.onProgress;
@@ -458,6 +480,11 @@ class ForegroundUploadService {
 
         if (livePhotoResult.isSuccess && livePhotoResult.remoteAssetId != null) {
           livePhotoVideoId = livePhotoResult.remoteAssetId;
+        } else if (livePhotoResult.isCancelled || livePhotoResult.isStaleContext) {
+          shouldAbortUpload = true;
+          return interrupted();
+        } else {
+          return failed(livePhotoResult.errorMessage ?? 'Live photo motion upload failed');
         }
       }
 
@@ -482,9 +509,9 @@ class ForegroundUploadService {
       }
 
       final onProgress = callbacks.onProgress;
-      if (!await gate(ForegroundUploadGateStage.preReservation)) return;
-      if (!await _autoCandidateAllowed(executionLease, candidateKey)) return;
-      if (!await gate(ForegroundUploadGateStage.preUpload)) return;
+      if (!await gate(ForegroundUploadGateStage.preReservation)) return interrupted();
+      if (!await _autoCandidateAllowed(executionLease, candidateKey)) return interrupted();
+      if (!await gate(ForegroundUploadGateStage.preUpload)) return interrupted();
       final result = await _uploadRepository.uploadFile(
         file: file,
         originalFileName: originalFileName,
@@ -500,30 +527,26 @@ class ForegroundUploadService {
 
       if (result.isSuccess && result.remoteAssetId != null) {
         callbacks.onSuccess?.call(asset.localId!, result.remoteAssetId!);
+        return ManualAssetUploadOutcome(
+          localAssetId: asset.id,
+          state: ManualAssetUploadState.succeeded,
+          remoteAssetId: result.remoteAssetId,
+          motionRemoteId: livePhotoVideoId,
+        );
       } else if (result.isCancelled || result.isStaleContext) {
         _logger.warning('foreground_upload_cancelled');
         shouldAbortUpload = true;
-      } else if (result.errorMessage != null) {
+        return interrupted();
+      } else {
         _logger.severe('foreground_upload_rejected');
-
-        callbacks.onError?.call(asset.localId!, result.errorMessage!);
-
         if (result.errorMessage == "Quota has been exceeded!") {
           shouldAbortUpload = true;
         }
+        return failed(result.errorMessage ?? 'Upload failed');
       }
     } on Object {
       _logger.severe('foreground_upload_asset_failed');
-      callbacks.onError?.call(asset.localId!, 'Upload failed');
-    } finally {
-      if (Platform.isIOS) {
-        try {
-          await file?.delete();
-          await livePhotoFile?.delete();
-        } on Object {
-          _logger.severe('foreground_upload_cleanup_failed');
-        }
-      }
+      return failed('Upload failed');
     }
   }
 

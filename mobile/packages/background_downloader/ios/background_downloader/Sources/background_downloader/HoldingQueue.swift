@@ -87,6 +87,7 @@ class HoldingQueue {
     func cancelTasksWithIds(_ taskIds: [String]) -> [String] {
         let toRemove = queue.filter( { taskIds.contains($0.task.taskId) } )
         toRemove.forEach { item in
+            item.nativeAdmission?.finish()
             processStatusUpdate(task: item.task, status: .canceled)
             os_log("Canceled task with id %@", log: log, type: .info, item.task.taskId)
         }
@@ -217,7 +218,15 @@ struct EnqueueItem : Comparable {
     let task: Task
     let notificationConfigJsonString: String?
     let resumeDataAsBase64String: String
+    let nativeAdmission: BackupTaskNativeAdmission?
     let created = Date()
+
+    init(task: Task, notificationConfigJsonString: String?, resumeDataAsBase64String: String, nativeAdmission: BackupTaskNativeAdmission? = nil) {
+        self.task = task
+        self.notificationConfigJsonString = notificationConfigJsonString
+        self.resumeDataAsBase64String = resumeDataAsBase64String
+        self.nativeAdmission = nativeAdmission
+    }
     
     // Comparable implementation to sort based on task priority and creation time
     static func < (lhs: EnqueueItem, rhs: EnqueueItem) -> Bool {
@@ -229,7 +238,7 @@ struct EnqueueItem : Comparable {
     }
     
     func enqueue() async {
-        let success = await BDPlugin.instance.doEnqueue(taskJsonString: jsonStringFor(task: task) ?? "", notificationConfigJsonString: notificationConfigJsonString, resumeDataAsBase64String: resumeDataAsBase64String)
+        let success = await BDPlugin.instance.doEnqueue(taskJsonString: jsonStringFor(task: task) ?? "", notificationConfigJsonString: notificationConfigJsonString, resumeDataAsBase64String: resumeDataAsBase64String, nativeAdmission: nativeAdmission)
         if !success {
             os_log("Delayed or retried enqueue failed for taskId %@", log: log, type: .info, task.taskId)
             processStatusUpdate(task: task, status: .failed, taskException: TaskException(type: .general, description: "Delayed or retried enqueue failed"))

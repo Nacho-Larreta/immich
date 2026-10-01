@@ -1,5 +1,6 @@
 import BackgroundTasks
 import Flutter
+import background_downloader
 
 enum BackgroundTaskType { case refresh, processing }
 private let unsafeTerminationCode = "unsafe-to-terminate"
@@ -180,8 +181,11 @@ class BackgroundWorker: BackgroundWorkerBgHostApi {
     }
     
     isComplete = true
+    let backupEngine = engine.valuePublished(byPlugin: "BackgroundDownloaderPlugin") as? BackupEngineMethodDelegate
+    backupEngine?.fenceAdmissions()
     AppDelegate.cancelPlugins(with: engine)
     engine.destroyContext()
+    backupEngine?.engineWasDestroyed()
     flutterApi = nil
     completionHandler(success)
   }

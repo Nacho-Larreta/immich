@@ -184,6 +184,7 @@ void main() {
     );
 
     expect(result.completed, isTrue);
+    verifyNever(storage.clearCache);
     verifyNever(() => storage.getAssetEntityForAsset(LocalAssetStub.image1));
     verifyNoMoreInteractions(uploads);
   });
