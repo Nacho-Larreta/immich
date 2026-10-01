@@ -127,7 +127,7 @@ void main() {
           expect(admission.disposition, BackupAdmissionDisposition.acquired);
           expect(admission.lease?.runToken, 'next-run');
           const retryClaim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'retry-enqueue');
-          final retry = await leases.beginEnqueueUnlessQuarantined(
+          final retry = await leases.reserveEnqueueForCandidate(
             runToken: admission.lease!.runToken,
             bindingDigest: admission.lease!.bindingDigest,
             claim: retryClaim,

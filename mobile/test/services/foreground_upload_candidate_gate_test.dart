@@ -157,7 +157,7 @@ void main() {
       ),
     );
     when(
-      () => gate.allowForegroundCandidateUnlessQuarantined(
+      () => gate.allowForegroundCandidate(
         runToken: lease.runToken,
         bindingDigest: lease.bindingDigest,
         candidateKey: any(named: 'candidateKey'),

@@ -349,7 +349,7 @@ void main() {
     expect(await first.releaseExact(quarantined!), isTrue);
   });
 
-  test('quarantine is an atomic per-candidate enqueue gate across lease restart', () async {
+  test('retired task is fenced but its candidate is admitted after lease restart', () async {
     final now = DateTime.utc(2026, 8, 11, 12);
     const staleClaim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'opaque-stale');
     const retryClaim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'opaque-retry');
@@ -366,25 +366,49 @@ void main() {
       code: BackupReconciliationQuarantineCode.definitivelyStale,
     );
     expect(await first.releaseExact(quarantined!), isTrue);
-    final restarted = _lease('restarted', now);
+    final restarted = _lease('restarted', now).copyWith(
+      foregroundActivityClaims: {
+        ForegroundTransportClaim.current(
+          activityId: 'current-foreground',
+          bindingDigest: 'binding-digest',
+          nativeGeneration: 1,
+          transportIncarnation: 'current-process',
+        ),
+      },
+    );
     expect(await second.acquire(restarted, now), isTrue);
-
     expect(
-      await first.beginEnqueueUnlessQuarantined(
+      await second.allowForegroundCandidate(
         runToken: restarted.runToken,
         bindingDigest: restarted.bindingDigest,
-        claim: retryClaim,
+        candidateKey: staleKey,
+      ),
+      isTrue,
+    );
+
+    expect(
+      await first.reserveEnqueueForCandidate(
+        runToken: restarted.runToken,
+        bindingDigest: restarted.bindingDigest,
+        claim: staleClaim,
         candidateKey: staleKey,
       ),
       isNull,
     );
-    final admitted = await second.beginEnqueueUnlessQuarantined(
+    final admitted = await first.reserveEnqueueForCandidate(
+      runToken: restarted.runToken,
+      bindingDigest: restarted.bindingDigest,
+      claim: retryClaim,
+      candidateKey: staleKey,
+    );
+    expect(admitted?.enqueueClaims, {retryClaim});
+    final another = await second.reserveEnqueueForCandidate(
       runToken: restarted.runToken,
       bindingDigest: restarted.bindingDigest,
       claim: otherClaim,
       candidateKey: otherKey,
     );
-    expect(admitted?.enqueueClaims, {otherClaim});
+    expect(another?.enqueueClaims, {retryClaim, otherClaim});
   });
 
   test('malformed quarantine fails closed for automatic candidate admission', () async {
@@ -398,7 +422,7 @@ void main() {
     );
 
     expect(
-      await first.beginEnqueueUnlessQuarantined(
+      await first.reserveEnqueueForCandidate(
         runToken: lease.runToken,
         bindingDigest: lease.bindingDigest,
         claim: const BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'opaque-task'),

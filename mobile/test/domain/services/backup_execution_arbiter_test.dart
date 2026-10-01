@@ -1075,7 +1075,7 @@ final class _Leases implements BackupExecutionLeasePort {
   }) => throw UnimplementedError();
 
   @override
-  Future<BackupExecutionLease?> beginEnqueueUnlessQuarantined({
+  Future<BackupExecutionLease?> reserveEnqueueForCandidate({
     required String runToken,
     required String bindingDigest,
     required BackupTaskClaim claim,
@@ -1084,7 +1084,7 @@ final class _Leases implements BackupExecutionLeasePort {
   }) => throw UnimplementedError();
 
   @override
-  Future<bool> allowForegroundCandidateUnlessQuarantined({
+  Future<bool> allowForegroundCandidate({
     required String runToken,
     required String bindingDigest,
     required String candidateKey,

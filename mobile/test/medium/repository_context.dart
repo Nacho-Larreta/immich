@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:math';
 
 import 'package:drift/drift.dart';
@@ -26,6 +27,9 @@ class MediumRepositoryContext {
   final Random _random = Random();
 
   MediumRepositoryContext() : db = Drift(DatabaseConnection(NativeDatabase.memory(), closeStreamsSynchronously: true));
+
+  MediumRepositoryContext.file(File file)
+    : db = Drift(DatabaseConnection(NativeDatabase(file), closeStreamsSynchronously: true));
 
   Future<void> dispose() async {
     await db.close();

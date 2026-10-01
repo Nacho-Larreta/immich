@@ -9,8 +9,11 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:background_downloader/background_downloader.dart';
 import 'package:immich_mobile/constants/constants.dart';
+import 'package:immich_mobile/domain/models/album/local_album.model.dart';
 import 'package:immich_mobile/domain/interfaces/backup_execution.interface.dart';
+import 'package:immich_mobile/domain/interfaces/eager_backup.interface.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/domain/models/backup_candidate_key.model.dart';
 import 'package:immich_mobile/domain/models/backup_execution_lease.model.dart';
 import 'package:immich_mobile/domain/models/backup_reconciliation_quarantine.model.dart';
 import 'package:immich_mobile/domain/models/backup_run_binding.model.dart';
@@ -19,10 +22,14 @@ import 'package:immich_mobile/domain/models/eager_backup.model.dart';
 import 'package:immich_mobile/domain/models/server_reachability.model.dart';
 import 'package:immich_mobile/domain/services/backup_callback_fence.dart';
 import 'package:immich_mobile/domain/services/backup_execution_arbiter.dart';
+import 'package:immich_mobile/domain/services/eager_backup_coordinator.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/services/store.service.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/infrastructure/repositories/db.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/backup.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/backup_enablement.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/backup_execution_lease.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/network.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/store.repository.dart';
 import 'package:immich_mobile/infrastructure/adapters/backup/background_downloader_task_registry_adapter.dart';
@@ -36,9 +43,9 @@ import '../fixtures/asset.stub.dart';
 import '../infrastructure/repository.mock.dart';
 import '../mocks/asset_entity.mock.dart';
 import '../repository.mocks.dart';
+import '../medium/repository_context.dart';
 
 const _candidateKey = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-const _otherCandidateKey = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
 void main() {
   late BackgroundUploadService sut;
@@ -1169,13 +1176,14 @@ void main() {
       verifyNever(() => mockUploadRepository.enqueueBackgroundAll(any()));
     });
 
-    test('owned enqueue skips quarantined candidate and admits another candidate', () async {
+    test('owned enqueue skips retired task but admits a fresh task for the same candidate', () async {
       const ownership = BackupTaskMetadata.current(
         runToken: 'run-token',
         bindingDigest: 'binding-digest',
         phase: BackupTaskPhase.primary,
       );
-      final leases = _LeasePort(quarantinedCandidateKeys: {_candidateKey});
+      const retiredClaim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'opaque-quarantined');
+      final leases = _LeasePort(retiredClaims: {retiredClaim});
       final ownedService = BackgroundUploadService(
         mockUploadRepository,
         mockStorageRepository,
@@ -1206,7 +1214,7 @@ void main() {
 
       final result = await ownedService.enqueueTasks([
         task('opaque-quarantined', _candidateKey),
-        task('opaque-admitted', _otherCandidateKey),
+        task('opaque-admitted', _candidateKey),
       ], ownership: ownership);
 
       expect(result, [false, true]);
@@ -1423,7 +1431,7 @@ void main() {
       verifyNever(() => mockUploadRepository.enqueueBackgroundAll(any()));
     });
 
-    test('restart blocks without reupload when the completed task record is unavailable', () async {
+    test('missing completed task retires its attempt without reporting upload success', () async {
       final update = _completeOwnedUpdate();
       final claim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: update.task.taskId);
       final leases = _LeasePort(
@@ -1434,6 +1442,8 @@ void main() {
         ),
       );
       var blocked = false;
+      var retired = 0;
+      var terminal = false;
       when(() => mockUploadRepository.completedTask(claim)).thenAnswer((_) async => null);
       final ownedService = BackgroundUploadService(
         mockUploadRepository,
@@ -1447,12 +1457,17 @@ void main() {
           fail('A missing completed task must not attempt reconciliation');
         },
         onReconciliationBlocked: () => blocked = true,
+        onReconciliationRetired: () => retired++,
+        onOwnedTerminal: (_) => terminal = true,
+        completedTaskRecheckDelay: (_) async {},
       );
       addTearDown(ownedService.dispose);
 
       await ownedService.resumePersistedReconciliations();
 
-      expect(blocked, isTrue);
+      expect(blocked, isFalse);
+      expect(retired, 1);
+      expect(terminal, isFalse);
       verifyNever(() => mockUploadRepository.enqueueBackgroundAll(any()));
     });
 
@@ -1529,6 +1544,183 @@ void main() {
       expect(leases.released, isTrue);
       verify(() => mockUploadRepository.completedTask(claim)).called(3);
       verifyNever(() => mockUploadRepository.enqueueBackgroundAll(any()));
+    });
+
+    test('missing completed receipt retires old task but admits a fresh task for a still pending asset', () async {
+      final context = MediumRepositoryContext();
+      addTearDown(context.dispose);
+      final user = await context.newUser();
+      final album = await context.newLocalAlbum(backupSelection: BackupSelection.selected);
+      final asset = await context.newLocalAsset();
+      await context.newLocalAlbumAsset(albumId: album.id, assetId: asset.id);
+      final candidates = DriftBackupRepository(context.db);
+      final enablement = DriftBackupEnablementRepository(context.db);
+      await enablement.initialize(true);
+      final leases = DriftBackupExecutionLeaseRepository(context.db);
+      const oldClaim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'retired-task');
+      const newClaim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'fresh-task');
+      final candidateKey = BackupCandidateKey.fromLocalIdentity(deviceId: 'test-device', localAssetId: asset.id).value;
+      final now = DateTime.utc(2026, 10, 1, 15);
+      final lease = BackupExecutionLease(
+        mode: BackupExecutionMode.background,
+        runToken: 'run-token',
+        bindingDigest: 'binding-digest',
+        expiresAt: now.add(const Duration(minutes: 2)),
+        activityRevision: 0,
+        callbacksInFlight: 0,
+        reconciliationClaims: {oldClaim},
+        candidateKeys: {oldClaim: candidateKey},
+      );
+      expect(await leases.acquire(lease, now), isTrue);
+      when(() => mockUploadRepository.completedTask(oldClaim)).thenAnswer((_) async => null);
+      final service = BackgroundUploadService(
+        mockUploadRepository,
+        mockStorageRepository,
+        mockLocalAssetRepository,
+        candidates,
+        mockAppSettingsService,
+        mockAssetMediaRepository,
+        leasePort: leases,
+        completedTaskRecheckDelay: (_) async {},
+      );
+      addTearDown(service.dispose);
+
+      expect((await candidates.getCandidates(user.id)).map((candidate) => candidate.id), contains(asset.id));
+      await service.resumePersistedReconciliations();
+      expect((await leases.readReconciliationQuarantine()).map((entry) => entry.claim), contains(oldClaim));
+      expect((await leases.read())?.reconciliationClaims, isEmpty);
+      expect(
+        await leases.reserveEnqueueForCandidate(
+          runToken: lease.runToken,
+          bindingDigest: lease.bindingDigest,
+          claim: newClaim,
+          candidateKey: candidateKey,
+          operationIncarnation: 'current-process',
+        ),
+        isNotNull,
+      );
+      expect(
+        await leases.beginCallbackForTask(
+          runToken: lease.runToken,
+          bindingDigest: lease.bindingDigest,
+          claim: oldClaim,
+          operationIncarnation: 'current-process',
+        ),
+        isNull,
+      );
+      expect((await leases.read())?.enqueueClaims, contains(newClaim));
+    });
+
+    test('persisted missing receipt automatically reselects and queues the pending asset', () async {
+      final directory = await Directory.systemTemp.createTemp('immich-retired-candidate-');
+      addTearDown(() => directory.delete(recursive: true));
+      final file = File('${directory.path}/backup.sqlite');
+      final seed = MediumRepositoryContext.file(file);
+      final user = await seed.newUser(id: 'user-a');
+      final album = await seed.newLocalAlbum(backupSelection: BackupSelection.selected);
+      final asset = await seed.newLocalAsset();
+      await seed.newLocalAlbumAsset(albumId: album.id, assetId: asset.id);
+      final binding = _binding();
+      final candidateKey = BackupCandidateKey.fromLocalIdentity(deviceId: 'test-device', localAssetId: asset.id).value;
+      const oldClaim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'retired-task');
+      final oldLease = BackupExecutionLease(
+        mode: BackupExecutionMode.background,
+        runToken: 'old-run',
+        bindingDigest: binding.digest,
+        expiresAt: DateTime.now().add(const Duration(minutes: 2)),
+        activityRevision: 0,
+        callbacksInFlight: 0,
+        reconciliationClaims: {oldClaim},
+        candidateKeys: {oldClaim: candidateKey},
+      );
+      await DriftBackupEnablementRepository(seed.db).initialize(true);
+      expect(await DriftBackupExecutionLeaseRepository(seed.db).acquire(oldLease, DateTime.now()), isTrue);
+      await seed.dispose();
+
+      final db = Drift(DatabaseConnection(NativeDatabase(file), closeStreamsSynchronously: true));
+      addTearDown(db.close);
+      final candidates = DriftBackupRepository(db);
+      final leases = DriftBackupExecutionLeaseRepository(db);
+      final fence = BackupCallbackFence();
+      final arbiter = BackupExecutionArbiter(
+        leases: leases,
+        tasks: const _EmptyRegistry(),
+        callbackFence: fence,
+        tokenFactory: () => 'new-run',
+      );
+      late final EagerBackupCoordinator coordinator;
+      var terminalReported = false;
+      when(() => mockUploadRepository.completedTask(oldClaim)).thenAnswer((_) async => null);
+      when(() => mockUploadRepository.enqueueBackgroundAll(any())).thenAnswer((_) async => [true]);
+      final service = BackgroundUploadService(
+        mockUploadRepository,
+        mockStorageRepository,
+        mockLocalAssetRepository,
+        candidates,
+        mockAppSettingsService,
+        mockAssetMediaRepository,
+        leasePort: leases,
+        arbiter: arbiter,
+        callbackFence: fence,
+        onOwnedTerminal: (_) => terminalReported = true,
+        onReconciliationRetired: () => coordinator.signal(EagerBackupTrigger.workloadChanged),
+        completedTaskRecheckDelay: (_) async {},
+      );
+      addTearDown(service.dispose);
+      final operations = _PersistedCandidateRetryOperations(
+        binding: binding,
+        userId: user.id,
+        localAssetId: asset.id,
+        candidateKey: candidateKey,
+        candidates: candidates,
+        leases: leases,
+        arbiter: arbiter,
+        service: service,
+      );
+      coordinator = EagerBackupCoordinator(operations: operations)
+        ..setEnabled(true)
+        ..setForeground(true)
+        ..setTransport(
+          const BackupTransportSnapshot(
+            available: true,
+            capabilities: {BackupNetworkCapability.wifi},
+            monitorEpoch: 1,
+            revision: 3,
+          ),
+        )
+        ..setServerProofAvailable(true);
+      addTearDown(coordinator.dispose);
+
+      await pumpEventQueue();
+      verifyNever(() => mockUploadRepository.enqueueBackgroundAll(any()));
+      expect((await candidates.getCandidates(user.id)).map((candidate) => candidate.id), contains(asset.id));
+
+      await service.resumePersistedReconciliations();
+      await operations.queued.future.timeout(const Duration(seconds: 2));
+
+      final current = (await leases.read())!;
+      expect(current.runToken, 'new-run');
+      expect(
+        current.outstandingClaims,
+        contains(const BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'fresh-task')),
+      );
+      expect((await leases.readReconciliationQuarantine()).map((entry) => entry.claim), contains(oldClaim));
+      expect(terminalReported, isFalse);
+      expect((await candidates.getCandidates(user.id)).map((candidate) => candidate.id), contains(asset.id));
+      expect(
+        await leases.beginCallbackForTask(
+          runToken: current.runToken,
+          bindingDigest: current.bindingDigest,
+          claim: oldClaim,
+        ),
+        isNull,
+      );
+      expect(
+        await arbiter.releaseCurrentWhenQuiescent(runToken: oldLease.runToken, bindingDigest: oldLease.bindingDigest),
+        isFalse,
+      );
+      expect((await leases.read())?.runToken, current.runToken);
+      verify(() => mockUploadRepository.enqueueBackgroundAll(any())).called(1);
     });
 
     test('definitively stale binding is quarantined and subsequent edges stay inert', () async {
@@ -1899,19 +2091,99 @@ BackupRunBinding _binding() => BackupRunBinding(
   localLeaseRevision: 4,
 );
 
+final class _PersistedCandidateRetryOperations implements EagerBackupOperationsPort {
+  _PersistedCandidateRetryOperations({
+    required this.binding,
+    required this.userId,
+    required this.localAssetId,
+    required this.candidateKey,
+    required this.candidates,
+    required this.leases,
+    required this.arbiter,
+    required this.service,
+  });
+
+  final BackupRunBinding binding;
+  final String userId;
+  final String localAssetId;
+  final String candidateKey;
+  final DriftBackupRepository candidates;
+  final DriftBackupExecutionLeaseRepository leases;
+  final BackupExecutionArbiter arbiter;
+  final BackgroundUploadService service;
+  final Completer<void> queued = Completer<void>();
+  bool _isQueued = false;
+
+  @override
+  Future<BackupWorkload> readWorkload() async {
+    final selected = await candidates.getCandidates(userId);
+    final count = selected.where((candidate) => candidate.id == localAssetId).length;
+    final pendingReconciliation = (await leases.read())?.reconciliationClaims.isNotEmpty ?? false;
+    return BackupWorkload(
+      total: count,
+      remainder: _isQueued ? 0 : count,
+      processing: pendingReconciliation && !_isQueued ? count : 0,
+    );
+  }
+
+  @override
+  Future<void> synchronizeLocal(EagerBackupCancellation cancellation) async {}
+
+  @override
+  Future<void> hashAssets(EagerBackupCancellation cancellation) async {}
+
+  @override
+  Future<BackupRunBinding?> captureBinding() async => binding;
+
+  @override
+  Future<EagerBackupUploadOutcome> upload(BackupRunBinding binding, EagerBackupCancellation cancellation) async {
+    final selected = await candidates.getCandidates(userId);
+    if (!selected.any((candidate) => candidate.id == localAssetId)) {
+      throw StateError('Pending candidate was not selected');
+    }
+    final admission = await arbiter.acquireBackground(bindingDigest: binding.digest);
+    if (!admission.admitted) return EagerBackupUploadOutcome.evidenceUnavailable;
+    final lease = admission.lease!;
+    final ownership = BackupTaskMetadata.current(
+      runToken: lease.runToken,
+      bindingDigest: lease.bindingDigest,
+      phase: BackupTaskPhase.primary,
+    );
+    final task = UploadTask(
+      taskId: 'fresh-task',
+      url: '${binding.apiEndpoint}/assets',
+      filename: 'asset.jpg',
+      group: kBackupGroup,
+      metaData: UploadTaskMetadata(
+        localAssetId: localAssetId,
+        isLivePhotos: false,
+        livePhotoVideoId: '',
+        ownership: ownership,
+        expectedNativeRevision: binding.nativeGeneration,
+        bindingAuthority: UploadBindingAuthority.fromBinding(binding),
+        candidateKey: candidateKey,
+      ).toJson(),
+    );
+    final result = await service.enqueueTasks([task], ownership: ownership);
+    _isQueued = result.single;
+    if (_isQueued) queued.complete();
+    return _isQueued ? EagerBackupUploadOutcome.completed : EagerBackupUploadOutcome.evidenceUnavailable;
+  }
+}
+
 class _LeasePort implements BackupExecutionLeasePort {
   _LeasePort({
     this.claimCallbacks = true,
     this.begin,
     this.existing,
-    this.quarantinedCandidateKeys = const {},
+    this.retiredClaims = const {},
     List<BackupExecutionLease?> readSequence = const [],
   }) : _readSequence = List.of(readSequence);
 
   final bool claimCallbacks;
   final Future<BackupExecutionLease?>? begin;
   BackupExecutionLease? existing;
-  final Set<String> quarantinedCandidateKeys;
+  final Set<BackupTaskClaim> retiredClaims;
   final List<String> events = [];
   int releaseCalls = 0;
   int beginClosingCalls = 0;
@@ -1959,14 +2231,14 @@ class _LeasePort implements BackupExecutionLeasePort {
   }
 
   @override
-  Future<BackupExecutionLease?> beginEnqueueUnlessQuarantined({
+  Future<BackupExecutionLease?> reserveEnqueueForCandidate({
     required String runToken,
     required String bindingDigest,
     required BackupTaskClaim claim,
     required String candidateKey,
     String? operationIncarnation,
   }) async {
-    if (quarantinedCandidateKeys.contains(candidateKey)) return null;
+    if (retiredClaims.contains(claim)) return null;
     events.add('beginEnqueue');
     final lease = existing ?? _lease().copyWith(callbacksInFlight: 0);
     existing = lease.copyWith(
@@ -1981,7 +2253,7 @@ class _LeasePort implements BackupExecutionLeasePort {
   }
 
   @override
-  Future<bool> allowForegroundCandidateUnlessQuarantined({
+  Future<bool> allowForegroundCandidate({
     required String runToken,
     required String bindingDigest,
     required String candidateKey,

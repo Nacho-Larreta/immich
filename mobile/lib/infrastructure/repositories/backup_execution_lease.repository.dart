@@ -180,7 +180,7 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
   );
 
   @override
-  Future<BackupExecutionLease?> beginEnqueueUnlessQuarantined({
+  Future<BackupExecutionLease?> reserveEnqueueForCandidate({
     required String runToken,
     required String bindingDigest,
     required BackupTaskClaim claim,
@@ -190,7 +190,7 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
     return _db.transaction(() async {
       final key = BackupCandidateKey.parse(candidateKey).value;
       final quarantine = await _readQuarantine();
-      if (quarantine == null || quarantine.entries.any((entry) => entry.candidateKey == key)) return null;
+      if (quarantine == null || quarantine.entries.any((entry) => entry.claim == claim)) return null;
       final expected = await read();
       if (expected == null ||
           expected.runToken != runToken ||
@@ -213,15 +213,15 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
   }
 
   @override
-  Future<bool> allowForegroundCandidateUnlessQuarantined({
+  Future<bool> allowForegroundCandidate({
     required String runToken,
     required String bindingDigest,
     required String candidateKey,
   }) {
     return _db.transaction(() async {
-      final key = BackupCandidateKey.parse(candidateKey).value;
+      BackupCandidateKey.parse(candidateKey);
       final quarantine = await _readQuarantine();
-      if (quarantine == null || quarantine.entries.any((entry) => entry.candidateKey == key)) return false;
+      if (quarantine == null) return false;
       final lease = await read();
       return lease != null &&
           await _backupEnabled() &&

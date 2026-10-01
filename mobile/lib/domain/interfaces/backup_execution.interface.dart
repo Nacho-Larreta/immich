@@ -37,7 +37,7 @@ abstract interface class BackupExecutionLeasePort {
     required BackupTaskClaim claim,
   });
 
-  Future<BackupExecutionLease?> beginEnqueueUnlessQuarantined({
+  Future<BackupExecutionLease?> reserveEnqueueForCandidate({
     required String runToken,
     required String bindingDigest,
     required BackupTaskClaim claim,
@@ -45,7 +45,7 @@ abstract interface class BackupExecutionLeasePort {
     String? operationIncarnation,
   });
 
-  Future<bool> allowForegroundCandidateUnlessQuarantined({
+  Future<bool> allowForegroundCandidate({
     required String runToken,
     required String bindingDigest,
     required String candidateKey,

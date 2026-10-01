@@ -81,6 +81,7 @@ final Provider<BackgroundUploadService> backgroundUploadServiceProvider = Provid
         .signal(success ? EagerBackupTrigger.uploadTerminal : EagerBackupTrigger.uploadFailed),
     onReconciliationPending: () => ref.read(eagerBackupSignalProvider).signal(EagerBackupTrigger.reconciliationPending),
     onReconciliationBlocked: () => ref.read(eagerBackupSignalProvider).signal(EagerBackupTrigger.reconciliationBlocked),
+    onReconciliationRetired: () => ref.read(eagerBackupSignalProvider).signal(EagerBackupTrigger.workloadChanged),
     reconcileOwnedSuccess: (binding) => ref.read(backgroundSyncProvider).syncRemoteForBinding(binding),
   );
 
@@ -415,6 +416,7 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
     void Function(bool success)? onOwnedTerminal,
     void Function()? onReconciliationPending,
     void Function()? onReconciliationBlocked,
+    void Function()? onReconciliationRetired,
     Future<bool> Function(BackupRunBinding binding)? reconcileOwnedSuccess,
     Future<void> Function(Duration delay)? reconciliationDelay,
     Future<void> Function(Duration delay)? completedTaskRecheckDelay,
@@ -436,6 +438,7 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
        _onOwnedTerminal = onOwnedTerminal,
        _onReconciliationPending = onReconciliationPending,
        _onReconciliationBlocked = onReconciliationBlocked,
+       _onReconciliationRetired = onReconciliationRetired,
        _reconcileOwnedSuccess = reconcileOwnedSuccess ?? ((_) async => true) {
     _reconciliationDelay = reconciliationDelay ?? Future<void>.delayed;
     _completedTaskRecheckDelay = completedTaskRecheckDelay ?? Future<void>.delayed;
@@ -460,6 +463,7 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
   final void Function(bool success)? _onOwnedTerminal;
   final void Function()? _onReconciliationPending;
   final void Function()? _onReconciliationBlocked;
+  final void Function()? _onReconciliationRetired;
   final Future<bool> Function(BackupRunBinding binding) _reconcileOwnedSuccess;
   late final Future<void> Function(Duration delay) _reconciliationDelay;
   late final Future<void> Function(Duration delay) _completedTaskRecheckDelay;
@@ -848,8 +852,8 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
       code: code,
     );
     if (quarantined == null) return;
-    _onReconciliationBlocked?.call();
     await _arbiter?.releaseCurrentWhenQuiescent(runToken: lease.runToken, bindingDigest: lease.bindingDigest);
+    _onReconciliationRetired?.call();
   }
 
   /// Enqueue tasks to the background upload queue
@@ -884,7 +888,7 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
         continue;
       }
       try {
-        final reservation = await _leasePort?.beginEnqueueUnlessQuarantined(
+        final reservation = await _leasePort?.reserveEnqueueForCandidate(
           runToken: ownership.runToken,
           bindingDigest: ownership.bindingDigest,
           claim: taskClaim,

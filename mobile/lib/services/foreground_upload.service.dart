@@ -530,7 +530,7 @@ class ForegroundUploadService {
   Future<bool> _autoCandidateAllowed(BackupExecutionLease? lease, String? candidateKey) async {
     if (lease == null && candidateKey == null) return true;
     if (lease == null || candidateKey == null || _candidateGate == null) return false;
-    return _candidateGate.allowForegroundCandidateUnlessQuarantined(
+    return _candidateGate.allowForegroundCandidate(
       runToken: lease.runToken,
       bindingDigest: lease.bindingDigest,
       candidateKey: candidateKey,
