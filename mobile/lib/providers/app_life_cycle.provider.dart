@@ -140,6 +140,7 @@ final appStateProvider = StateNotifierProvider<AppLifeCycleNotifier, AppLifeCycl
       triggerLocalSync: ({required full}) => ref.read(sessionWorkProvider).triggerLocalSync(full: full),
       cancelLocalSync: ref.read(sessionWorkProvider).cancelLocalSync,
       cancelBackgroundSync: backgroundSync.cancel,
+      cancelResumeSyncs: backgroundSync.cancelResumeSyncs,
       stopBackup: ref.read(driftBackupProvider.notifier).stopForegroundBackup,
       pauseEagerBackup: () async {
         if (!await eagerBackup.suspendForeground()) return;
@@ -164,6 +165,7 @@ final class LifecycleSessionWork {
     required void Function({required bool full}) triggerLocalSync,
     required Future<void> Function() cancelLocalSync,
     required Future<void> Function() cancelBackgroundSync,
+    required Future<void> Function() cancelResumeSyncs,
     required void Function() stopBackup,
     required Future<void> Function() pauseEagerBackup,
     required void Function() resumeEagerBackup,
@@ -175,6 +177,7 @@ final class LifecycleSessionWork {
        _triggerLocalSync = triggerLocalSync,
        _cancelLocalSync = cancelLocalSync,
        _cancelBackgroundSync = cancelBackgroundSync,
+       _cancelResumeSyncs = cancelResumeSyncs,
        _stopBackup = stopBackup,
        _pauseEagerBackup = pauseEagerBackup,
        _resumeEagerBackup = resumeEagerBackup,
@@ -187,6 +190,7 @@ final class LifecycleSessionWork {
   final void Function({required bool full}) _triggerLocalSync;
   final Future<void> Function() _cancelLocalSync;
   final Future<void> Function() _cancelBackgroundSync;
+  final Future<void> Function() _cancelResumeSyncs;
   final void Function() _stopBackup;
   final Future<void> Function() _pauseEagerBackup;
   final void Function() _resumeEagerBackup;
@@ -223,6 +227,7 @@ final class LifecycleSessionWork {
 
   Future<void> resume({required bool fullLocalSync}) async {
     await _lockBackgroundWorker();
+    await _cancelResumeSyncs();
     _resumeReachability();
     _resumeEagerBackup();
     _triggerLocalSync(full: fullLocalSync);

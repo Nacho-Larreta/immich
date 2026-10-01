@@ -15,6 +15,19 @@ enum BackupAdmissionDisposition {
   bindingStale,
 }
 
+enum BackupDrainBlocker {
+  ownerChanged,
+  enqueueClaimPending,
+  reconciliationPending,
+  activityPending,
+  nativeTaskActive,
+  nativeCancelFailed,
+  callbackFencePending,
+  foregroundTransportPending,
+  claimReconcileFailed,
+  releaseFailed,
+}
+
 final class BackupAdmission {
   const BackupAdmission(this.disposition, {this.lease, this.retryAt});
 
@@ -40,13 +53,15 @@ final class BackupExecutionArbiter implements BackgroundBackupAdmissionPort {
     DateTime Function()? clock,
     String Function()? tokenFactory,
     Duration leaseDuration = const Duration(minutes: 2),
+    void Function(BackupDrainBlocker reason)? onDrainBlocked,
   }) : _leases = leases,
        _tasks = tasks,
        _foregroundFence = foregroundFence ?? const _RejectingForegroundTransportFence(),
        _callbackFence = callbackFence ?? const _RejectingBackupCallbackFence(),
        _clock = clock ?? DateTime.now,
        _tokenFactory = tokenFactory ?? _secureToken,
-       _leaseDuration = leaseDuration;
+       _leaseDuration = leaseDuration,
+       _onDrainBlocked = onDrainBlocked;
 
   static const groups = {BackupTaskGroup.primary, BackupTaskGroup.livePhoto};
 
@@ -57,6 +72,7 @@ final class BackupExecutionArbiter implements BackgroundBackupAdmissionPort {
   final DateTime Function() _clock;
   final String Function() _tokenFactory;
   final Duration _leaseDuration;
+  final void Function(BackupDrainBlocker reason)? _onDrainBlocked;
   final Map<String, Future<bool>> _disableOperations = {};
 
   Future<BackupAdmission> acquireForeground({required String bindingDigest}) async {
@@ -267,7 +283,7 @@ final class BackupExecutionArbiter implements BackgroundBackupAdmissionPort {
     await _tasks.ready;
     final observed = await _leases.read();
     final closing = await _leases.beginClosingForOwner(runToken: runToken, bindingDigest: bindingDigest);
-    if (closing == null) return false;
+    if (closing == null) return _rejectDrain(BackupDrainBlocker.ownerChanged);
     final resumesExpiredClosing =
         observed == closing && closing.state == BackupExecutionState.closing && closing.isExpiredAt(_clock());
     if (resumesExpiredClosing) {
@@ -277,22 +293,25 @@ final class BackupExecutionArbiter implements BackgroundBackupAdmissionPort {
     final maxPolls = max(1, (timeout.inMicroseconds / pollInterval.inMicroseconds).ceil());
     for (var poll = 0; poll < maxPolls; poll++) {
       final current = await _leases.read();
-      if (current == null || current.runToken != runToken || current.bindingDigest != bindingDigest) return false;
+      if (current == null || current.runToken != runToken || current.bindingDigest != bindingDigest) {
+        return _rejectDrain(BackupDrainBlocker.ownerChanged);
+      }
       if (current.enqueueClaims.isEmpty && current.foregroundActivityClaims.isEmpty && current.callbacksInFlight == 0) {
         break;
       }
-      if (poll + 1 == maxPolls) return false;
+      if (poll + 1 == maxPolls) return _rejectDrain(BackupDrainBlocker.activityPending);
       await Future<void>.delayed(pollInterval);
     }
-    if (!await _tasks.cancelAndDrain(groups)) return false;
+    if (!await _tasks.cancelAndDrain(groups)) return _rejectDrain(BackupDrainBlocker.nativeCancelFailed);
     final active = await _activeTasks();
     final reconciled = await _leases.reconcileTaskClaimsForOwner(
       runToken: runToken,
       bindingDigest: bindingDigest,
       activeClaims: _claimsFor(active),
     );
-    if (reconciled == null) return false;
-    return releaseWhenQuiescent(reconciled);
+    if (reconciled == null) return _rejectDrain(BackupDrainBlocker.claimReconcileFailed);
+    if (await releaseWhenQuiescent(reconciled)) return true;
+    return _rejectDrain(BackupDrainBlocker.releaseFailed);
   }
 
   Future<BackupExecutionLease?> _renewExact(BackupExecutionLease current) async {
@@ -312,31 +331,45 @@ final class BackupExecutionArbiter implements BackgroundBackupAdmissionPort {
     BackupExecutionLease expected, {
     Duration timeout = const Duration(seconds: 5),
   }) async {
+    if (expected.enqueueClaims.isNotEmpty) return _rejectDrain(BackupDrainBlocker.enqueueClaimPending);
+    if (expected.reconciliationClaims.isNotEmpty) return _rejectDrain(BackupDrainBlocker.reconciliationPending);
     final q1 = await _activeTasks();
-    if (q1.isNotEmpty) return false;
-    if (await _leases.read() != expected) return false;
+    if (q1.isNotEmpty) return _rejectDrain(BackupDrainBlocker.nativeTaskActive);
+    if (await _leases.read() != expected) return _rejectDrain(BackupDrainBlocker.ownerChanged);
     await Future<void>.delayed(Duration.zero);
-    if (await _leases.read() != expected) return false;
+    if (await _leases.read() != expected) return _rejectDrain(BackupDrainBlocker.ownerChanged);
     final q2 = await _activeTasks();
-    if (q2.isNotEmpty) return false;
-    if (await _leases.read() != expected) return false;
+    if (q2.isNotEmpty) return _rejectDrain(BackupDrainBlocker.nativeTaskActive);
+    if (await _leases.read() != expected) return _rejectDrain(BackupDrainBlocker.ownerChanged);
     if (!await _callbackFence.fenceAndDrain(
       runToken: expected.runToken,
       bindingDigest: expected.bindingDigest,
       timeout: timeout,
     )) {
-      return false;
+      return _rejectDrain(BackupDrainBlocker.callbackFencePending);
     }
-    if (await _leases.read() != expected) return false;
+    if (await _leases.read() != expected) return _rejectDrain(BackupDrainBlocker.ownerChanged);
     final foregroundClaims = expected.foregroundActivityClaims;
     if (foregroundClaims.isNotEmpty) {
       final retirement = await _foregroundFence.retireClaims(foregroundClaims, timeout: timeout);
-      if (retirement != ForegroundTransportRetirement.retired) return false;
+      if (retirement != ForegroundTransportRetirement.retired) {
+        return _rejectDrain(BackupDrainBlocker.foregroundTransportPending);
+      }
     }
-    if (await _leases.read() != expected) return false;
+    if (await _leases.read() != expected) return _rejectDrain(BackupDrainBlocker.ownerChanged);
     final recovered = await _leases.recoverExpiredClosingExact(expected: expected, activeClaims: const {});
-    if (recovered == null || recovered.hasDurableActivity) return false;
-    return releaseWhenQuiescent(recovered);
+    if (recovered == null || recovered.hasDurableActivity) return _rejectDrain(BackupDrainBlocker.activityPending);
+    if (await releaseWhenQuiescent(recovered)) return true;
+    return _rejectDrain(BackupDrainBlocker.releaseFailed);
+  }
+
+  bool _rejectDrain(BackupDrainBlocker reason) {
+    try {
+      _onDrainBlocked?.call(reason);
+    } on Object {
+      // Diagnostics cannot change drain authority.
+    }
+    return false;
   }
 
   Future<List<BackupTaskSnapshot>> _activeTasks() async {

@@ -76,6 +76,45 @@ void main() {
     expect(BackupExecutionLease.tryParse(encoded), lease);
   });
 
+  test('orphan enqueue release requires exact lease and no callback claim', () async {
+    final now = DateTime.utc(2026, 10, 1, 15);
+    const claim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'orphaned-enqueue');
+    const key = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    final lease = _lease('orphan', now).copyWith(
+      state: BackupExecutionState.closing,
+      enqueueClaims: {claim},
+      enqueueIncarnations: {claim: 'previous-process'},
+      candidateKeys: {claim: key},
+    );
+    expect(await first.acquire(lease, now), isTrue);
+    final stale = (await first.read())!;
+    expect(await second.markEnqueuedForTask(runToken: lease.runToken, bindingDigest: lease.bindingDigest), isNotNull);
+    expect(await first.releaseProvenOrphanedEnqueueExact(expected: stale, claim: claim), isNull);
+    expect((await first.read())?.enqueueClaims, {claim});
+
+    final claimed = await second.beginCallbackForTask(
+      runToken: lease.runToken,
+      bindingDigest: lease.bindingDigest,
+      claim: claim,
+      operationIncarnation: 'current-process',
+    );
+    expect(claimed, isNotNull);
+    expect(await first.releaseProvenOrphanedEnqueueExact(expected: claimed!, claim: claim), isNull);
+    expect((await first.read())?.callbackClaims, {claim});
+
+    final ended = await second.endCallbackForTask(
+      runToken: lease.runToken,
+      bindingDigest: lease.bindingDigest,
+      claim: claim,
+    );
+    expect(ended, isNotNull);
+    final recovered = await first.releaseProvenOrphanedEnqueueExact(expected: ended!, claim: claim);
+    expect(recovered?.enqueueClaims, isEmpty);
+    expect(recovered?.candidateKeys, isEmpty);
+    expect(recovered?.enqueueIncarnations, isEmpty);
+    expect(await first.readReconciliationQuarantine(), isEmpty);
+  });
+
   test('foreground claim factories reject incomplete schema-2 identities by construction', () {
     expect(
       () => ForegroundTransportClaim.current(

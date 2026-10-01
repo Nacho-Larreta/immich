@@ -693,6 +693,47 @@ void main() {
       expect(gateway.replayCalls, 1);
     });
 
+    test('disable succeeds when terminal replay releases the owner before drain', () async {
+      final update = _completeOwnedUpdate();
+      final claim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: update.task.taskId);
+      final lease = _leaseWithClaims({claim}).copyWith(
+        state: BackupExecutionState.closing,
+        callbacksInFlight: 1,
+        callbackClaims: {claim},
+        callbackIncarnations: {claim: 'previous-process'},
+      );
+      final leases = _ExactOwnerLeasePort(lease);
+      late final UploadRepository repository;
+      final gateway = _RebootTaskRegistryGateway(
+        staleTrackingRecord: TaskRecord(update.task, TaskStatus.running, 0, 1),
+        replayTerminal: () => repository.onUploadStatus?.call(update),
+      );
+      repository = UploadRepository(taskRegistry: gateway);
+      final fence = BackupCallbackFence();
+      final arbiter = BackupExecutionArbiter(leases: leases, tasks: repository, callbackFence: fence);
+      when(() => mockStorageRepository.clearCache()).thenAnswer((_) async {});
+      final service = BackgroundUploadService(
+        repository,
+        mockStorageRepository,
+        mockLocalAssetRepository,
+        mockBackupRepository,
+        mockAppSettingsService,
+        mockAssetMediaRepository,
+        leasePort: leases,
+        arbiter: arbiter,
+        callbackFence: fence,
+        operationIncarnation: 'current-process',
+        validateBinding: (_, _) => _binding(),
+        reconcileOwnedSuccess: (_) async => true,
+      );
+      addTearDown(service.dispose);
+
+      expect(await service.cancel(), 0);
+      expect(leases.terminalClaims, {claim});
+      expect(leases.releaseCalls, 1);
+      expect(gateway.replayCalls, 1);
+    });
+
     test('mailbox replay processes the exact owner and leaves an interleaved foreign owner fail-closed', () async {
       final exact = _completeOwnedUpdate();
       final foreign = _completeOwnedUpdateFor(
@@ -762,7 +803,7 @@ void main() {
       expect(leases.terminalClaims, isEmpty);
     });
 
-    test('relaunch quarantines and releases an exact enqueue claim absent from mailbox and two snapshots', () async {
+    test('relaunch releases a proven orphan enqueue and keeps its candidate eligible', () async {
       const claim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'orphaned-enqueue');
       final lease = _lease().copyWith(
         callbacksInFlight: 0,
@@ -792,7 +833,8 @@ void main() {
       final disposition = await ownedService.resumeOwned(EagerBackgroundUploadOwner.fromLease(lease));
 
       expect(disposition, EagerBackgroundResumeDisposition.completed);
-      expect(leases.events, containsAllInOrder(['markReconciliationPending', 'quarantine:completedTaskMissing']));
+      expect(leases.events, contains('releaseProvenOrphanedEnqueue'));
+      expect(leases.events.where((event) => event.startsWith('quarantine:')), isEmpty);
       expect(leases.released, isTrue);
       verify(() => mockUploadRepository.replayUndeliveredUpdates()).called(1);
       verify(() => mockUploadRepository.snapshot(BackupExecutionArbiter.groups)).called(greaterThanOrEqualTo(2));
@@ -1664,6 +1706,7 @@ void main() {
     test('failed drain fences cancellation and retains the durable lease', () async {
       final leases = _LeasePort();
       when(() => mockStorageRepository.clearCache()).thenAnswer((_) async {});
+      when(() => mockUploadRepository.snapshot(BackupExecutionArbiter.groups)).thenAnswer((_) async => const []);
       when(() => mockUploadRepository.cancelAndDrain(BackupExecutionArbiter.groups)).thenAnswer((_) async => false);
       final ownedService = BackgroundUploadService(
         mockUploadRepository,
@@ -1686,8 +1729,10 @@ void main() {
       when(() => mockStorageRepository.clearCache()).thenAnswer((_) async {});
       when(() => mockUploadRepository.ready).thenAnswer((_) async {});
       when(() => mockUploadRepository.cancelAndDrain(BackupExecutionArbiter.groups)).thenAnswer((_) async => true);
+      when(() => mockUploadRepository.snapshot(BackupExecutionArbiter.groups)).thenAnswer((_) async => const []);
       final registry = _DelegatingRegistry(mockUploadRepository);
-      final arbiter = BackupExecutionArbiter(leases: leases, tasks: registry);
+      final fence = BackupCallbackFence();
+      final arbiter = BackupExecutionArbiter(leases: leases, tasks: registry, callbackFence: fence);
       final ownedService = BackgroundUploadService(
         mockUploadRepository,
         mockStorageRepository,
@@ -1697,11 +1742,12 @@ void main() {
         mockAssetMediaRepository,
         leasePort: leases,
         arbiter: arbiter,
+        callbackFence: fence,
       );
       addTearDown(ownedService.dispose);
 
       expect(await ownedService.cancel(), 0);
-      expect(leases.beginClosingCalls, 1);
+      expect(leases.beginClosingCalls, 2);
       expect(leases.releaseCalls, 1);
     });
 
@@ -2045,7 +2091,18 @@ class _LeasePort implements BackupExecutionLeasePort {
   Future<BackupExecutionLease?> recoverExpiredClosingExact({
     required BackupExecutionLease expected,
     required Set<BackupTaskClaim> activeClaims,
-  }) async => _lease().copyWith(outstandingClaims: activeClaims, activityRevision: 4);
+  }) async {
+    if (existing != expected) return null;
+    existing = expected.copyWith(
+      outstandingClaims: activeClaims,
+      enqueueClaims: expected.enqueueClaims.difference(activeClaims),
+      callbacksInFlight: 0,
+      callbackClaims: const {},
+      foregroundActivityClaims: const {},
+      activityRevision: expected.activityRevision + 1,
+    );
+    return existing;
+  }
 
   @override
   Future<BackupExecutionLease?> releaseOrphanedCallbackForTaskExact({
@@ -2061,6 +2118,23 @@ class _LeasePort implements BackupExecutionLeasePort {
       callbacksInFlight: lease.callbacksInFlight - 1,
       callbackClaims: {...lease.callbackClaims}..remove(claim),
       callbackIncarnations: {...lease.callbackIncarnations}..remove(claim),
+      activityRevision: lease.activityRevision + 1,
+    );
+    return existing;
+  }
+
+  @override
+  Future<BackupExecutionLease?> releaseProvenOrphanedEnqueueExact({
+    required BackupExecutionLease expected,
+    required BackupTaskClaim claim,
+  }) async {
+    final lease = existing;
+    if (lease != expected || lease == null || !lease.enqueueClaims.contains(claim)) return null;
+    events.add('releaseProvenOrphanedEnqueue');
+    existing = lease.copyWith(
+      enqueueClaims: {...lease.enqueueClaims}..remove(claim),
+      candidateKeys: {...lease.candidateKeys}..remove(claim),
+      enqueueIncarnations: {...lease.enqueueIncarnations}..remove(claim),
       activityRevision: lease.activityRevision + 1,
     );
     return existing;

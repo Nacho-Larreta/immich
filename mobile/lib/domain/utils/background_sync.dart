@@ -125,6 +125,29 @@ class BackgroundSyncManager {
     }
   }
 
+  Future<void> cancelResumeSyncs() async {
+    final remote = _syncTask;
+    final local = _deviceAlbumSyncTask;
+    final hashing = _hashTask;
+    final linkedAlbums = _linkedAlbumSyncTask;
+
+    remote?.supersede();
+    local?.supersede();
+    hashing?.supersede();
+    linkedAlbums?.supersede();
+    _syncTask = null;
+    _deviceAlbumSyncTask = null;
+    _hashTask = null;
+    _linkedAlbumSyncTask = null;
+
+    await Future.wait([
+      if (remote != null) remote.task.cancel(),
+      if (local != null) local.task.cancel(),
+      if (hashing != null) hashing.task.cancel(),
+      if (linkedAlbums != null) linkedAlbums.task.cancel(),
+    ]);
+  }
+
   // No need to cancel the task, as it can also be run when the user logs out
   Future<void> syncLocal({bool full = false}) {
     if (_deviceAlbumSyncTask != null) {
@@ -375,7 +398,7 @@ class BackgroundSyncManager {
   ) {
     if (!operation.markTerminal()) return;
     try {
-      callback?.call();
+      if (!operation.superseded) callback?.call();
     } finally {
       onTerminal?.call(operation.id, type, terminal);
     }
@@ -391,10 +414,12 @@ class BackgroundSyncManager {
     final cancelled = error is BackgroundTaskCancelled;
     if (operation.markTerminal()) {
       try {
-        if (cancelled) {
-          cancelledCallback?.call();
-        } else {
-          errorCallback?.call(error.toString());
+        if (!operation.superseded) {
+          if (cancelled) {
+            cancelledCallback?.call();
+          } else {
+            errorCallback?.call(error.toString());
+          }
         }
       } finally {
         onTerminal?.call(operation.id, type, cancelled ? SyncTerminal.cancelled : SyncTerminal.error);
@@ -418,6 +443,9 @@ final class _SyncOperation<T> {
   final CancellableRequest<Object?> task;
   late final Future<T> completion;
   var _terminal = false;
+  var superseded = false;
+
+  void supersede() => superseded = true;
 
   bool markTerminal() {
     if (_terminal) return false;

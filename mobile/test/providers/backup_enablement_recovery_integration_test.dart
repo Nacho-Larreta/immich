@@ -3,7 +3,9 @@ import 'dart:io';
 
 import 'package:drift/drift.dart' hide isNull;
 import 'package:drift/native.dart';
+import 'package:background_downloader/background_downloader.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:immich_mobile/constants/constants.dart';
 import 'package:immich_mobile/domain/interfaces/backup_enablement.interface.dart';
 import 'package:immich_mobile/domain/interfaces/backup_execution.interface.dart';
 import 'package:immich_mobile/domain/models/backup_execution_lease.model.dart';
@@ -11,11 +13,139 @@ import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/services/backup_callback_fence.dart';
 import 'package:immich_mobile/domain/services/backup_enablement_controller.dart';
 import 'package:immich_mobile/domain/services/backup_execution_arbiter.dart';
+import 'package:immich_mobile/infrastructure/adapters/backup/background_downloader_task_registry_adapter.dart';
 import 'package:immich_mobile/infrastructure/repositories/backup_enablement.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/backup_execution_lease.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/db.repository.dart';
+import 'package:immich_mobile/repositories/upload.repository.dart';
+import 'package:immich_mobile/services/background_upload.service.dart';
+import 'package:mocktail/mocktail.dart';
+
+import '../domain/service.mock.dart';
+import '../infrastructure/repository.mock.dart';
+import '../repository.mocks.dart';
 
 void main() {
+  for (final startsWithActiveNativeTask in [false, true]) {
+    test(
+      'OFF drain recovers a persisted orphan after native task ${startsWithActiveNativeTask ? 'cancels' : 'is absent'}',
+      () async {
+        final directory = await Directory.systemTemp.createTemp('immich-backup-orphan-');
+        final file = File('${directory.path}/shared.sqlite');
+        final now = DateTime.utc(2026, 10, 1, 15);
+        const claim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'orphaned-enqueue');
+        const candidateKey = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+        final lease = BackupExecutionLease(
+          mode: BackupExecutionMode.background,
+          runToken: 'persisted-run',
+          bindingDigest: 'binding-digest',
+          expiresAt: now.subtract(const Duration(minutes: 1)),
+          activityRevision: 3,
+          callbacksInFlight: 0,
+          state: BackupExecutionState.closing,
+          enqueueClaims: {claim},
+          candidateKeys: {claim: candidateKey},
+          enqueueIncarnations: {claim: 'previous-process'},
+        );
+        final seedDb = Drift(DatabaseConnection(NativeDatabase(file), closeStreamsSynchronously: true));
+        await seedDb.customSelect('SELECT 1').get();
+        final seedEnablement = DriftBackupEnablementRepository(seedDb);
+        await seedEnablement.initialize(true);
+        await seedDb.customUpdate(
+          'INSERT OR REPLACE INTO store_entity (id, string_value, int_value) VALUES (?1, ?2, NULL)',
+          variables: [Variable.withInt(StoreKey.backupExecutionLease.id), Variable.withString(lease.toJson())],
+          updates: {seedDb.storeEntity},
+        );
+        final disabling = await seedEnablement.beginDisable();
+        expect(await seedEnablement.failDrain(disabling), isTrue);
+        await seedDb.close();
+
+        final recoveryDb = Drift(DatabaseConnection(NativeDatabase(file), closeStreamsSynchronously: true));
+        await recoveryDb.customSelect('SELECT 1').get();
+        final enablement = DriftBackupEnablementRepository(recoveryDb);
+        final leases = DriftBackupExecutionLeaseRepository(recoveryDb);
+        final native = _EmptyNativeRegistry();
+        if (startsWithActiveNativeTask) {
+          native.tasks = [
+            UploadTask(
+              taskId: claim.taskId,
+              url: 'https://photos.example/api/assets',
+              filename: 'asset.mov',
+              group: kBackupGroup,
+            ),
+          ];
+          native.allowCancel = false;
+        }
+        final uploads = UploadRepository(taskRegistry: native);
+        final fence = BackupCallbackFence();
+        final arbiter = BackupExecutionArbiter(
+          leases: leases,
+          tasks: uploads,
+          callbackFence: fence,
+          clock: () => now,
+          tokenFactory: () => 'next-run',
+        );
+        final storage = _MockStorageRepository();
+        when(() => storage.clearCache()).thenAnswer((_) async {});
+        final service = BackgroundUploadService(
+          uploads,
+          storage,
+          _MockLocalAssetRepository(),
+          _MockBackupRepository(),
+          _MockAppSettingsService(),
+          _MockAssetMediaRepository(),
+          leasePort: leases,
+          arbiter: arbiter,
+          callbackFence: fence,
+          operationIncarnation: 'current-process',
+        );
+        final port = _PersistedEnablementPort(
+          enablement,
+          leases,
+          arbiter,
+          drainAction: () async => await service.cancel() == 0,
+        );
+        final controller = BackupEnablementController(port, initiallyEnabled: false);
+
+        try {
+          await controller.initialize(false);
+          if (startsWithActiveNativeTask) {
+            expect(controller.state, const BackupEnablementState.drainFailed());
+            expect((await leases.read())?.enqueueClaims, {claim});
+            expect(await controller.enable(), BackupEnablementResult.drainFailed);
+            expect((await enablement.read())?.phase, DurableBackupEnablementPhase.drainFailed);
+            native.allowCancel = true;
+          } else {
+            expect(controller.state, const BackupEnablementState.disabled());
+            expect(await leases.read(), isNull);
+          }
+          expect(await leases.readReconciliationQuarantine(), isEmpty);
+
+          expect(await controller.enable(), BackupEnablementResult.applied);
+          expect((await enablement.read())?.phase, DurableBackupEnablementPhase.enabled);
+          final admission = await arbiter.acquireForeground(bindingDigest: lease.bindingDigest);
+          expect(admission.disposition, BackupAdmissionDisposition.acquired);
+          expect(admission.lease?.runToken, 'next-run');
+          const retryClaim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'retry-enqueue');
+          final retry = await leases.beginEnqueueUnlessQuarantined(
+            runToken: admission.lease!.runToken,
+            bindingDigest: admission.lease!.bindingDigest,
+            claim: retryClaim,
+            candidateKey: candidateKey,
+            operationIncarnation: 'current-process',
+          );
+          expect(retry?.enqueueClaims, contains(retryClaim));
+          expect(native.replayCalls, greaterThanOrEqualTo(1));
+        } finally {
+          await controller.dispose();
+          service.dispose();
+          await recoveryDb.close();
+          await directory.delete(recursive: true);
+        }
+      },
+    );
+  }
+
   test('relaunch retires a persisted schema-7 session-A claim after session-B native proof and applies ON', () async {
     final directory = await Directory.systemTemp.createTemp('immich-backup-recovery-');
     final file = File('${directory.path}/shared.sqlite');
@@ -161,11 +291,12 @@ Future<bool> _readLegacyEnabled(Drift db) async {
 }
 
 final class _PersistedEnablementPort implements BackupEnablementPort {
-  _PersistedEnablementPort(this._enablement, this._leases, this._arbiter);
+  _PersistedEnablementPort(this._enablement, this._leases, this._arbiter, {this.drainAction});
 
   final DriftBackupEnablementRepository _enablement;
   final DriftBackupExecutionLeaseRepository _leases;
   final BackupExecutionArbiter _arbiter;
+  final Future<bool> Function()? drainAction;
   int signalCount = 0;
 
   @override
@@ -179,6 +310,7 @@ final class _PersistedEnablementPort implements BackupEnablementPort {
 
   @override
   Future<bool> drain() async {
+    if (drainAction case final action?) return action();
     final lease = await _leases.read();
     if (lease == null) return true;
     return _arbiter.disableAndDrain(runToken: lease.runToken, bindingDigest: lease.bindingDigest);
@@ -204,6 +336,57 @@ final class _PersistedEnablementPort implements BackupEnablementPort {
   @override
   void stopEager() {}
 }
+
+final class _EmptyNativeRegistry implements BackupTaskRegistryGateway {
+  int replayCalls = 0;
+  List<Task> tasks = [];
+  bool allowCancel = true;
+
+  @override
+  Future<void> get ready async {}
+
+  @override
+  Future<List<Task>> nativeTasks(String group) async => tasks.where((task) => task.group == group).toList();
+
+  @override
+  Future<List<Task>> nativeTasksInGroups(Set<String> groups) async =>
+      tasks.where((task) => groups.contains(task.group)).toList();
+
+  @override
+  Future<List<TaskRecord>> trackingRecords(TaskStatus status, String group) async => const [];
+
+  @override
+  Future<List<TaskRecord>> allTrackingRecords(String group) async => const [];
+
+  @override
+  Future<void> replayUndeliveredUpdates() async => replayCalls++;
+
+  @override
+  Future<bool> cancelNative(String group) async {
+    if (!allowCancel) return false;
+    tasks.removeWhere((task) => task.group == group);
+    return true;
+  }
+
+  @override
+  Future<void> resetNative(String group) async {}
+
+  @override
+  Future<void> deleteTrackingRecords(Iterable<String> taskIds) async {}
+
+  @override
+  Future<void> repairTracking(TaskRecord record) async {}
+}
+
+final class _MockStorageRepository extends MockStorageRepository {}
+
+final class _MockLocalAssetRepository extends MockDriftLocalAssetRepository {}
+
+final class _MockBackupRepository extends MockDriftBackupRepository {}
+
+final class _MockAppSettingsService extends MockAppSettingsService {}
+
+final class _MockAssetMediaRepository extends MockAssetMediaRepository {}
 
 final class _EmptyTaskRegistry implements BackupTaskRegistryPort {
   int snapshotCalls = 0;

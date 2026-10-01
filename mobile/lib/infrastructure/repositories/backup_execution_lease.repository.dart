@@ -494,6 +494,30 @@ final class DriftBackupExecutionLeaseRepository implements BackupExecutionLeaseP
   }
 
   @override
+  Future<BackupExecutionLease?> releaseProvenOrphanedEnqueueExact({
+    required BackupExecutionLease expected,
+    required BackupTaskClaim claim,
+  }) {
+    if (!expected.enqueueClaims.contains(claim) ||
+        !expected.enqueueIncarnations.containsKey(claim) ||
+        expected.outstandingClaims.contains(claim) ||
+        expected.callbackClaims.contains(claim) ||
+        expected.reconciliationClaims.contains(claim) ||
+        expected.terminalTombstones.contains(claim)) {
+      return Future.value();
+    }
+    return _transition(
+      expected,
+      expected.copyWith(
+        enqueueClaims: {...expected.enqueueClaims}..remove(claim),
+        enqueueIncarnations: {...expected.enqueueIncarnations}..remove(claim),
+        candidateKeys: {...expected.candidateKeys}..remove(claim),
+        activityRevision: expected.activityRevision + 1,
+      ),
+    );
+  }
+
+  @override
   Future<BackupExecutionLease?> beginClosingForOwner({required String runToken, required String bindingDigest}) =>
       _transitionForTask(
         runToken: runToken,

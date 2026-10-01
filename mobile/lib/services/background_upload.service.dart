@@ -609,9 +609,9 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
     if (observed == null || !_isOwner(observed, owner)) return;
     final candidates = observed.enqueueClaims.intersection(owner.claims).toList(growable: false);
     for (final claim in candidates) {
-      if (_containsExactClaim(beforeTasks, owner, claim) ||
-          _containsExactClaim(afterTasks, owner, claim) ||
-          replayed.any((update) => _belongsToClaim(update.task, owner, claim))) {
+      if (_containsTaskClaim(beforeTasks, claim) ||
+          _containsTaskClaim(afterTasks, claim) ||
+          replayed.any((update) => _claimForTask(update.task) == claim)) {
         continue;
       }
       var current = await _leasePort?.read();
@@ -629,6 +629,8 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
       final permit = recoveryFence.tryBeginOrphanRecovery(runToken: owner.runToken, bindingDigest: owner.bindingDigest);
       if (permit == null) continue;
       try {
+        final finalTasks = await _uploadRepository.snapshot(BackupExecutionArbiter.groups);
+        if (_containsTaskClaim(finalTasks, claim)) continue;
         current = await _leasePort?.read();
         if (current == null ||
             !_isOwner(current, owner) ||
@@ -638,18 +640,10 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
             current.candidateKeys[claim] != candidateKey) {
           continue;
         }
-        final pending = await _leasePort?.markReconciliationPendingForTask(
-          runToken: owner.runToken,
-          bindingDigest: owner.bindingDigest,
-          claim: claim,
-        );
-        if (pending == null || !pending.reconciliationClaims.contains(claim)) continue;
-        await _quarantineReconciliation(
-          lease: pending,
-          claim: claim,
-          candidateKey: candidateKey,
-          code: BackupReconciliationQuarantineCode.completedTaskMissing,
-        );
+        final recovered = await _leasePort?.releaseProvenOrphanedEnqueueExact(expected: current, claim: claim);
+        if (recovered != null) {
+          await _arbiter?.releaseCurrentWhenQuiescent(runToken: owner.runToken, bindingDigest: owner.bindingDigest);
+        }
       } finally {
         recoveryFence.endOrphanRecovery(permit);
       }
@@ -682,17 +676,8 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
     }
   }
 
-  static bool _containsExactClaim(
-    Iterable<BackupTaskSnapshot> tasks,
-    EagerBackgroundUploadOwner owner,
-    BackupTaskClaim claim,
-  ) => tasks.any((task) {
-    final metadata = task.metadata;
-    return task.taskId == claim.taskId &&
-        task.group == claim.group &&
-        metadata?.runToken == owner.runToken &&
-        metadata?.bindingDigest == owner.bindingDigest;
-  });
+  static bool _containsTaskClaim(Iterable<BackupTaskSnapshot> tasks, BackupTaskClaim claim) =>
+      tasks.any((task) => task.taskId == claim.taskId && task.group == claim.group);
 
   bool _belongsToOwner(Task task, EagerBackgroundUploadOwner owner) {
     final metadata = _ownedMetadata(task)?.ownership;
@@ -701,9 +686,6 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
         metadata?.runToken == owner.runToken &&
         metadata?.bindingDigest == owner.bindingDigest;
   }
-
-  bool _belongsToClaim(Task task, EagerBackgroundUploadOwner owner, BackupTaskClaim claim) =>
-      _claimForTask(task) == claim && _belongsToOwner(task, owner);
 
   bool shouldAbortQueuingTasks = false;
 
@@ -1043,17 +1025,52 @@ class BackgroundUploadService implements EagerBackgroundUploadPort {
     await _storageRepository.clearCache();
     final lease = await _leasePort?.read();
     if (lease == null) {
-      if (!await _uploadRepository.cancelAndDrain(BackupExecutionArbiter.groups)) return 1;
+      if (!await _uploadRepository.cancelAndDrain(BackupExecutionArbiter.groups)) {
+        return _rejectDrain(BackupDrainBlocker.nativeCancelFailed);
+      }
       final appearedLease = await _leasePort?.read();
       if (appearedLease == null) return 0;
-      final appearedLeaseDrained = await _arbiter?.disableAndDrain(
-        runToken: appearedLease.runToken,
-        bindingDigest: appearedLease.bindingDigest,
-      );
-      return appearedLeaseDrained == true ? 0 : 1;
+      return _cancelOwnedLease(appearedLease);
+    }
+    return _cancelOwnedLease(lease);
+  }
+
+  Future<int> _cancelOwnedLease(BackupExecutionLease lease) async {
+    final closing = await _leasePort?.beginClosingForOwner(
+      runToken: lease.runToken,
+      bindingDigest: lease.bindingDigest,
+    );
+    if (closing == null) return _rejectDrain(BackupDrainBlocker.ownerChanged);
+    await _replayOwnedMailbox(EagerBackgroundUploadOwner.fromLease(closing));
+    var afterReplay = await _leasePort?.read();
+    if (afterReplay == null) {
+      if (!await _uploadRepository.cancelAndDrain(BackupExecutionArbiter.groups)) {
+        return _rejectDrain(BackupDrainBlocker.nativeCancelFailed);
+      }
+      return await _leasePort?.read() == null ? 0 : _rejectDrain(BackupDrainBlocker.ownerChanged);
+    }
+    if (afterReplay.runToken != lease.runToken || afterReplay.bindingDigest != lease.bindingDigest) {
+      return _rejectDrain(BackupDrainBlocker.ownerChanged);
+    }
+    final active = await _uploadRepository.snapshot(BackupExecutionArbiter.groups);
+    if (active.any((task) => task.isActive)) {
+      if (!await _uploadRepository.cancelAndDrain(BackupExecutionArbiter.groups)) {
+        return _rejectDrain(BackupDrainBlocker.nativeCancelFailed);
+      }
+      await _replayOwnedMailbox(EagerBackgroundUploadOwner.fromLease(afterReplay));
+      afterReplay = await _leasePort?.read();
+      if (afterReplay == null) return 0;
+      if (afterReplay.runToken != lease.runToken || afterReplay.bindingDigest != lease.bindingDigest) {
+        return _rejectDrain(BackupDrainBlocker.ownerChanged);
+      }
     }
     final drained = await _arbiter?.disableAndDrain(runToken: lease.runToken, bindingDigest: lease.bindingDigest);
     return drained == true ? 0 : 1;
+  }
+
+  int _rejectDrain(BackupDrainBlocker reason) {
+    _logger.warning('backup_drain_blocked:${reason.name}');
+    return 1;
   }
 
   Future<bool> _handleTaskStatusUpdate(

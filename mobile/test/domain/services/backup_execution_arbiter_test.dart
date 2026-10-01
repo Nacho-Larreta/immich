@@ -632,6 +632,34 @@ void main() {
     expect(leases.recoverExactCalls, 0);
   });
 
+  test('unresolved enqueue remains retryable and does not permanently fence callbacks', () async {
+    final now = DateTime.utc(2026, 10, 1, 15);
+    const claim = BackupTaskClaim(group: BackupTaskGroup.primary, taskId: 'orphaned-enqueue');
+    final lease = _lease(
+      'background',
+      'same',
+      now.subtract(const Duration(minutes: 2)),
+    ).copyWith(state: BackupExecutionState.closing, enqueueClaims: {claim});
+    final leases = _Leases(existing: lease);
+    final callbackFence = BackupCallbackFence();
+    final blockers = <BackupDrainBlocker>[];
+    final arbiter = BackupExecutionArbiter(
+      leases: leases,
+      tasks: _Registry(),
+      callbackFence: callbackFence,
+      clock: () => now,
+      onDrainBlocked: blockers.add,
+    );
+
+    expect(await arbiter.disableAndDrain(runToken: lease.runToken, bindingDigest: lease.bindingDigest), isFalse);
+    expect(leases.existing?.enqueueClaims, {claim});
+    expect(leases.recoverExactCalls, 0);
+    expect(blockers, [BackupDrainBlocker.enqueueClaimPending]);
+    final permit = callbackFence.tryBegin(runToken: lease.runToken, bindingDigest: lease.bindingDigest);
+    expect(permit, isNotNull);
+    callbackFence.end(permit!);
+  });
+
   test('disable fails closed when native work appears in Q2', () async {
     final now = DateTime.utc(2026, 9, 2, 13);
     final lease = _lease(
@@ -1154,6 +1182,12 @@ final class _Leases implements BackupExecutionLeasePort {
     required BackupExecutionLease expected,
     required BackupTaskClaim claim,
   }) async => null;
+
+  @override
+  Future<BackupExecutionLease?> releaseProvenOrphanedEnqueueExact({
+    required BackupExecutionLease expected,
+    required BackupTaskClaim claim,
+  }) => throw UnimplementedError();
 
   @override
   Future<BackupExecutionLease?> beginClosingForOwner({required String runToken, required String bindingDigest}) async {

@@ -9,6 +9,9 @@ import 'package:immich_mobile/infrastructure/repositories/network.repository.dar
 import 'package:immich_mobile/providers/infrastructure/db.provider.dart';
 import 'package:immich_mobile/providers/backup/backup_run_binding.provider.dart';
 import 'package:immich_mobile/repositories/upload.repository.dart';
+import 'package:logging/logging.dart';
+
+final _backupDrainLogger = Logger('BackupExecutionArbiter');
 
 final backupExecutionLeaseProvider = Provider<BackupExecutionLeasePort>(
   (ref) => DriftBackupExecutionLeaseRepository(ref.watch(driftProvider)),
@@ -32,5 +35,6 @@ final backupExecutionArbiterProvider = Provider<BackupExecutionArbiter>(
     tasks: ref.watch(uploadRepositoryProvider),
     foregroundFence: ForegroundTransportFenceAdapter(ref.watch(backupRunBindingSourceProvider)),
     callbackFence: ref.watch(backupCallbackRecoveryCapabilityProvider),
+    onDrainBlocked: (reason) => _backupDrainLogger.warning('backup_drain_blocked:${reason.name}'),
   ),
 );

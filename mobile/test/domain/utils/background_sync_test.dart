@@ -196,6 +196,67 @@ void main() {
     expect(terminals, ['1:local:cancelled', '2:local:success']);
   });
 
+  test('resume replaces a frozen remote sync without letting its late completion clobber the replacement', () async {
+    final runner = _ControlledTaskRunner();
+    final events = <String>[];
+    final manager = BackgroundSyncManager(
+      taskRunner: runner,
+      remoteTaskContext: _testRemoteTaskContext,
+      onRemoteSyncStart: () => events.add('start'),
+      onRemoteSyncComplete: (_) => events.add('complete'),
+      onRemoteSyncCancelled: () => events.add('cancelled'),
+    );
+
+    final frozen = manager.syncRemote();
+    await manager.cancelResumeSyncs();
+    expect(runner.task(0).cancelRequested, isTrue);
+
+    final resumed = manager.syncRemote();
+    expect(runner.tasks, hasLength(2));
+
+    runner.task(0).finishCancellation();
+    expect(await frozen, isFalse);
+    expect(events, ['start', 'start']);
+
+    final repeated = manager.syncRemote();
+    expect(identical(repeated, resumed), isTrue);
+    expect(runner.tasks, hasLength(2));
+
+    runner.task(1).succeed(true);
+    expect(await resumed, isTrue);
+    expect(events, ['start', 'start', 'complete']);
+  });
+
+  test('resume replaces local work without cancelling websocket or cloud-id work', () async {
+    final runner = _ControlledTaskRunner();
+    final manager = BackgroundSyncManager(taskRunner: runner, remoteTaskContext: _testRemoteTaskContext);
+
+    final local = manager.syncLocal();
+    final hashing = manager.hashAssets();
+    final linkedAlbums = manager.syncLinkedAlbum();
+    final websocket = manager.syncWebsocketBatch(const []);
+    final cloudIds = manager.syncCloudIds();
+    final localCancelled = expectLater(local, throwsA(isA<BackgroundTaskCancelled>()));
+    final hashingCancelled = expectLater(hashing, throwsA(isA<BackgroundTaskCancelled>()));
+    final linkedCancelled = expectLater(linkedAlbums, throwsA(isA<BackgroundTaskCancelled>()));
+
+    await manager.cancelResumeSyncs();
+    expect([for (final task in runner.tasks) task.cancelRequested], [true, true, true, false, false]);
+
+    final resumedLocal = manager.syncLocal();
+    expect(runner.tasks, hasLength(6));
+    runner.task(0).finishCancellation();
+    runner.task(1).finishCancellation();
+    runner.task(2).finishCancellation();
+    await Future.wait([localCancelled, hashingCancelled, linkedCancelled]);
+    expect(identical(manager.syncLocal(), resumedLocal), isTrue);
+
+    runner.task(3).succeed(null);
+    runner.task(4).succeed(null);
+    runner.task(5).succeed(null);
+    await Future.wait([websocket, cloudIds, resumedLocal]);
+  });
+
   test('websocket cancellation retains its slot until the old task terminates', () async {
     final runner = _ControlledTaskRunner();
     final terminals = <String>[];

@@ -107,6 +107,11 @@ abstract interface class BackupExecutionLeasePort {
     required BackupTaskClaim claim,
   });
 
+  Future<BackupExecutionLease?> releaseProvenOrphanedEnqueueExact({
+    required BackupExecutionLease expected,
+    required BackupTaskClaim claim,
+  });
+
   Future<BackupExecutionLease?> beginClosingForOwner({required String runToken, required String bindingDigest});
 
   Future<BackupExecutionLease?> beginForegroundActivityForOwner({

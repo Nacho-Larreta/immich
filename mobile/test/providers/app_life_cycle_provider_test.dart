@@ -13,6 +13,7 @@ void main() {
       triggerLocalSync: ({required full}) => events.add('syncLocal:$full'),
       cancelLocalSync: () async => events.add('syncLocal.cancel'),
       cancelBackgroundSync: () async => events.add('backgroundSync.cancel'),
+      cancelResumeSyncs: () async => events.add('resumeSyncs.cancel'),
       stopBackup: () => events.add('backup.stop'),
       pauseEagerBackup: () async => events.add('eager.handoff'),
       resumeEagerBackup: () => events.add('eager.resume'),
@@ -31,7 +32,7 @@ void main() {
     lock.complete();
     await resume;
 
-    expect(events, ['worker.lock', 'coordinator.resume', 'eager.resume', 'syncLocal:true']);
+    expect(events, ['worker.lock', 'resumeSyncs.cancel', 'coordinator.resume', 'eager.resume', 'syncLocal:true']);
   });
 
   test('pause drains reconciliation, local sync, and accepted websocket work before unlocking the worker', () async {
@@ -55,6 +56,7 @@ void main() {
         events.add('backgroundSync.cancel');
         return websocketSync.future;
       },
+      cancelResumeSyncs: () async => events.add('resumeSyncs.cancel'),
       stopBackup: () => events.add('backup.stop'),
       pauseEagerBackup: () async {
         events.add('eager.foreground.stop');
